@@ -25,11 +25,19 @@ class StateExecutiveOfficialPagesCollector(BaseCollector):
     collector_name = "state_executive_official_pages"
     source_name = "State executive official pages"
 
-    def __init__(self) -> None:
+    def __init__(self, state_filter: str | None = None) -> None:
         self.settings = get_settings()
+        self.state_filter = self._normalize_state(state_filter)
 
     def fetch(self) -> list[dict[str, Any]]:
-        return get_source_registry().get("state_executive_official_sources", [])
+        sources = get_source_registry().get("state_executive_official_sources", [])
+        if not self.state_filter:
+            return sources
+        return [
+            source
+            for source in sources
+            if self._normalize_state(source.get("state")) == self.state_filter
+        ]
 
     def parse(self, payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
@@ -90,6 +98,7 @@ class StateExecutiveOfficialPagesCollector(BaseCollector):
             session.flush()
             service: OfficialsService | None = None
             seen_keys_by_parser: dict[str, set[tuple[int, int, int | None, str]]] = {}
+            jurisdiction_ids_by_parser: dict[str, set[int]] = {}
             try:
                 parsed = self.parse(self.fetch())
                 service = OfficialsService(session)
@@ -129,8 +138,13 @@ class StateExecutiveOfficialPagesCollector(BaseCollector):
                     seen_keys_by_parser.setdefault(parser_identity, set()).add(
                         (person.id, office.id, state.id, record["appointment"]["role_title"])
                     )
+                    jurisdiction_ids_by_parser.setdefault(parser_identity, set()).add(state.id)
                 for parser_identity, seen_keys in seen_keys_by_parser.items():
-                    result.records_deactivated += service.reconcile_current_appointments(parser_identity, seen_keys)
+                    result.records_deactivated += service.reconcile_current_appointments(
+                        parser_identity,
+                        seen_keys,
+                        jurisdiction_ids=jurisdiction_ids_by_parser.get(parser_identity),
+                    )
                 sync_run.status = "success"
             except Exception as exc:
                 logger.exception("State executive official pages collector failed.")
@@ -154,6 +168,12 @@ class StateExecutiveOfficialPagesCollector(BaseCollector):
                     "validation_count": len(validation_log),
                 }
         return result
+
+    @staticmethod
+    def _normalize_state(value: str | None) -> str | None:
+        if not value:
+            return None
+        return compact_whitespace(value).casefold()
 
     def _fetch_html(self, url: str) -> str:
         response = httpx.get(

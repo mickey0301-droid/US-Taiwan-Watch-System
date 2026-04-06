@@ -420,13 +420,15 @@ class OfficialsService:
         self,
         parser_identity: str,
         seen_keys: set[tuple[int, int, int | None, str]],
+        jurisdiction_ids: set[int] | None = None,
     ) -> int:
-        appointments = self.session.execute(
-            select(Appointment).where(
-                Appointment.parser_identity == parser_identity,
-                Appointment.is_current.is_(True),
-            )
-        ).scalars().all()
+        stmt = select(Appointment).where(
+            Appointment.parser_identity == parser_identity,
+            Appointment.is_current.is_(True),
+        )
+        if jurisdiction_ids:
+            stmt = stmt.where(Appointment.jurisdiction_id.in_(jurisdiction_ids))
+        appointments = self.session.execute(stmt).scalars().all()
         deactivated = 0
         touched_person_ids: set[int] = set()
         for appointment in appointments:

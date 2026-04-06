@@ -80,8 +80,9 @@ class StateExecutiveWikipediaCollector(BaseCollector):
     source_name = "Wikipedia statewide elected officials"
     parser_identity = "wikipedia_state_executives_v1"
 
-    def __init__(self) -> None:
+    def __init__(self, state_filter: str | None = None) -> None:
         self.settings = get_settings()
+        self.state_filter = self._normalize_state(state_filter)
 
     def fetch(self) -> dict[str, Any]:
         return get_source_registry().get("sources", {}).get("state_executives_wikipedia", {})
@@ -100,6 +101,7 @@ class StateExecutiveWikipediaCollector(BaseCollector):
             session.flush()
             service: OfficialsService | None = None
             seen_keys: set[tuple[int, int, int | None, str]] = set()
+            jurisdiction_ids: set[int] = set()
             try:
                 parsed = self.parse(self.fetch())
                 service = OfficialsService(session)
@@ -134,7 +136,12 @@ class StateExecutiveWikipediaCollector(BaseCollector):
                     if created_appointment:
                         result.records_created += 1
                     seen_keys.add((person.id, office.id, state.id, record["appointment"]["role_title"]))
-                result.records_deactivated = service.reconcile_current_appointments(self.parser_identity, seen_keys)
+                    jurisdiction_ids.add(state.id)
+                result.records_deactivated = service.reconcile_current_appointments(
+                    self.parser_identity,
+                    seen_keys,
+                    jurisdiction_ids=jurisdiction_ids or None,
+                )
                 sync_run.status = "success"
             except Exception as exc:
                 logger.exception("State executives wikipedia collector failed.")
@@ -185,11 +192,19 @@ class StateExecutiveWikipediaCollector(BaseCollector):
             state_name = self._extract_state_name(heading)
             if not state_name:
                 continue
+            if self.state_filter and self._normalize_state(state_name) != self.state_filter:
+                continue
             table = heading.find_next("table", class_="wikitable")
             if table is None:
                 continue
             records.extend(self._parse_state_table(state_name, page_url, table))
         return records
+
+    @staticmethod
+    def _normalize_state(value: str | None) -> str | None:
+        if not value:
+            return None
+        return compact_whitespace(value).casefold()
 
     def _extract_state_name(self, heading: Tag) -> str | None:
         headline = heading.find(class_="mw-headline")
