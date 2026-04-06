@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import logging
 from pathlib import Path
 import re
 from typing import Any
@@ -13,6 +14,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
+logger = logging.getLogger(__name__)
 
 
 class GoogleSheetsConfigurationError(RuntimeError):
@@ -76,7 +78,16 @@ class GoogleSheetsService:
             credentials = Credentials.from_service_account_info(self._load_service_account_info(service_account_json), scopes=SCOPES)
         else:
             credentials = Credentials.from_service_account_file(service_account_file, scopes=SCOPES)
-        return gspread.authorize(credentials, http_client=ProxyBypassHTTPClient)
+        try:
+            return gspread.authorize(credentials)
+        except Exception as exc:
+            logger.warning("Standard Google Sheets client failed, retrying with proxy-bypass client: %s", exc)
+            try:
+                return gspread.authorize(credentials, http_client=ProxyBypassHTTPClient)
+            except Exception as fallback_exc:
+                raise GoogleSheetsConfigurationError(
+                    f"Failed to initialize Google Sheets client: {type(fallback_exc).__name__}: {fallback_exc}"
+                ) from fallback_exc
 
     def open_sheet(self):  # type: ignore[no-untyped-def]
         client = self._client()
