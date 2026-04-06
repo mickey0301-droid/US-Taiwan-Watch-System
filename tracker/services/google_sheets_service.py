@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 from tracker.config import get_settings
@@ -72,7 +73,7 @@ class GoogleSheetsService:
 
         service_account_file, service_account_json, _sheet_id = self._require_config()
         if service_account_json:
-            credentials = Credentials.from_service_account_info(json.loads(service_account_json.strip()), scopes=SCOPES)
+            credentials = Credentials.from_service_account_info(self._load_service_account_info(service_account_json), scopes=SCOPES)
         else:
             credentials = Credentials.from_service_account_file(service_account_file, scopes=SCOPES)
         return gspread.authorize(credentials, http_client=ProxyBypassHTTPClient)
@@ -136,11 +137,31 @@ class GoogleSheetsService:
         if not service_account_json:
             return None
         try:
-            payload = json.loads(service_account_json.strip())
+            payload = self._load_service_account_info(service_account_json)
         except Exception:
             return None
         email = str(payload.get("client_email") or "").strip()
         return email or None
+
+    def _load_service_account_info(self, service_account_json: str) -> dict[str, Any]:
+        raw = service_account_json.strip()
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            payload = json.loads(self._normalize_service_account_json(raw))
+        if not isinstance(payload, dict):
+            raise GoogleSheetsConfigurationError("GOOGLE_SERVICE_ACCOUNT_JSON must decode to a JSON object.")
+        return payload
+
+    def _normalize_service_account_json(self, raw: str) -> str:
+        private_key_pattern = re.compile(r'("private_key"\s*:\s*")(.+?)(")', re.DOTALL)
+
+        def _escape_private_key(match: re.Match[str]) -> str:
+            prefix, private_key, suffix = match.groups()
+            normalized = private_key.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\\n")
+            return f"{prefix}{normalized}{suffix}"
+
+        return private_key_pattern.sub(_escape_private_key, raw, count=1)
 
     def ensure_header_row(self, worksheet_title: str, headers: list[str]) -> dict[str, Any]:
         spreadsheet = self.open_sheet()
