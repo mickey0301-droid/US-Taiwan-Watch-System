@@ -72,15 +72,25 @@ class GoogleSheetsService:
 
         service_account_file, service_account_json, _sheet_id = self._require_config()
         if service_account_json:
-            credentials = Credentials.from_service_account_info(json.loads(service_account_json), scopes=SCOPES)
+            credentials = Credentials.from_service_account_info(json.loads(service_account_json.strip()), scopes=SCOPES)
         else:
             credentials = Credentials.from_service_account_file(service_account_file, scopes=SCOPES)
         return gspread.authorize(credentials, http_client=ProxyBypassHTTPClient)
 
     def open_sheet(self):  # type: ignore[no-untyped-def]
         client = self._client()
-        _service_account_file, _service_account_json, sheet_id = self._require_config()
-        return client.open_by_key(sheet_id)
+        _service_account_file, service_account_json, sheet_id = self._require_config()
+        service_account_email = self._service_account_email(service_account_json)
+        try:
+            return client.open_by_key(sheet_id.strip())
+        except Exception as exc:
+            message = str(exc)
+            if "SpreadsheetNotFound" in type(exc).__name__ or "not found" in message.lower():
+                hint = f" Share the sheet with {service_account_email}." if service_account_email else ""
+                raise GoogleSheetsConfigurationError(
+                    f"Google Sheet '{sheet_id}' was not found or is not shared with the service account.{hint}"
+                ) from exc
+            raise GoogleSheetsConfigurationError(f"Unable to open Google Sheet '{sheet_id}': {message}") from exc
 
     def list_worksheets(self) -> list[GoogleSheetTabInfo]:
         spreadsheet = self.open_sheet()
@@ -113,8 +123,24 @@ class GoogleSheetsService:
 
     def read_records(self, worksheet_title: str) -> list[dict[str, Any]]:
         spreadsheet = self.open_sheet()
-        worksheet = spreadsheet.worksheet(worksheet_title)
+        try:
+            worksheet = spreadsheet.worksheet(worksheet_title)
+        except Exception as exc:
+            message = str(exc)
+            raise GoogleSheetsConfigurationError(
+                f"Worksheet '{worksheet_title}' is missing in Google Sheet '{self.settings.google_sheet_id}': {message}"
+            ) from exc
         return worksheet.get_all_records(head=1, default_blank="")
+
+    def _service_account_email(self, service_account_json: str | None) -> str | None:
+        if not service_account_json:
+            return None
+        try:
+            payload = json.loads(service_account_json.strip())
+        except Exception:
+            return None
+        email = str(payload.get("client_email") or "").strip()
+        return email or None
 
     def ensure_header_row(self, worksheet_title: str, headers: list[str]) -> dict[str, Any]:
         spreadsheet = self.open_sheet()

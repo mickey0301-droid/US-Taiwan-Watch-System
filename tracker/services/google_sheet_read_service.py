@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+import logging
 import re
 from typing import Any
 
@@ -8,14 +9,19 @@ from tracker.services.google_sheets_service import GoogleSheetsConfigurationErro
 
 
 _URL_PATTERN = re.compile(r"https?://[^\s|]+")
+logger = logging.getLogger(__name__)
 
 
 class GoogleSheetReadService:
     def __init__(self) -> None:
         self.google_sheets = GoogleSheetsService()
+        self.last_error: str | None = None
 
     def has_any_data(self) -> bool:
         return bool(self.list_people() or self.list_events() or self.list_legislation())
+
+    def get_last_error(self) -> str | None:
+        return self.last_error
 
     def list_people(self) -> list[dict[str, Any]]:
         rows = self._read_records("People")
@@ -113,10 +119,15 @@ class GoogleSheetReadService:
 
     def _read_records(self, worksheet_title: str) -> list[dict[str, Any]]:
         try:
+            self.last_error = None
             return self.google_sheets.read_records(worksheet_title)
-        except GoogleSheetsConfigurationError:
+        except GoogleSheetsConfigurationError as exc:
+            self.last_error = str(exc)
+            logger.warning("Google Sheet fallback configuration error for worksheet %s: %s", worksheet_title, exc)
             return []
-        except Exception:
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            logger.exception("Google Sheet fallback read failed for worksheet %s", worksheet_title)
             return []
 
     def _collect_source_urls(self, row: dict[str, Any]) -> list[str]:

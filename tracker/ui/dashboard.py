@@ -75,6 +75,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
             if lang != "zh-TW"
             else "如果這是雲端版，請確認已設定 GOOGLE_SHEET_ID 與 GOOGLE_SERVICE_ACCOUNT_JSON；如果這是本機版，請確認目前 app 指向的是正確的 tracker.db。"
         )
+        render_google_sheet_fallback_diagnostic(lang)
         return
 
     _render_metrics(labels, total_officials, total_trackers, total_statements, total_sync_runs, total_alerts)
@@ -108,6 +109,19 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
     ]
     _render_events_section(recent_events, lang)
     return True
+
+
+def render_google_sheet_fallback_diagnostic(lang: str) -> None:
+    sheet_service = GoogleSheetReadService()
+    sheet_service.list_people()
+    error_message = sheet_service.get_last_error()
+    if not error_message:
+        return
+    st.caption(
+        f"Google Sheet fallback error: {error_message}"
+        if lang != "zh-TW"
+        else f"Google Sheet fallback 錯誤：{error_message}"
+    )
 
 
 def _render_metrics(
