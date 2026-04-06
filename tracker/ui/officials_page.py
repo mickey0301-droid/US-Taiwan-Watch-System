@@ -4,6 +4,7 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import select
 
+from tracker.config import use_google_sheet_primary_mode
 from tracker.db import session_scope
 from tracker.models import Appointment, Office, Person
 from tracker.services.google_sheet_read_service import GoogleSheetReadService
@@ -96,6 +97,9 @@ def _build_dataframe(rows) -> pd.DataFrame:
 
 def render(lang: str, labels: dict[str, str]) -> None:
     st.header(labels["officials"])
+    if use_google_sheet_primary_mode():
+        _render_google_sheet_fallback(lang, labels)
+        return
     with session_scope() as session:
         importer = WikipediaListService(session)
         with st.expander(labels["wiki_import"]):

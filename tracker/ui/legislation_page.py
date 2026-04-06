@@ -4,6 +4,7 @@ from typing import Iterable
 
 import streamlit as st
 
+from tracker.config import use_google_sheet_primary_mode
 from tracker.db import session_scope
 from tracker.models import Legislation, Person
 from tracker.services.ai_assist_service import AIAssistService
@@ -17,6 +18,11 @@ from tracker.utils.source_types import source_bucket_label, source_priority_key
 def render(lang: str, labels: dict[str, str]) -> None:
     st.header(labels["legislation"])
     ai_service = AIAssistService()
+    if use_google_sheet_primary_mode():
+        if _render_google_sheet_fallback(lang):
+            return
+        st.info("No legislation is available yet." if lang != "zh-TW" else "目前沒有可顯示的法案資料。")
+        return
     with session_scope() as session:
         service = LegislationService(session)
         people_by_id = {person.id: person for person in session.query(Person).all()}

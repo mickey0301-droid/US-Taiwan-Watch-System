@@ -5,6 +5,7 @@ from datetime import date, datetime
 import streamlit as st
 from sqlalchemy import func, select
 
+from tracker.config import use_google_sheet_primary_mode
 from tracker.db import session_scope
 from tracker.models import NotificationLog, Person, Statement, SyncRun, Tracker
 from tracker.services.google_sheet_read_service import GoogleSheetReadService
@@ -15,6 +16,17 @@ from tracker.ui.source_labels import source_label
 
 def render(lang: str, labels: dict[str, str]) -> None:
     st.header(labels["dashboard"])
+    if use_google_sheet_primary_mode():
+        if _render_google_sheet_fallback(lang, labels):
+            return
+        _render_metrics(labels, 0, 0, 0, 0, 0)
+        st.warning(
+            "Google Sheet primary mode is enabled, but no sheet data could be loaded."
+            if lang != "zh-TW"
+            else "目前已啟用 Google Sheet-first 模式，但還是無法載入 Sheet 資料。"
+        )
+        render_google_sheet_fallback_diagnostic(lang)
+        return
     total_officials = 0
     total_trackers = 0
     total_statements = 0

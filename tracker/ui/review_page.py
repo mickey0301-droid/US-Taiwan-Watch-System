@@ -5,6 +5,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
+from tracker.config import use_google_sheet_primary_mode
 from tracker.db import session_scope
 from tracker.models import Person
 from tracker.services.ai_assist_service import AIAssistService
@@ -18,6 +19,11 @@ from tracker.ui.source_labels import source_label, statement_source_label
 def render(lang: str, labels: dict[str, str]) -> None:
     st.header(labels["review_queue"])
     ai_service = AIAssistService()
+    if use_google_sheet_primary_mode():
+        if _render_google_sheet_fallback(lang, labels):
+            return
+        st.info("No events need review right now." if lang != "zh-TW" else "目前沒有可顯示的事件資料。")
+        return
     with session_scope() as session:
         service = StatementsService(session)
         events = service.list_review_queue()

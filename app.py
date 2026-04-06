@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from tracker.config import get_settings
+from tracker.config import get_settings, use_google_sheet_primary_mode
 from tracker.database_setup import ensure_database_ready
 from tracker.ui import (
     dashboard,
@@ -247,6 +247,14 @@ NAV_PAGE_ORDER = [
     "settings",
 ]
 
+GOOGLE_SHEET_PRIMARY_PAGES = [
+    "dashboard",
+    "person_detail",
+    "review_queue",
+    "legislation",
+    "officials",
+]
+
 
 def main() -> None:
     _install_streamlit_text_repair()
@@ -260,12 +268,14 @@ def main() -> None:
 
     labels = _repair_nested_text(LABELS[language])
     st.sidebar.markdown("## [US Taiwan Watch](?page=dashboard)")
+    google_sheet_primary = use_google_sheet_primary_mode()
     query_page = st.query_params.get("page")
     if query_page in PAGES and "sidebar_nav_radio" not in st.session_state:
         st.session_state["sidebar_nav_radio"] = str(query_page)
-    page_options = [page for page in NAV_PAGE_ORDER if page in PAGES]
+    nav_page_order = GOOGLE_SHEET_PRIMARY_PAGES if google_sheet_primary else NAV_PAGE_ORDER
+    page_options = [page for page in nav_page_order if page in PAGES]
     current_page = st.session_state.get("sidebar_nav_radio", "dashboard")
-    if current_page not in PAGES:
+    if current_page not in PAGES or current_page not in page_options:
         current_page = "dashboard"
         st.session_state["sidebar_nav_radio"] = current_page
 
@@ -276,6 +286,8 @@ def main() -> None:
         index=page_options.index(current_page),
         key="sidebar_nav_radio",
     )
+    if google_sheet_primary:
+        st.sidebar.caption("Google Sheet-first mode")
     if st.query_params.get("page") != page_key:
         st.query_params["page"] = page_key
     if page_key != "person_detail" and "person_id" in st.query_params:

@@ -38,6 +38,7 @@ class AppSettings(BaseModel):
     scheduler_jobs: dict[str, dict[str, Any]] = Field(default_factory=dict)
     notifications: dict[str, Any] = Field(default_factory=dict)
     source_priority: list[str] = Field(default_factory=list)
+    google_sheet_primary_mode: bool = False
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -57,6 +58,13 @@ def _streamlit_secret(name: str) -> str | None:
     except Exception:
         return None
     return str(value) if value not in (None, "") else None
+
+
+def _bool_env_or_secret(name: str) -> bool | None:
+    raw = os.getenv(name) or _streamlit_secret(name)
+    if raw is None:
+        return None
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _sqlite_data_score(path: Path) -> int:
@@ -116,6 +124,9 @@ def get_settings() -> AppSettings:
     openai_model = os.getenv("OPENAI_MODEL") or _streamlit_secret("OPENAI_MODEL")
     if openai_model:
         raw["openai_model"] = openai_model
+    google_sheet_primary_mode = _bool_env_or_secret("GOOGLE_SHEET_PRIMARY_MODE")
+    if google_sheet_primary_mode is not None:
+        raw["google_sheet_primary_mode"] = google_sheet_primary_mode
     settings = AppSettings(**raw)
     if settings.database_url.startswith("sqlite:///") and not settings.database_url.startswith("sqlite:////"):
         sqlite_path = settings.database_url.removeprefix("sqlite:///")
@@ -127,6 +138,23 @@ def get_settings() -> AppSettings:
         if not path.is_absolute():
             setattr(settings, field_name, str((BASE_DIR / path).resolve()))
     return settings
+
+
+@lru_cache(maxsize=1)
+def use_google_sheet_primary_mode() -> bool:
+    settings = get_settings()
+    if settings.google_sheet_primary_mode:
+        return True
+    has_sheet_config = bool(
+        settings.google_sheet_id
+        and (settings.google_service_account_json or settings.google_service_account_file)
+    )
+    if not has_sheet_config:
+        return False
+    if settings.database_url.startswith("sqlite:///"):
+        sqlite_path = Path(settings.database_url.removeprefix("sqlite:///")).resolve()
+        return _sqlite_data_score(sqlite_path) <= 0
+    return False
 
 
 @lru_cache(maxsize=1)
