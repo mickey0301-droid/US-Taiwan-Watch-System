@@ -195,6 +195,10 @@ def render(lang: str, labels: dict[str, str]) -> None:
     if row10_col1.button(import_sheet_label, use_container_width=True):
         st.subheader(labels["job_result"])
         st.json(_localize_job_result(JOB_REGISTRY["import_google_sheet_data"](), lang))
+    export_sheet_label = "同步本機資料到 Google Sheet" if lang == "zh-TW" else "Export local data to Google Sheet"
+    if row10_col2.button(export_sheet_label, use_container_width=True):
+        st.subheader(labels["job_result"])
+        st.json(_localize_job_result(JOB_REGISTRY["export_google_sheet_data"](), lang))
     cleanup_legislation_people_label = "清理立法髒人名" if lang == "zh-TW" else "Clean malformed legislation people"
     if row7_col2.button(cleanup_legislation_people_label, use_container_width=True):
         st.subheader(labels["job_result"])

@@ -16,6 +16,7 @@ from tracker.jobs.enrich_current_federal_backgrounds import run_enrich_current_f
 from tracker.jobs.enrich_congress_bill_details import run_enrich_congress_bill_details
 from tracker.jobs.enrich_congress_bills_official_links import run_enrich_congress_bills_official_links
 from tracker.jobs.enrich_congress_bills_sponsors import run_enrich_congress_bills_sponsors
+from tracker.jobs.export_google_sheet_data import run_export_google_sheet_data
 from tracker.jobs.import_congress_bills_excel import run_import_congress_bills_excel
 from tracker.jobs.import_google_sheet_data import run_import_google_sheet_data
 from tracker.jobs.seed_historical_rosters import run_seed_historical_rosters
@@ -59,6 +60,7 @@ JOB_REGISTRY = {
     "enrich_congress_bill_details": run_enrich_congress_bill_details,
     "enrich_congress_bills_official_links": run_enrich_congress_bills_official_links,
     "enrich_congress_bills_sponsors": run_enrich_congress_bills_sponsors,
+    "export_google_sheet_data": run_export_google_sheet_data,
     "import_congress_bills_excel": run_import_congress_bills_excel,
     "import_google_sheet_data": run_import_google_sheet_data,
     "seed_historical_rosters": run_seed_historical_rosters,
