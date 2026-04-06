@@ -100,12 +100,21 @@ def _prefer_populated_sqlite_database(database_url: str) -> str:
     return database_url
 
 
+def _normalize_database_url(database_url: str) -> str:
+    normalized = str(database_url or "").strip()
+    if normalized.startswith("postgres://"):
+        return f"postgresql+psycopg://{normalized.removeprefix('postgres://')}"
+    if normalized.startswith("postgresql://") and "+psycopg" not in normalized:
+        return normalized.replace("postgresql://", "postgresql+psycopg://", 1)
+    return normalized
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> AppSettings:
     raw = _load_yaml(CONFIG_DIR / "settings.yaml")
     database_url = os.getenv("TRACKER_DATABASE_URL") or _streamlit_secret("TRACKER_DATABASE_URL")
     if database_url:
-        raw["database_url"] = database_url
+        raw["database_url"] = _normalize_database_url(database_url)
     congress_api_key = os.getenv("CONGRESS_API_KEY") or _streamlit_secret("CONGRESS_API_KEY")
     if congress_api_key:
         raw["congress_api_key"] = congress_api_key.removeprefix("API:").strip()
@@ -128,6 +137,7 @@ def get_settings() -> AppSettings:
     if google_sheet_primary_mode is not None:
         raw["google_sheet_primary_mode"] = google_sheet_primary_mode
     settings = AppSettings(**raw)
+    settings.database_url = _normalize_database_url(settings.database_url)
     if settings.database_url.startswith("sqlite:///") and not settings.database_url.startswith("sqlite:////"):
         sqlite_path = settings.database_url.removeprefix("sqlite:///")
         settings.database_url = f"sqlite:///{(BASE_DIR / sqlite_path).resolve().as_posix()}"
