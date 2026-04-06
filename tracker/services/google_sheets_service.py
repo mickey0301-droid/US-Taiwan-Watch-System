@@ -102,8 +102,17 @@ class GoogleSheetsService:
 
         service_account_file, service_account_json, _sheet_id = self._require_config()
         if service_account_json:
-            return Credentials.from_service_account_info(self._load_service_account_info(service_account_json), scopes=SCOPES)
-        return Credentials.from_service_account_file(service_account_file, scopes=SCOPES)
+            credentials = Credentials.from_service_account_info(
+                self._load_service_account_info(service_account_json),
+                scopes=SCOPES,
+            )
+        else:
+            credentials = Credentials.from_service_account_file(service_account_file, scopes=SCOPES)
+
+        # Prefer self-signed JWT access on cloud to avoid fragile token-exchange streams.
+        if hasattr(credentials, "with_always_use_jwt_access"):
+            credentials = credentials.with_always_use_jwt_access(True)
+        return credentials
 
     def _access_token(self) -> str:
         try:
@@ -115,7 +124,12 @@ class GoogleSheetsService:
 
         credentials = self._credentials()
         if not credentials.valid:
-            credentials.refresh(Request())
+            try:
+                credentials.refresh(Request())
+            except Exception as exc:
+                raise GoogleSheetsConfigurationError(
+                    f"Failed to obtain Google Sheets access token: {type(exc).__name__}: {exc}"
+                ) from exc
         if not credentials.token:
             raise GoogleSheetsConfigurationError("Unable to obtain Google Sheets access token.")
         return str(credentials.token)
