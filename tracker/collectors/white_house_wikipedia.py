@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
@@ -321,7 +321,7 @@ class WhiteHouseWikipediaCollector(BaseCollector):
             response.raise_for_status()
         except Exception:
             return None
-        return BeautifulSoup(response.text, "lxml")
+        return BeautifulSoup(response.text, "html.parser")
 
     def _fetch_person_page(self, person_url: str) -> dict[str, Any]:
         try:
@@ -338,7 +338,7 @@ class WhiteHouseWikipediaCollector(BaseCollector):
             response.raise_for_status()
         except Exception:
             return {}
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(response.text, "html.parser")
         portrait_url = None
         infobox = soup.select_one("table.infobox")
         if infobox:
@@ -349,3 +349,4 @@ class WhiteHouseWikipediaCollector(BaseCollector):
             "portrait_url": portrait_url,
             "social_profiles": discover_social_profiles(person_url, soup),
         }
+

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
@@ -691,7 +691,7 @@ class StateLegislaturesCollector(BaseCollector):
         return response.json()
 
     def _parse_azleg_roster(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         roster_text = " ".join(soup.get_text("\n", strip=True).split())
         if "Senate Members" not in roster_text and "House Members" not in roster_text:
             return []
@@ -802,7 +802,7 @@ class StateLegislaturesCollector(BaseCollector):
         return any(re.fullmatch(r"[A-Z][A-Za-z.\-']+", part) for part in parts)
 
     def _parse_ca_senate_roster(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         records: list[dict[str, Any]] = []
         for member in soup.select("div.page-members__member"):
             name_tag = member.select_one("h3.member__name")
@@ -822,7 +822,7 @@ class StateLegislaturesCollector(BaseCollector):
         return records
 
     def _parse_ca_assembly_roster(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         records: list[dict[str, Any]] = []
         for member in soup.select("li.members-list__member"):
             name_tag = member.select_one("h2.members-list__name")
@@ -842,7 +842,7 @@ class StateLegislaturesCollector(BaseCollector):
         return records
 
     def _parse_fl_senate_roster(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         records: list[dict[str, Any]] = []
         rows = soup.find_all("tr")
         for row in rows[1:]:
@@ -861,7 +861,7 @@ class StateLegislaturesCollector(BaseCollector):
         return records
 
     def _parse_co_legislators_table(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         table = soup.select_one("table.leg-data")
         if table is None:
             return []
@@ -890,7 +890,7 @@ class StateLegislaturesCollector(BaseCollector):
         return records
 
     def _parse_ia_legislators_table(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         table = soup.select_one("table#sortableTable")
         if table is None:
             return []
@@ -976,7 +976,7 @@ class StateLegislaturesCollector(BaseCollector):
         return records
 
     def _parse_nh_house_dropdown(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         select = soup.find("select", {"name": "ctl00$pageBody$ddlReps"})
         if select is None:
             return []
@@ -1003,7 +1003,7 @@ class StateLegislaturesCollector(BaseCollector):
             html = self._fetch_html(profile_url)
         except Exception:
             return None, None
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         heading = compact_whitespace(soup.find("h1").get_text(" ", strip=True)) if soup.find("h1") else ""
         subheading = compact_whitespace(soup.find("h3").get_text(" ", strip=True)) if soup.find("h3") else ""
         party = None
@@ -1017,7 +1017,7 @@ class StateLegislaturesCollector(BaseCollector):
         return district, party
 
     def _parse_tx_senate_roster(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         records: list[dict[str, Any]] = []
         seen: set[str] = set()
         for anchor in soup.select("a[href]"):
@@ -1036,7 +1036,7 @@ class StateLegislaturesCollector(BaseCollector):
         return records
 
     def _parse_tx_house_roster(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         records: list[dict[str, Any]] = []
         seen: set[str] = set()
         for anchor in soup.select("a[href]"):
@@ -1055,7 +1055,7 @@ class StateLegislaturesCollector(BaseCollector):
         return records
 
     def _parse_ny_senate_roster(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         records: list[dict[str, Any]] = []
         seen: set[str] = set()
         for anchor in soup.select("a[href]"):
@@ -1074,7 +1074,7 @@ class StateLegislaturesCollector(BaseCollector):
         return records
 
     def _parse_ny_assembly_roster(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         records: list[dict[str, Any]] = []
         seen: set[str] = set()
         for anchor in soup.select("a[href]"):
@@ -1093,7 +1093,7 @@ class StateLegislaturesCollector(BaseCollector):
         return records
 
     def _parse_me_senate_roster(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         records: list[dict[str, Any]] = []
         seen: set[str] = set()
         for anchor in soup.select("a[href]"):
@@ -1113,7 +1113,7 @@ class StateLegislaturesCollector(BaseCollector):
         return records
 
     def _parse_me_house_roster(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         records: list[dict[str, Any]] = []
         seen: set[str] = set()
         for anchor in soup.select("a[href]"):
@@ -1158,7 +1158,7 @@ class StateLegislaturesCollector(BaseCollector):
         return full_name, party, district
 
     def _parse_md_members_index(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         records: list[dict[str, Any]] = []
         seen: set[str] = set()
         for card in soup.select("div.member-index-cell"):
@@ -1209,7 +1209,7 @@ class StateLegislaturesCollector(BaseCollector):
         return records
 
     def _parse_va_house_members(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         records: list[dict[str, Any]] = []
         seen: set[str] = set()
         for anchor in soup.select("a[href^='/members/H']"):
@@ -1224,7 +1224,7 @@ class StateLegislaturesCollector(BaseCollector):
         return records
 
     def _parse_va_senate_members(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         records: list[dict[str, Any]] = []
         seen: set[str] = set()
         for anchor in soup.select("a[href*='memberpage.php?id=S']"):
@@ -1248,7 +1248,7 @@ class StateLegislaturesCollector(BaseCollector):
         return records
 
     def _parse_mn_house_members(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         records: list[dict[str, Any]] = []
         seen: set[str] = set()
         for media in soup.select("div.media.my-3"):
@@ -1302,7 +1302,7 @@ class StateLegislaturesCollector(BaseCollector):
         return records
 
     def _parse_sc_members_page(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         records: list[dict[str, Any]] = []
         seen: set[str] = set()
         chamber = source.get("chamber")
@@ -1324,7 +1324,7 @@ class StateLegislaturesCollector(BaseCollector):
         return records
 
     def _parse_ok_senate_members(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         records: list[dict[str, Any]] = []
         seen: set[str] = set()
         for anchor in soup.select("a[href^='/senators/']"):
@@ -1347,7 +1347,7 @@ class StateLegislaturesCollector(BaseCollector):
         return records
 
     def _parse_ok_house_members(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         next_data = soup.find("script", id="__NEXT_DATA__")
         if not next_data or not next_data.string:
             return []
@@ -1422,7 +1422,7 @@ class StateLegislaturesCollector(BaseCollector):
         return records
 
     def _parse_wv_roster_table(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         records: list[dict[str, Any]] = []
         seen: set[str] = set()
         chamber = source.get("chamber")
@@ -1450,7 +1450,7 @@ class StateLegislaturesCollector(BaseCollector):
         return records
 
     def _parse_ks_roster_table(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         records: list[dict[str, Any]] = []
         seen: set[str] = set()
         for row in soup.select("table tr"):
@@ -1465,7 +1465,7 @@ class StateLegislaturesCollector(BaseCollector):
             profile_url = urljoin(source["source_url"], link.get("href", ""))
             try:
                 detail_html = self._fetch_html_lenient(profile_url)
-                detail_soup = BeautifulSoup(detail_html, "lxml")
+                detail_soup = BeautifulSoup(detail_html, "html.parser")
                 title_text = compact_whitespace(detail_soup.title.get_text(" ", strip=True)) if detail_soup.title else ""
                 title_match = re.match(r"^(?:Senator|Representative)\s+(.+?)\s+\|", title_text)
                 if title_match:
@@ -1479,7 +1479,7 @@ class StateLegislaturesCollector(BaseCollector):
         return records
 
     def _parse_ar_senate_members(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         records: list[dict[str, Any]] = []
         seen_urls: set[str] = set()
         for link in soup.select("a[href*='senate.arkansas.gov/senators/']"):
@@ -1503,7 +1503,7 @@ class StateLegislaturesCollector(BaseCollector):
             party = None
             try:
                 detail_html = self._fetch_html_lenient(profile_url)
-                detail_text = compact_whitespace(BeautifulSoup(detail_html, "lxml").get_text(" ", strip=True))
+                detail_text = compact_whitespace(BeautifulSoup(detail_html, "html.parser").get_text(" ", strip=True))
                 party_match = re.search(r"Party:\s*(Republican|Democrat|Independent)\b", detail_text, re.I)
                 if party_match:
                     party = party_match.group(1).title()
@@ -1516,7 +1516,7 @@ class StateLegislaturesCollector(BaseCollector):
         return records
 
     def _parse_ar_house_members(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         records: list[dict[str, Any]] = []
         seen_urls: set[str] = set()
         for link in soup.select("a[href*='arkansashouse.org/district/']"):
@@ -1657,3 +1657,4 @@ class StateLegislaturesCollector(BaseCollector):
             family, given = [part.strip() for part in cleaned.split(",", 1)]
             cleaned = f"{given} {family}"
         return cleaned
+

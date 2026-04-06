@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 from datetime import datetime
@@ -27,7 +27,7 @@ class CSpanSearchCollector:
             headers=self.headers,
         )
         response.raise_for_status()
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(response.text, "html.parser")
         candidates: list[dict[str, Any]] = []
         seen_urls: set[str] = set()
 
@@ -188,7 +188,7 @@ class CSpanSearchCollector:
         except Exception:
             return None, None
 
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(response.text, "html.parser")
         summary = self._extract_detail_summary(soup)
         published_at = self._extract_detail_date(soup)
         return summary, published_at
@@ -253,3 +253,4 @@ class CSpanSearchCollector:
                     except ValueError:
                         continue
         return None
+

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
@@ -171,7 +171,7 @@ class ProfileEnrichmentService:
             },
         )
         response.raise_for_status()
-        return BeautifulSoup(response.text, "lxml")
+        return BeautifulSoup(response.text, "html.parser")
 
     def _extract_from_raw_payload(self, person: Person) -> tuple[dict[str, Any], dict[str, dict[str, str]]]:
         payload = person.raw_payload or {}
@@ -492,7 +492,7 @@ class ProfileEnrichmentService:
         text = compact_whitespace(value)
         if not text:
             return []
-        parts = re.split(r"\s*[;•]\s*|\s{2,}", text)
+        parts = re.split(r"\s*[;â€¢]\s*|\s{2,}", text)
         items = [compact_whitespace(part) for part in parts if compact_whitespace(part)]
         return items or [text]
 
@@ -611,3 +611,4 @@ class ProfileEnrichmentService:
         if target.office and target.office.office_name:
             return target.office.office_name
         return None
+

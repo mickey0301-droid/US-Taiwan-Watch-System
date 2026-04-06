@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
@@ -57,7 +57,7 @@ class CurrentFederalExecutiveAppointmentsWikipediaCollector(BaseCollector):
         return response.text
 
     def parse(self, payload: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(payload, "lxml")
+        soup = BeautifulSoup(payload, "html.parser")
         content = soup.select_one("#mw-content-text .mw-parser-output") or soup
         parsed: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
@@ -251,3 +251,4 @@ class CurrentFederalExecutiveAppointmentsWikipediaCollector(BaseCollector):
 
     def _heading_text(self, heading: Tag) -> str:
         return " ".join(heading.get_text(" ", strip=True).split()).replace("[edit]", "").strip()
+

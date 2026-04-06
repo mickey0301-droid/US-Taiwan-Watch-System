@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -155,7 +155,7 @@ class WikipediaListService:
             response.raise_for_status()
         except Exception:
             return None
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(response.text, "html.parser")
         meta = soup.find("meta", attrs={"property": "og:image"})
         if meta and meta.get("content"):
             return meta["content"].strip()
@@ -179,11 +179,11 @@ class WikipediaListService:
             response.raise_for_status()
         except Exception:
             return {}
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(response.text, "html.parser")
         return discover_social_profiles(person_url, soup)
 
     def _extract_people(self, base_url: str, html: str) -> list[tuple[str, str]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         content = soup.select_one("#mw-content-text") or soup
         seen: set[str] = set()
         results: list[tuple[str, str]] = []
@@ -212,3 +212,4 @@ class WikipediaListService:
     def _build_google_news_rss(self, full_name: str) -> str:
         query = quote(f'"{full_name}" Taiwan')
         return f"https://news.google.com/rss/search?q={query}"
+

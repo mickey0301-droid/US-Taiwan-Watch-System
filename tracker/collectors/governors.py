@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 from datetime import datetime
@@ -47,7 +47,7 @@ class GovernorsCollector(BaseCollector):
         return response.text
 
     def parse(self, payload: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(payload, "lxml")
+        soup = BeautifulSoup(payload, "html.parser")
         parsed: list[dict[str, Any]] = []
         heading = soup.find(lambda tag: tag.name in {"h2", "h3"} and "Current Governors" in tag.get_text(" ", strip=True))
         if not heading:
@@ -164,3 +164,4 @@ class GovernorsCollector(BaseCollector):
                     "validation_count": len(validation_log),
                 }
         return result
+

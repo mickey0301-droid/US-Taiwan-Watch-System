@@ -373,10 +373,13 @@ Last updated: 2026-04-06
     - `Error installing requirements`
 - Cause:
   - `requirements.txt` pinned `gspread==6.1.2`, which was not available in the install environment.
+  - `requirements.txt` also pinned `lxml==5.3.0`, and Streamlit Cloud tried to build it from source under Python 3.14 without the required `libxml2/libxslt` development packages.
 - Resolution:
   - Updated the dependency to:
     - `gspread==6.2.1`
   - Verified that `gspread==6.2.1` installs successfully.
+  - Removed the explicit `lxml` dependency from `requirements.txt`.
+  - Replaced BeautifulSoup parser selections from `lxml` to Python's built-in `html.parser` so deployment does not depend on C-extension build tooling.
 
 ## 5. Recommended next logging practice
 

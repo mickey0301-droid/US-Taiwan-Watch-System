@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
@@ -261,7 +261,7 @@ class FederalDepartmentUnitsWikipediaCollector(BaseCollector):
             response.raise_for_status()
         except Exception:
             return None
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(response.text, "html.parser")
         infobox = soup.select_one("table.infobox")
         if not infobox:
             return None
@@ -289,7 +289,7 @@ class FederalDepartmentUnitsWikipediaCollector(BaseCollector):
                 continue
             person_anchor = self._pick_person_anchor(value_cell)
             if person_anchor:
-                role_title = " ".join(value_cell.get_text(" ", strip=True).split()).replace(person_anchor.get_text(" ", strip=True), "", 1).strip(" ,;–-")
+                role_title = " ".join(value_cell.get_text(" ", strip=True).split()).replace(person_anchor.get_text(" ", strip=True), "", 1).strip(" ,;â€“-")
                 break
 
         if not person_anchor:
@@ -317,7 +317,7 @@ class FederalDepartmentUnitsWikipediaCollector(BaseCollector):
                 },
             )
             person_response.raise_for_status()
-            person_soup = BeautifulSoup(person_response.text, "lxml")
+            person_soup = BeautifulSoup(person_response.text, "html.parser")
             social_profiles = discover_social_profiles(person_url, person_soup)
         except Exception:
             social_profiles = {}
@@ -351,3 +351,4 @@ class FederalDepartmentUnitsWikipediaCollector(BaseCollector):
         if lower.startswith(GENERIC_NON_PERSON_PREFIXES):
             return False
         return True
+

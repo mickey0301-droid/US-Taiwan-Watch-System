@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
@@ -47,7 +47,7 @@ class FormerFederalExecutiveCollector(BaseCollector):
         return response.text
 
     def parse(self, payload: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(payload, "lxml")
+        soup = BeautifulSoup(payload, "html.parser")
         parsed: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
         for card in soup.select(".persongrid__item, .persongrid__item__inner"):
@@ -170,3 +170,4 @@ class FormerFederalExecutiveCollector(BaseCollector):
                     "validation_count": len(validation_log),
                 }
         return result
+

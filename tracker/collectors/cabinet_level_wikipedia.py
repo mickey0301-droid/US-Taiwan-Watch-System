@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
@@ -113,11 +113,11 @@ CABINET_LEVEL_WIKIPEDIA_PAGES = [
         "default_role_title": "Administrator of the National Aeronautics and Space Administration",
     },
     {
-        "department_name": "Export–Import Bank of the United States",
+        "department_name": "Exportâ€“Import Bank of the United States",
         "subdepartment_name": "President",
-        "unit_name": "Export–Import Bank of the United States",
+        "unit_name": "Exportâ€“Import Bank of the United States",
         "url": "https://en.wikipedia.org/wiki/Export%E2%80%93Import_Bank_of_the_United_States",
-        "default_role_title": "President of the Export–Import Bank of the United States",
+        "default_role_title": "President of the Exportâ€“Import Bank of the United States",
     },
     {
         "department_name": "Federal Communications Commission",
@@ -315,7 +315,7 @@ class CabinetLevelWikipediaCollector(BaseCollector):
             response.raise_for_status()
         except Exception:
             return None
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(response.text, "html.parser")
         infobox = soup.select_one("table.infobox")
         if not infobox:
             return None
@@ -336,7 +336,7 @@ class CabinetLevelWikipediaCollector(BaseCollector):
                     person_anchor = anchor
                     break
             if person_anchor:
-                role_title = " ".join(value_cell.get_text(" ", strip=True).split()).replace(person_anchor.get_text(" ", strip=True), "", 1).strip(" ,;–-")
+                role_title = " ".join(value_cell.get_text(" ", strip=True).split()).replace(person_anchor.get_text(" ", strip=True), "", 1).strip(" ,;â€“-")
                 break
 
         if not person_anchor:
@@ -362,7 +362,7 @@ class CabinetLevelWikipediaCollector(BaseCollector):
                 },
             )
             person_response.raise_for_status()
-            person_soup = BeautifulSoup(person_response.text, "lxml")
+            person_soup = BeautifulSoup(person_response.text, "html.parser")
             social_profiles = discover_social_profiles(person_url, person_soup)
         except Exception:
             social_profiles = {}
@@ -374,3 +374,4 @@ class CabinetLevelWikipediaCollector(BaseCollector):
             "role_title": role_title,
             "social_profiles": social_profiles,
         }
+

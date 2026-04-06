@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -129,7 +129,7 @@ class SocialProfileBackfillService:
             headers=DEFAULT_HEADERS,
         )
         response.raise_for_status()
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(response.text, "html.parser")
         discovered = discover_social_profiles(str(response.url), soup)
         if discovered.get("x"):
             return discovered
@@ -146,7 +146,7 @@ class SocialProfileBackfillService:
                 follow_response.raise_for_status()
             except Exception:
                 continue
-            follow_soup = BeautifulSoup(follow_response.text, "lxml")
+            follow_soup = BeautifulSoup(follow_response.text, "html.parser")
             nested = discover_social_profiles(str(follow_response.url), follow_soup)
             if nested:
                 discovered.update(nested)
@@ -207,3 +207,4 @@ class SocialProfileBackfillService:
             if other_profiles.get("x") == url:
                 return False
         return True
+

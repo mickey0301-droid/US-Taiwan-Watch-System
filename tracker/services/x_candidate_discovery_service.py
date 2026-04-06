@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -125,7 +125,7 @@ class XCandidateDiscoveryService:
         response.raise_for_status()
         if response.status_code == 202:
             return []
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(response.text, "html.parser")
         candidates: list[dict[str, str]] = []
         seen_urls: set[str] = set()
 
@@ -276,3 +276,4 @@ class XCandidateDiscoveryService:
             "verification_hint": "true",
         }
         return [confirmed, *candidates]
+

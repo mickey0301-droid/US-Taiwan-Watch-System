@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
@@ -62,7 +62,7 @@ class CurrentFederalExecutiveWikipediaCollector(BaseCollector):
         return response.text
 
     def parse(self, payload: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(payload, "lxml")
+        soup = BeautifulSoup(payload, "html.parser")
         content = soup.select_one("#mw-content-text .mw-parser-output") or soup
         parsed: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
@@ -266,5 +266,6 @@ class CurrentFederalExecutiveWikipediaCollector(BaseCollector):
             response.raise_for_status()
         except Exception:
             return {}
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(response.text, "html.parser")
         return discover_social_profiles(person_url, soup)
+

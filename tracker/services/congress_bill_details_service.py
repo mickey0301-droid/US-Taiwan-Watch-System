@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
@@ -309,7 +309,7 @@ class CongressBillDetailsService:
             },
         )
         response.raise_for_status()
-        return BeautifulSoup(response.text, "lxml")
+        return BeautifulSoup(response.text, "html.parser")
 
     def _parse_overview(self, soup: BeautifulSoup, url: str) -> dict[str, Any]:
         text = self._normalized_text(soup)
@@ -336,7 +336,7 @@ class CongressBillDetailsService:
         latest_action_text = self._extract_first_group(text, r"Latest Action:\s*(\d{2}/\d{2}/\d{4})\s+(.+?)\s+Tracker:", group=2)
         status_text = self._extract_first_group(text, r"This bill has the status\s+(.+?)\s+Here are the steps for Status of Legislation:")
         committees_text = self._extract_first_group(text, r"Committees:\s*(.+?)\s+Committee Meetings:")
-        policy_area = self._extract_first_group(text, r"Subject\s+[—-]\s+Policy Area:\s*(.+?)\s+View subjects")
+        policy_area = self._extract_first_group(text, r"Subject\s+[â€”-]\s+Policy Area:\s*(.+?)\s+View subjects")
         summary = self._extract_first_group(
             text,
             r"Shown Here:\s+.+?\s+(.+?)(?:\s+# Image: Congress\.gov|\s+Site Content)",
@@ -587,3 +587,4 @@ class CongressBillDetailsService:
                 if (item or {}).get("url"):
                     return item.get("url")
         return None
+

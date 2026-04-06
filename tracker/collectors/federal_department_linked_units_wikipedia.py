@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 from urllib.parse import urljoin
@@ -81,7 +81,7 @@ class FederalDepartmentLinkedUnitsWikipediaCollector(FederalDepartmentUnitsWikip
                 logger.exception("Failed to fetch department page for linked-unit discovery: %s", page_url)
                 continue
 
-            soup = BeautifulSoup(response.text, "lxml")
+            soup = BeautifulSoup(response.text, "html.parser")
             content = soup.select_one("#mw-content-text .mw-parser-output") or soup
             anchors = content.select("a[href^='/wiki/']")
             for anchor in anchors:
@@ -114,3 +114,4 @@ class FederalDepartmentLinkedUnitsWikipediaCollector(FederalDepartmentUnitsWikip
                 seen_urls.add(full_url)
 
         return discovered
+

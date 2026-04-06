@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -152,7 +152,7 @@ class WikipediaPredecessorService:
             },
         )
         response.raise_for_status()
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(response.text, "html.parser")
         infobox = soup.select_one(".infobox")
         if not infobox:
             return []
@@ -244,7 +244,7 @@ class WikipediaPredecessorService:
             response.raise_for_status()
         except Exception:
             return None
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(response.text, "html.parser")
         meta = soup.find("meta", attrs={"property": "og:image"})
         if meta and meta.get("content"):
             return meta["content"].strip()
@@ -253,3 +253,4 @@ class WikipediaPredecessorService:
             src = image["src"].strip()
             return f"https:{src}" if src.startswith("//") else urljoin(wikipedia_url, src)
         return None
+

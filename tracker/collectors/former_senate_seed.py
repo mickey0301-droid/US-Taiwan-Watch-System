@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
@@ -50,7 +50,7 @@ class FormerSenateSeedCollector(BaseCollector):
         return response.text
 
     def parse(self, payload: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(payload, "lxml")
+        soup = BeautifulSoup(payload, "html.parser")
         parsed: list[dict[str, Any]] = []
         for table in soup.select("table.wikitable"):
             headers = [th.get_text(" ", strip=True) for th in table.select("tr th")]
@@ -189,3 +189,4 @@ class FormerSenateSeedCollector(BaseCollector):
                     "validation_count": len(validation_log),
                 }
         return result
+

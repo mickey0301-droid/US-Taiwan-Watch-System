@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
@@ -56,7 +56,7 @@ class FederalSubcabinetCollector(BaseCollector):
         seen: set[tuple[str, str]] = set()
         for item in payload:
             source = item["source"]
-            soup = BeautifulSoup(item["html"], "lxml")
+            soup = BeautifulSoup(item["html"], "html.parser")
             if source["parser_type"] == "officials_table":
                 parsed.extend(self._parse_officials_table(source, soup, seen))
             elif source["parser_type"] == "person_cards":
@@ -224,3 +224,4 @@ class FederalSubcabinetCollector(BaseCollector):
                     "validation_count": len(validation_log),
                 }
         return result
+

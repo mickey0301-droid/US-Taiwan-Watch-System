@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
@@ -57,7 +57,7 @@ class _BaseStateDepartmentWikipediaCollector(BaseCollector):
         return response.text
 
     def parse(self, payload: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(payload, "lxml")
+        soup = BeautifulSoup(payload, "html.parser")
         content = soup.select_one("#mw-content-text .mw-parser-output") or soup
         parsed: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
@@ -252,7 +252,7 @@ class _BaseStateDepartmentWikipediaCollector(BaseCollector):
             response.raise_for_status()
         except Exception:
             return {}
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(response.text, "html.parser")
         portrait_url = None
         infobox = soup.select_one("table.infobox")
         if infobox:
@@ -493,7 +493,7 @@ class StateDepartmentOrganizationWikipediaCollector(BaseCollector):
             response.raise_for_status()
         except Exception:
             return None
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(response.text, "html.parser")
         infobox = soup.select_one("table.infobox")
         if not infobox:
             return None
@@ -515,7 +515,7 @@ class StateDepartmentOrganizationWikipediaCollector(BaseCollector):
                 if first_link:
                     person_anchor = first_link
                     siblings_text = " ".join(value_cell.get_text(" ", strip=True).split())
-                    role_title = siblings_text.replace(first_link.get_text(" ", strip=True), "", 1).strip(" ,;–-")
+                    role_title = siblings_text.replace(first_link.get_text(" ", strip=True), "", 1).strip(" ,;â€“-")
                     break
 
         if not person_anchor:
@@ -541,7 +541,7 @@ class StateDepartmentOrganizationWikipediaCollector(BaseCollector):
                 },
             )
             person_response.raise_for_status()
-            person_soup = BeautifulSoup(person_response.text, "lxml")
+            person_soup = BeautifulSoup(person_response.text, "html.parser")
             social_profiles = discover_social_profiles(person_url, person_soup)
         except Exception:
             social_profiles = {}
@@ -553,3 +553,4 @@ class StateDepartmentOrganizationWikipediaCollector(BaseCollector):
             "role_title": role_title,
             "social_profiles": social_profiles,
         }
+

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
 
@@ -119,7 +119,7 @@ class PortraitBackfillService:
             headers=DEFAULT_HEADERS,
         )
         response.raise_for_status()
-        return BeautifulSoup(response.text, "lxml")
+        return BeautifulSoup(response.text, "html.parser")
 
     def _discover_portrait_from_page(self, url: str) -> str | None:
         try:
@@ -173,3 +173,4 @@ class PortraitBackfillService:
         if image and image.get("src"):
             return absolute_url(url, image["src"].strip())
         return None
+

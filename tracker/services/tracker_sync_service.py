@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -337,8 +337,8 @@ class TrackerSyncService:
             "u.s.", "us ", "american", "federal", "senator", "representative", "congressman", "congresswoman",
             "secretary", "under secretary", "assistant secretary", "governor", "mayor", "ait",
             "state department", "white house", "president trump", "vice president vance",
-            "美國", "美方", "聯邦", "參議員", "眾議員", "議員", "官員", "國務卿", "部長", "次卿", "助卿",
-            "白宮", "美國在台協會", "處長", "總統川普", "副總統范斯",
+            "ç¾Žåœ‹", "ç¾Žæ–¹", "è¯é‚¦", "åƒè­°å“¡", "çœ¾è­°å“¡", "è­°å“¡", "å®˜å“¡", "åœ‹å‹™å¿", "éƒ¨é•·", "æ¬¡å¿", "åŠ©å¿",
+            "ç™½å®®", "ç¾Žåœ‹åœ¨å°å”æœƒ", "è™•é•·", "ç¸½çµ±å·æ™®", "å‰¯ç¸½çµ±èŒƒæ–¯",
         ]
         haystack = text.casefold()
         names = [english_name]
@@ -438,7 +438,7 @@ class TrackerSyncService:
             response.raise_for_status()
         except Exception:
             return
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(response.text, "html.parser")
         portrait_url = self._discover_portrait_url(target.target_url, soup)
         bio = self._discover_short_bio(soup)
         social_profiles = discover_social_profiles(target.target_url, soup)
@@ -508,7 +508,7 @@ class TrackerSyncService:
             headers=self.http_headers,
         )
         response.raise_for_status()
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(response.text, "html.parser")
         title = compact_whitespace(soup.title.get_text(" ", strip=True) if soup.title else target.target_name or target.target_url)
         page_text = compact_whitespace(soup.get_text(" ", strip=True))
         target_year = self._target_year(target)
@@ -580,7 +580,7 @@ class TrackerSyncService:
                 child.raise_for_status()
             except Exception:
                 continue
-            child_soup = BeautifulSoup(child.text, "lxml")
+            child_soup = BeautifulSoup(child.text, "html.parser")
             child_title = compact_whitespace(child_soup.title.get_text(" ", strip=True) if child_soup.title else anchor_text or absolute)
             child_text = compact_whitespace(child_soup.get_text(" ", strip=True))
             child_date = self._extract_page_date(child_soup)
@@ -630,7 +630,7 @@ class TrackerSyncService:
         if response.status_code == 202:
             return self._fetch_html_candidates(tracker, target)
 
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(response.text, "html.parser")
         candidates: list[dict[str, Any]] = []
         seen_urls: set[str] = set()
         for result in soup.select(".result")[:8]:
@@ -743,3 +743,4 @@ class TrackerSyncService:
             if parsed:
                 return parsed
         return None
+

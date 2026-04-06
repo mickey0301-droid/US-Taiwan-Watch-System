@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
@@ -179,7 +179,7 @@ class StateExecutiveWikipediaCollector(BaseCollector):
         return response.text
 
     def _parse_page(self, page_url: str, html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         records: list[dict[str, Any]] = []
         for heading in soup.find_all(["h2", "h3"]):
             state_name = self._extract_state_name(heading)
@@ -394,7 +394,7 @@ class StateExecutiveWikipediaCollector(BaseCollector):
             html = self._fetch_html(url)
         except Exception:
             return {"portrait_url": None, "social_profiles": {}}
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         infobox = soup.select_one("table.infobox")
         portrait_url = None
         if infobox:
@@ -407,3 +407,4 @@ class StateExecutiveWikipediaCollector(BaseCollector):
         except Exception:
             social_profiles = {}
         return {"portrait_url": portrait_url, "social_profiles": social_profiles}
+

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
@@ -48,7 +48,7 @@ class SenateSeedCollector(BaseCollector):
         return response.text
 
     def parse(self, payload: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(payload, "lxml")
+        soup = BeautifulSoup(payload, "html.parser")
         table = None
         for candidate in soup.select("table.wikitable"):
             headers = [th.get_text(" ", strip=True) for th in candidate.select("tr th")]
@@ -198,3 +198,4 @@ class SenateSeedCollector(BaseCollector):
                     "validation_count": len(validation_log),
                 }
         return result
+

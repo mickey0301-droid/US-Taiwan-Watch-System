@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
@@ -187,7 +187,7 @@ class StateExecutiveOfficialPagesCollector(BaseCollector):
         return []
 
     def _parse_mass_key_contacts(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         records: list[dict[str, Any]] = []
         table = soup.find("table")
         if table:
@@ -226,7 +226,7 @@ class StateExecutiveOfficialPagesCollector(BaseCollector):
         return results
 
     def _parse_mass_single_official(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         heading = soup.find(["h1", "h2"])
         text = compact_whitespace(soup.get_text("\n", strip=True))
         role_title = source.get("role_title") or compact_whitespace((heading.get_text(" ", strip=True) if heading else "Secretary"))
@@ -246,7 +246,7 @@ class StateExecutiveOfficialPagesCollector(BaseCollector):
         return [self._build_record(source, name, role_title, source["source_url"])]
 
     def _parse_ca_governor_cabinet_cards(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         results: list[dict[str, Any]] = []
         for item in soup.select("ul.cards li"):
             heading = item.find("h2")
@@ -286,7 +286,7 @@ class StateExecutiveOfficialPagesCollector(BaseCollector):
         return results
 
     def _parse_flgov_leadership_people_links(self, source: dict[str, Any], html: str) -> list[dict[str, Any]]:
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         results: list[dict[str, Any]] = []
         seen: set[str] = set()
         for anchor in soup.find_all("a", href=True):
@@ -388,3 +388,4 @@ class StateExecutiveOfficialPagesCollector(BaseCollector):
                 "commissioner",
             ]
         )
+

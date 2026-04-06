@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
@@ -163,7 +163,7 @@ class JusticeDepartmentWikipediaCollector(BaseCollector):
             response.raise_for_status()
         except Exception:
             return []
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(response.text, "html.parser")
         parsed: list[dict[str, Any]] = []
         for header in soup.select("#mw-content-text .mw-parser-output h3"):
             header_text = " ".join(header.get_text(" ", strip=True).split()).replace("[edit]", "").strip()
@@ -209,12 +209,12 @@ class JusticeDepartmentWikipediaCollector(BaseCollector):
             for index, header in enumerate(normalized_headers):
                 if "left office" in header:
                     value = row_texts[index] if index < len(row_texts) else ""
-                    return value in {"", "—", "-", "Incumbent", "incumbent"}
+                    return value in {"", "â€”", "-", "Incumbent", "incumbent"}
         if any("term ended" in header for header in normalized_headers):
             for index, header in enumerate(normalized_headers):
                 if "term ended" in header:
                     value = row_texts[index] if index < len(row_texts) else ""
-                    return value in {"", "—", "-", "Incumbent", "incumbent"}
+                    return value in {"", "â€”", "-", "Incumbent", "incumbent"}
         if any("years of service" in header for header in normalized_headers):
             for index, header in enumerate(normalized_headers):
                 if "years of service" in header:
@@ -327,7 +327,7 @@ class JusticeDepartmentWikipediaCollector(BaseCollector):
             response.raise_for_status()
         except Exception:
             return None
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(response.text, "html.parser")
         infobox = soup.select_one("table.infobox")
         if not infobox:
             return None
@@ -348,7 +348,7 @@ class JusticeDepartmentWikipediaCollector(BaseCollector):
                     person_anchor = anchor
                     break
             if person_anchor:
-                role_title = " ".join(value_cell.get_text(" ", strip=True).split()).replace(person_anchor.get_text(" ", strip=True), "", 1).strip(" ,;–-")
+                role_title = " ".join(value_cell.get_text(" ", strip=True).split()).replace(person_anchor.get_text(" ", strip=True), "", 1).strip(" ,;â€“-")
                 break
 
         if not person_anchor:
@@ -376,7 +376,7 @@ class JusticeDepartmentWikipediaCollector(BaseCollector):
             response.raise_for_status()
         except Exception:
             return {}
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(response.text, "html.parser")
         portrait_url = None
         infobox = soup.select_one("table.infobox")
         if infobox:
@@ -387,3 +387,4 @@ class JusticeDepartmentWikipediaCollector(BaseCollector):
             "portrait_url": portrait_url,
             "social_profiles": discover_social_profiles(person_url, soup),
         }
+

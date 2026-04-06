@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
@@ -213,7 +213,7 @@ class FederalDepartmentMainWikipediaCollector(BaseCollector):
                 encoding="utf-8",
             )
 
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = BeautifulSoup(response.text, "html.parser")
         infobox = soup.select_one("table.infobox")
         if not infobox:
             return None
@@ -235,7 +235,7 @@ class FederalDepartmentMainWikipediaCollector(BaseCollector):
                     break
             if person_anchor:
                 text = " ".join(value_cell.get_text(" ", strip=True).split())
-                role_title = text.replace(person_anchor.get_text(" ", strip=True), "", 1).strip(" ,;–-")
+                role_title = text.replace(person_anchor.get_text(" ", strip=True), "", 1).strip(" ,;â€“-")
                 break
 
         if not person_anchor:
@@ -261,7 +261,7 @@ class FederalDepartmentMainWikipediaCollector(BaseCollector):
                 },
             )
             person_response.raise_for_status()
-            person_soup = BeautifulSoup(person_response.text, "lxml")
+            person_soup = BeautifulSoup(person_response.text, "html.parser")
             social_profiles = discover_social_profiles(person_url, person_soup)
         except Exception:
             social_profiles = {}
@@ -288,3 +288,4 @@ class FederalDepartmentMainWikipediaCollector(BaseCollector):
         if department_name.startswith("Department of "):
             return f"Secretary of {department_name.replace('Department of ', '')}"
         return department_name
+
