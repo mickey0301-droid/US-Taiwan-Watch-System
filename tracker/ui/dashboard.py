@@ -61,7 +61,20 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 }
             )
 
-    if total_officials == 0 and total_statements == 0 and _render_google_sheet_fallback(lang, labels):
+    if total_officials == 0 and total_statements == 0:
+        if _render_google_sheet_fallback(lang, labels):
+            return
+        _render_metrics(labels, total_officials, total_trackers, total_statements, total_sync_runs, total_alerts)
+        st.warning(
+            "The current app instance is connected to an empty database, and Google Sheet fallback is not available."
+            if lang != "zh-TW"
+            else "目前這個 app 讀到的是空資料庫，而且 Google Sheet fallback 也還沒有成功接上，所以首頁會先顯示 0。"
+        )
+        st.info(
+            "Check whether this is the cloud app, and confirm GOOGLE_SHEET_ID / GOOGLE_SERVICE_ACCOUNT_JSON are configured."
+            if lang != "zh-TW"
+            else "如果這是雲端版，請確認已設定 GOOGLE_SHEET_ID 與 GOOGLE_SERVICE_ACCOUNT_JSON；如果這是本機版，請確認目前 app 指向的是正確的 tracker.db。"
+        )
         return
 
     _render_metrics(labels, total_officials, total_trackers, total_statements, total_sync_runs, total_alerts)
@@ -114,12 +127,12 @@ def _render_metrics(
 
 
 def _render_events_section(recent_events: list[dict[str, object]], lang: str) -> None:
-    section_title = "æœ€æ–°ä¸‰å€‹äº‹ä»¶" if lang == "zh-TW" else "Latest three events"
-    time_label = "æ™‚é–“" if lang == "zh-TW" else "Time"
-    description_label = "äº‹ä»¶æè¿°" if lang == "zh-TW" else "Description"
-    participants_label = "åƒèˆ‡äºº" if lang == "zh-TW" else "Participants"
-    quoted_sources_label = "å¼•è¿°ä¾†æº" if lang == "zh-TW" else "Quoted sources"
-    no_events_label = "ç›®å‰é‚„æ²’æœ‰å¯é¡¯ç¤ºçš„å°ç£ç›¸é—œäº‹ä»¶ã€‚" if lang == "zh-TW" else "No Taiwan-related events are available yet."
+    section_title = "最新三則事件" if lang == "zh-TW" else "Latest three events"
+    time_label = "時間" if lang == "zh-TW" else "Time"
+    description_label = "事件描述" if lang == "zh-TW" else "Description"
+    participants_label = "參與人" if lang == "zh-TW" else "Participants"
+    quoted_sources_label = "引述來源" if lang == "zh-TW" else "Quoted sources"
+    no_events_label = "目前還沒有可顯示的台灣相關事件。" if lang == "zh-TW" else "No Taiwan-related events are available yet."
 
     st.subheader(section_title)
     if not recent_events:
@@ -129,21 +142,21 @@ def _render_events_section(recent_events: list[dict[str, object]], lang: str) ->
     for index, event in enumerate(recent_events, start=1):
         with st.container(border=True):
             st.markdown(f"**{index}. {_translate_event_text(str(event['title']), lang)}**")
-            st.markdown(f"`{time_label}`ï¼š{_format_event_time(event.get('event_time'), lang)}")
-            st.markdown(f"`{description_label}`ï¼š{_translate_event_text(str(event['description']), lang)}")
-            st.markdown(f"`{participants_label}`ï¼š")
+            st.markdown(f"`{time_label}`：{_format_event_time(event.get('event_time'), lang)}")
+            st.markdown(f"`{description_label}`：{_translate_event_text(str(event['description']), lang)}")
+            st.markdown(f"`{participants_label}`：")
             render_person_links(list(event["participants"]), lang, key_prefix=f"dashboard-event-{index}")
             sources = event.get("sources") or []
             formatted_sources = _format_event_sources(sources, lang)
             if formatted_sources:
-                st.markdown(f"`{quoted_sources_label}`ï¼š{formatted_sources}")
+                st.markdown(f"`{quoted_sources_label}`：{formatted_sources}")
             elif event.get("representative_source_url"):
-                st.markdown(f"`{quoted_sources_label}`ï¼š[link]({event['representative_source_url']})")
+                st.markdown(f"`{quoted_sources_label}`：[link]({event['representative_source_url']})")
 
 
 def _format_event_time(value: datetime | date | None, lang: str) -> str:
     if value is None:
-        return "æœªæä¾›" if lang == "zh-TW" else "Not available"
+        return "未提供" if lang == "zh-TW" else "Not available"
     return value.strftime("%Y-%m-%d")
 
 
@@ -174,40 +187,40 @@ def _participants_from_sheet(event: dict[str, object]) -> list[dict[str, object]
 
 def _translate_event_text(text: str | None, lang: str) -> str:
     if not text:
-        return "æœªæä¾›" if lang == "zh-TW" else "Not available"
+        return "未提供" if lang == "zh-TW" else "Not available"
     if lang != "zh-TW":
         return text
 
     translated = text
     replacements = [
-        ("Sens.", "åƒè­°å“¡"),
-        ("Sen.", "åƒè­°å“¡"),
-        ("Rep.", "çœ¾è­°å“¡"),
-        ("Representatives", "çœ¾è­°å“¡"),
-        ("Representative", "çœ¾è­°å“¡"),
-        ("Senators", "åƒè­°å“¡"),
-        ("Senator", "åƒè­°å“¡"),
-        ("lead bipartisan", "é ˜éŠœæå‡ºè·¨é»¨æ´¾"),
-        ("Lead Bipartisan", "é ˜éŠœæå‡ºè·¨é»¨æ´¾"),
-        ("Bipartisan", "è·¨é»¨æ´¾"),
-        ("Bill", "æ³•æ¡ˆ"),
-        ("Resolution", "æ±ºè­°æ¡ˆ"),
-        ("Statement", "è²æ˜Ž"),
-        ("Letter", "è¯åå‡½"),
-        ("Introduce", "æå‡º"),
-        ("Introduced", "æå‡º"),
-        ("Commemorating", "ç´€å¿µ"),
-        ("Anniversary", "é€±å¹´"),
-        ("first presidential elections", "é¦–æ¬¡ç¸½çµ±ç›´é¸"),
-        ("First Presidential Elections", "é¦–æ¬¡ç¸½çµ±ç›´é¸"),
-        ("drone cooperation", "ç„¡äººæ©Ÿåˆä½œ"),
-        ("special defense budget", "ç‰¹åˆ¥åœ‹é˜²é ç®—"),
-        ("partnership with the United States", "èˆ‡ç¾Žåœ‹çš„å¤¥ä¼´é—œä¿‚"),
-        ("boost defense spending", "æé«˜åœ‹é˜²æ”¯å‡º"),
-        ("deter Communist China", "åš‡é˜»ä¸­å…±"),
-        ("Taiwan", "å°ç£"),
-        ("U.S.", "ç¾Žåœ‹"),
-        ("United States", "ç¾Žåœ‹"),
+        ("Sens.", "參議員"),
+        ("Sen.", "參議員"),
+        ("Rep.", "眾議員"),
+        ("Representatives", "眾議員"),
+        ("Representative", "眾議員"),
+        ("Senators", "參議員"),
+        ("Senator", "參議員"),
+        ("lead bipartisan", "領銜提出跨黨派"),
+        ("Lead Bipartisan", "領銜提出跨黨派"),
+        ("Bipartisan", "跨黨派"),
+        ("Bill", "法案"),
+        ("Resolution", "決議案"),
+        ("Statement", "聲明"),
+        ("Letter", "聯名函"),
+        ("Introduce", "提出"),
+        ("Introduced", "提出"),
+        ("Commemorating", "紀念"),
+        ("Anniversary", "週年"),
+        ("first presidential elections", "首次總統直選"),
+        ("First Presidential Elections", "首次總統直選"),
+        ("drone cooperation", "無人機合作"),
+        ("special defense budget", "特別國防預算"),
+        ("partnership with the United States", "與美國的夥伴關係"),
+        ("boost defense spending", "提高國防支出"),
+        ("deter Communist China", "嚇阻中共"),
+        ("Taiwan", "台灣"),
+        ("U.S.", "美國"),
+        ("United States", "美國"),
     ]
     for source, target in replacements:
         translated = translated.replace(source, target)

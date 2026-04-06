@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -58,6 +59,39 @@ def _streamlit_secret(name: str) -> str | None:
     return str(value) if value not in (None, "") else None
 
 
+def _sqlite_data_score(path: Path) -> int:
+    if not path.exists() or path.is_dir():
+        return -1
+    try:
+        with sqlite3.connect(path) as connection:
+            table_names = {
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            score = 0
+            for table_name in ("persons", "statements", "legislation", "trackers"):
+                if table_name not in table_names:
+                    continue
+                row = connection.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
+                score += int(row[0] or 0) if row else 0
+            return score
+    except sqlite3.Error:
+        return -1
+
+
+def _prefer_populated_sqlite_database(database_url: str) -> str:
+    if not database_url.startswith("sqlite:///"):
+        return database_url
+
+    configured_path = Path(database_url.removeprefix("sqlite:///")).resolve()
+    bundled_path = (BASE_DIR / "data" / "tracker.db").resolve()
+    configured_score = _sqlite_data_score(configured_path)
+    bundled_score = _sqlite_data_score(bundled_path)
+    if bundled_path != configured_path and bundled_score > configured_score:
+        return f"sqlite:///{bundled_path.as_posix()}"
+    return database_url
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> AppSettings:
     raw = _load_yaml(CONFIG_DIR / "settings.yaml")
@@ -86,6 +120,7 @@ def get_settings() -> AppSettings:
     if settings.database_url.startswith("sqlite:///") and not settings.database_url.startswith("sqlite:////"):
         sqlite_path = settings.database_url.removeprefix("sqlite:///")
         settings.database_url = f"sqlite:///{(BASE_DIR / sqlite_path).resolve().as_posix()}"
+    settings.database_url = _prefer_populated_sqlite_database(settings.database_url)
     for field_name in ("raw_data_dir", "processed_data_dir", "snapshots_dir"):
         value = getattr(settings, field_name)
         path = Path(value)

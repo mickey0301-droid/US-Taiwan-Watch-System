@@ -4,7 +4,18 @@ import streamlit as st
 
 from tracker.config import get_settings
 from tracker.database_setup import ensure_database_ready
-from tracker.ui import dashboard, jobs_page, legislation_page, notifications_page, officials_page, person_page, review_page, settings_page, trackers_page
+from tracker.ui import (
+    dashboard,
+    jobs_page,
+    legislation_page,
+    notifications_page,
+    officials_page,
+    person_page,
+    review_page,
+    settings_page,
+    trackers_page,
+)
+from tracker.utils.text import install_streamlit_text_repair, repair_nested_text
 
 
 LABELS = {
@@ -221,6 +232,7 @@ NAV_PAGE_ORDER = [
 
 
 def main() -> None:
+    install_streamlit_text_repair(st)
     settings = get_settings()
     ensure_database_ready()
     st.set_page_config(page_title=settings.app_name, layout="wide")
@@ -229,8 +241,8 @@ def main() -> None:
     if language not in settings.supported_languages:
         language = settings.default_language
 
-    labels = LABELS[language]
-    st.sidebar.markdown(f"## [US Taiwan Watch](?page=dashboard)")
+    labels = repair_nested_text(LABELS[language])
+    st.sidebar.markdown("## [US Taiwan Watch](?page=dashboard)")
     query_page = st.query_params.get("page")
     if query_page in PAGES and "sidebar_nav_radio" not in st.session_state:
         st.session_state["sidebar_nav_radio"] = str(query_page)
@@ -239,6 +251,7 @@ def main() -> None:
     if current_page not in PAGES:
         current_page = "dashboard"
         st.session_state["sidebar_nav_radio"] = current_page
+
     page_key = st.sidebar.radio(
         "導覽 / Navigation",
         page_options,
@@ -250,6 +263,7 @@ def main() -> None:
         st.query_params["page"] = page_key
     if page_key != "person_detail" and "person_id" in st.query_params:
         del st.query_params["person_id"]
+
     selected_language = st.sidebar.selectbox(
         "語言 / Language",
         settings.supported_languages,
@@ -260,7 +274,8 @@ def main() -> None:
         st.session_state["ui_language"] = selected_language
         st.rerun()
 
-    PAGES[page_key](selected_language, LABELS[selected_language])
+    PAGES[page_key](selected_language, repair_nested_text(LABELS[selected_language]))
+
 
 if __name__ == "__main__":
     main()
