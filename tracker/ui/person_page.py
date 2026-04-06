@@ -6,6 +6,7 @@ from sqlalchemy import desc, func, select
 
 from tracker.db import session_scope
 from tracker.models import Alias, Appointment, Jurisdiction, Office, Person, Statement, SyncRun, Tracker
+from tracker.services.ai_assist_service import AIAssistService
 from tracker.services.google_sheet_read_service import GoogleSheetReadService
 from tracker.services.statements_service import StatementsService
 from tracker.services.x_candidate_confirmation_service import XCandidateConfirmationService
@@ -719,7 +720,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
 
     with session_scope() as session:
         total_people = session.scalar(select(func.count()).select_from(Person)) or 0
-    if total_people == 0 and _render_google_sheet_fallback(lang, labels, pending_person_id):
+    if total_people == 0 and _render_google_sheet_fallback_v2(lang, labels, pending_person_id):
         return
 
     selected_category = st.selectbox(
@@ -1286,6 +1287,206 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str], pending_per
     else:
         st.info("ç›®å‰é‚„æ²’æœ‰ç›¸é—œç«‹æ³•è³‡æ–™ã€‚" if lang == "zh-TW" else "No related legislation is available yet.")
     return True
+
+
+def _render_google_sheet_fallback_v2(lang: str, labels: dict[str, str], pending_person_id: int | None) -> bool:
+    sheet_service = GoogleSheetReadService()
+    ai_service = AIAssistService()
+    people = sheet_service.list_people()
+    if not people:
+        return False
+
+    st.info(
+        "Google Sheet fallback mode is active. The cloud app is showing exported profile data."
+        if lang != "zh-TW"
+        else "目前使用 Google Sheet fallback 模式，雲端版先顯示已匯出的人物資料。"
+    )
+    categories = list(PERSON_CATEGORIES.keys())
+    selected_category = st.selectbox(
+        labels["person_category"],
+        categories,
+        format_func=lambda key: _category_label(PERSON_CATEGORIES[key], lang),
+        key="sheet-person-category-v2",
+    )
+    selected_status = st.selectbox(
+        labels["status_filter"],
+        ["current", "former", "unknown"],
+        format_func=lambda value: str(localize_value(value, lang)),
+        key="sheet-person-status-v2",
+    )
+    candidates = [person for person in people if _sheet_person_matches_category(person, selected_category) and person.get("status") == selected_status]
+    if not candidates and selected_status == "unknown":
+        candidates = [person for person in people if _sheet_person_matches_category(person, selected_category)]
+    if not candidates:
+        st.info(labels["no_people_loaded"])
+        return True
+
+    person = sheet_service.get_person(int(pending_person_id)) if pending_person_id else None
+    if person is None:
+        person_options = {
+            f"{person_item.get('display_name_en') or person_item.get('full_name')} ({person_item.get('office_title') or labels['unknown']})": person_item
+            for person_item in candidates
+        }
+        selected_person_label = st.selectbox(labels["select_person"], list(person_options.keys()), key="sheet-person-select-v2")
+        person = person_options[selected_person_label]
+
+    person_id = int(person.get("person_id") or 0)
+    all_person_legislation = sheet_service.list_legislation_for_person(person_id)
+    recent_events = sheet_service.list_events_for_person(person_id)[:5]
+    related_legislation = all_person_legislation[:5]
+    recent_visits = [item for item in recent_events if _looks_like_taiwan_visit_sheet_event(item)][:5]
+    proposal_count, cosponsor_count = _sheet_legislation_role_counts(all_person_legislation)
+
+    social_profiles = {}
+    if person.get("x_accounts_list"):
+        social_profiles["x"] = person["x_accounts_list"][0]
+    if person.get("facebook_accounts_list"):
+        social_profiles["facebook"] = person["facebook_accounts_list"][0]
+    if person.get("instagram_accounts_list"):
+        social_profiles["instagram"] = person["instagram_accounts_list"][0]
+
+    chinese_name = str(person.get("display_name_zh") or "").strip()
+    generated_name = None
+    if not chinese_name:
+        generated_name = ai_service.chinese_name_for_person(
+            str(person.get("full_name") or ""),
+            str(person.get("office_title") or ""),
+            str(person.get("jurisdiction") or ""),
+        )
+        chinese_name = generated_name or ""
+
+    top_left, top_right = st.columns([1, 2])
+    with top_left:
+        if person.get("portrait_url"):
+            st.image(person["portrait_url"])
+        else:
+            st.info(labels["no_portrait"])
+        st.markdown(f"**{'背景資料' if lang == 'zh-TW' else 'Background'}**")
+        st.write(f"{labels['date_of_birth']}: {person.get('date_of_birth') or 'N/A'}")
+        st.write(f"{labels['place_of_birth']}: {person.get('place_of_birth') or 'N/A'}")
+        if person.get("education"):
+            st.write(labels["education"])
+            st.write(person["education"])
+        if person.get("past_experience"):
+            st.write(labels["career_history"])
+            st.write(person["past_experience"])
+        if person.get("committees_list"):
+            committees_label = "委員會" if lang == "zh-TW" else "Committees"
+            st.write(f"{committees_label}: {' | '.join(person['committees_list'])}")
+
+    with top_right:
+        english_name = str(person.get("full_name") or person.get("display_name_en") or "")
+        st.subheader(f"{chinese_name} ({english_name})" if chinese_name else english_name)
+        if generated_name:
+            st.caption("中文名由 AI 協助生成" if lang == "zh-TW" else "Chinese name generated with AI assistance")
+        st.write(f"{labels['profile_status']}: {person.get('status') or labels['unknown']}")
+        st.write(f"{labels['official_page']}: {person.get('official_page') or 'N/A'}")
+        if social_profiles:
+            st.write(labels["social_profiles"])
+            render_social_links(social_profiles, key_prefix=f"sheet-person-social-v2-{person_id}")
+        if person.get("wikipedia_page"):
+            st.markdown(f"[Wikipedia]({person['wikipedia_page']})")
+        _render_sheet_person_highlights(
+            recent_events=recent_events,
+            recent_legislation=related_legislation,
+            recent_visits=recent_visits,
+            proposal_count=proposal_count,
+            cosponsor_count=cosponsor_count,
+            ai_service=ai_service,
+            lang=lang,
+            labels=labels,
+        )
+    return True
+
+
+def _render_sheet_person_highlights(
+    recent_events: list[dict[str, object]],
+    recent_legislation: list[dict[str, object]],
+    recent_visits: list[dict[str, object]],
+    proposal_count: int,
+    cosponsor_count: int,
+    ai_service: AIAssistService,
+    lang: str,
+    labels: dict[str, str],
+) -> None:
+    statements_label = "最近台灣相關言論" if lang == "zh-TW" else "Recent Taiwan-related statements"
+    legislation_label = "最近台灣相關法案" if lang == "zh-TW" else "Recent Taiwan-related legislation"
+    visits_label = "最近訪台記錄" if lang == "zh-TW" else "Recent Taiwan visit records"
+
+    st.markdown(f"**{statements_label}**")
+    if recent_events:
+        for item in recent_events[:3]:
+            summary = str(item.get("summary") or item.get("title") or "")
+            localized_summary = ai_service.summarize_statement(str(item.get("title") or ""), summary) if lang == "zh-TW" else None
+            display_summary = localized_summary or _truncate_text(summary, 110)
+            event_date = item.get("event_date_date")
+            st.markdown(f"- `{event_date.strftime('%Y-%m-%d') if event_date else 'N/A'}`: {display_summary}")
+    else:
+        st.caption(labels["no_recent_statements"])
+
+    st.markdown(f"**{legislation_label}**")
+    st.caption(f"{'提案數' if lang == 'zh-TW' else 'Sponsored'}: {proposal_count} | {'聯署數' if lang == 'zh-TW' else 'Cosponsored'}: {cosponsor_count}")
+    if recent_legislation:
+        for item in recent_legislation[:3]:
+            summary = str(item.get("summary") or item.get("title") or "")
+            localized_summary = (
+                ai_service.summarize_legislation(
+                    str(item.get("bill_number") or ""),
+                    str(item.get("title") or ""),
+                    summary,
+                    str(item.get("latest_action") or ""),
+                )
+                if lang == "zh-TW"
+                else None
+            )
+            display_summary = localized_summary or _truncate_text(summary, 110)
+            item_date = item.get("date_date")
+            st.markdown(f"- `{item_date.strftime('%Y-%m-%d') if item_date else 'N/A'}` {item.get('bill_number') or ''}: {display_summary}")
+    else:
+        st.caption("目前沒有相關法案。" if lang == "zh-TW" else "No related legislation yet.")
+
+    st.markdown(f"**{visits_label}**")
+    if recent_visits:
+        for item in recent_visits[:3]:
+            summary = str(item.get("summary") or item.get("title") or "")
+            localized_summary = ai_service.summarize_statement(str(item.get("title") or ""), summary) if lang == "zh-TW" else None
+            display_summary = localized_summary or _truncate_text(summary, 110)
+            event_date = item.get("event_date_date")
+            st.markdown(f"- `{event_date.strftime('%Y-%m-%d') if event_date else 'N/A'}`: {display_summary}")
+    else:
+        st.caption("目前沒有訪台記錄。" if lang == "zh-TW" else "No Taiwan visit records yet.")
+
+
+def _truncate_text(value: str, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 1].rstrip()}…"
+
+
+def _looks_like_taiwan_visit_sheet_event(item: dict[str, object]) -> bool:
+    text = "\n".join(
+        [
+            str(item.get("title") or ""),
+            str(item.get("summary") or ""),
+            str(item.get("taiwan_keywords") or ""),
+        ]
+    ).lower()
+    has_taiwan = "taiwan" in text or "訪台" in text or "台灣" in text
+    has_visit = any(keyword in text for keyword in ("visit", "visited", "trip", "delegation", "訪", "出訪"))
+    return has_taiwan and has_visit
+
+
+def _sheet_legislation_role_counts(rows: list[dict[str, object]]) -> tuple[int, int]:
+    proposal_count = 0
+    cosponsor_count = 0
+    for row in rows:
+        sponsor_ids = list(row.get("sponsor_ids_list") or [])
+        if sponsor_ids:
+            proposal_count += 1
+            if len(sponsor_ids) > 1:
+                cosponsor_count += len(sponsor_ids) - 1
+    return proposal_count, cosponsor_count
 
 
 def _sheet_person_matches_category(person: dict[str, object], category_key: str) -> bool:

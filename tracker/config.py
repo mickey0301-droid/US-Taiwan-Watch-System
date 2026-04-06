@@ -22,6 +22,8 @@ class AppSettings(BaseModel):
     google_service_account_file: str | None = None
     google_service_account_json: str | None = None
     google_sheet_id: str | None = None
+    openai_api_key: str | None = None
+    openai_model: str = "gpt-4.1-mini"
     congress_current_number: int = 119
     log_level: str = "INFO"
     timezone: str = "Asia/Taipei"
@@ -74,6 +76,12 @@ def get_settings() -> AppSettings:
     google_sheet_id = os.getenv("GOOGLE_SHEET_ID") or _streamlit_secret("GOOGLE_SHEET_ID")
     if google_sheet_id:
         raw["google_sheet_id"] = google_sheet_id
+    openai_api_key = os.getenv("OPENAI_API_KEY") or _streamlit_secret("OPENAI_API_KEY")
+    if openai_api_key:
+        raw["openai_api_key"] = openai_api_key
+    openai_model = os.getenv("OPENAI_MODEL") or _streamlit_secret("OPENAI_MODEL")
+    if openai_model:
+        raw["openai_model"] = openai_model
     settings = AppSettings(**raw)
     if settings.database_url.startswith("sqlite:///") and not settings.database_url.startswith("sqlite:////"):
         sqlite_path = settings.database_url.removeprefix("sqlite:///")
