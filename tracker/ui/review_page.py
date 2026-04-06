@@ -7,6 +7,7 @@ import streamlit as st
 
 from tracker.db import session_scope
 from tracker.models import Person
+from tracker.services.ai_assist_service import AIAssistService
 from tracker.services.google_sheet_read_service import GoogleSheetReadService
 from tracker.services.statements_service import StatementsService
 from tracker.ui.display import localize_dataframe, localize_value
@@ -16,6 +17,7 @@ from tracker.ui.source_labels import source_label, statement_source_label
 
 def render(lang: str, labels: dict[str, str]) -> None:
     st.header(labels["review_queue"])
+    ai_service = AIAssistService()
     with session_scope() as session:
         service = StatementsService(session)
         events = service.list_review_queue()
@@ -81,11 +83,18 @@ def render(lang: str, labels: dict[str, str]) -> None:
             if person and not any(participant["person_id"] == person.id for participant in participants):
                 participants.append({"person_id": person.id, "display_name": person.full_name})
         sources = service.list_sources_for_statement(selected.id)
+        localized_summary = (
+            ai_service.summarize_statement(selected.title, selected.excerpt or selected.full_text or selected.raw_text or "")
+            if lang == "zh-TW"
+            else None
+        )
 
         with st.container(border=True):
             st.markdown(f"**{selected.title}**")
             st.markdown(f"`{time_label}`ï¼š{_format_event_time(selected.date_published or selected.date_collected)}")
-            st.markdown(f"`{description_label}`ï¼š{selected.excerpt or selected.title or selected.source_url}")
+            st.markdown(f"`{description_label}`ï¼š{localized_summary or selected.excerpt or selected.title or selected.source_url}")
+            if localized_summary:
+                st.caption("AI 中文摘要" if lang == "zh-TW" else "AI summary")
             st.markdown(f"`{participants_label}`ï¼š")
             render_person_links(participants, lang, key_prefix=f"review-event-{selected.id}")
             if sources:
@@ -143,6 +152,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
 
 def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
     events = GoogleSheetReadService().list_events()
+    ai_service = AIAssistService()
     if not events:
         return False
 
@@ -203,7 +213,14 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
         st.markdown(f"**{selected.get('title') or ''}**")
         event_date = selected.get("event_date_date")
         st.markdown(f"`{time_label}`ï¼š{event_date.strftime('%Y-%m-%d') if event_date else 'N/A'}")
-        st.markdown(f"`{description_label}`ï¼š{selected.get('summary') or selected.get('title') or ''}")
+        localized_summary = (
+            ai_service.summarize_statement(str(selected.get("title") or ""), str(selected.get("summary") or ""))
+            if lang == "zh-TW"
+            else None
+        )
+        st.markdown(f"`{description_label}`ï¼š{localized_summary or selected.get('summary') or selected.get('title') or ''}")
+        if localized_summary:
+            st.caption("AI 中文摘要" if lang == "zh-TW" else "AI summary")
         st.markdown(f"`{participants_label}`ï¼š")
         render_person_links(participants, lang, key_prefix=f"sheet-review-event-{selected.get('event_id')}")
         if selected.get("source_urls"):

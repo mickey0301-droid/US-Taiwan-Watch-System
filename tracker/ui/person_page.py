@@ -5,7 +5,7 @@ import streamlit as st
 from sqlalchemy import desc, func, select
 
 from tracker.db import session_scope
-from tracker.models import Alias, Appointment, Jurisdiction, Office, Person, Statement, SyncRun, Tracker
+from tracker.models import Alias, Appointment, Jurisdiction, Legislation, LegislationSponsor, Office, Person, Statement, SyncRun, Tracker
 from tracker.services.ai_assist_service import AIAssistService
 from tracker.services.google_sheet_read_service import GoogleSheetReadService
 from tracker.services.statements_service import StatementsService
@@ -873,11 +873,29 @@ def render(lang: str, labels: dict[str, str]) -> None:
             else None
         )
 
+        ai_service = AIAssistService()
         recent_statements = statements_service.list_recent_taiwan_statements(person.id, limit=3)
         recent_official_statements = statements_service.list_recent_official_statements(person.id, limit=3)
         recent_social_posts = statements_service.list_recent_social_posts(person.id, limit=5)
         statement_years = statements_service.list_statement_years(person.id)
         media_reports = statements_service.list_recent_media_reports(person.id, limit=10)
+        legislation_sponsor_rows = (
+            session.execute(
+                select(LegislationSponsor.role, Legislation)
+                .join(Legislation, Legislation.id == LegislationSponsor.legislation_id)
+                .where(LegislationSponsor.person_id == person.id)
+                .order_by(
+                    Legislation.introduced_date.desc().nullslast(),
+                    Legislation.last_action_date.desc().nullslast(),
+                    Legislation.id.desc(),
+                )
+            )
+            .all()
+        )
+        recent_legislation = [item[1] for item in legislation_sponsor_rows[:5]]
+        proposal_count = sum(1 for role, _item in legislation_sponsor_rows if str(role or "").lower() == "sponsor")
+        cosponsor_count = sum(1 for role, _item in legislation_sponsor_rows if str(role or "").lower() == "cosponsor")
+        recent_visits = [item for item in recent_statements if _looks_like_taiwan_visit_statement(item)][:5]
 
         recent_statement_sources = {item.id: statements_service.list_sources_for_statement(item.id) for item in recent_statements}
         recent_statement_source_counts = {item.id: len(recent_statement_sources[item.id]) for item in recent_statements}
@@ -926,17 +944,68 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 render_source_badges(source_type, source_url, lang)
         else:
             st.info(labels["no_portrait"])
+        st.markdown(f"**{'背景資料' if lang == 'zh-TW' else 'Background'}**")
+        if person_data["date_of_birth"]:
+            st.write(f"{labels['date_of_birth']}: {person_data['date_of_birth']}")
+            source_note = _format_background_source("date_of_birth", person_data, labels, lang)
+            if source_note:
+                st.caption(source_note)
+        if person_data["place_of_birth"]:
+            st.write(f"{labels['place_of_birth']}: {person_data['place_of_birth']}")
+            source_note = _format_background_source("place_of_birth", person_data, labels, lang)
+            if source_note:
+                st.caption(source_note)
+        if person_data["ethnicity"]:
+            st.write(f"{labels['ethnicity']}: {person_data['ethnicity']}")
+        if person_data["religion"]:
+            st.write(f"{labels['religion']}: {person_data['religion']}")
+        if person_data["education"]:
+            st.write(labels["education"])
+            st.write(person_data["education"])
+            source_note = _format_background_source("education", person_data, labels, lang)
+            if source_note:
+                st.caption(source_note)
+        if person_data["career_history"]:
+            st.write(labels["career_history"])
+            st.markdown(str(person_data["career_history"]))
+            source_note = _format_background_source("career_history", person_data, labels, lang)
+            if source_note:
+                st.caption(source_note)
+        if person_data["bio"]:
+            st.write(person_data["bio"])
 
     with top_right:
         display_title = person_data["full_name"]
+        generated_chinese_name = None
         if chinese_aliases:
             primary_chinese_name = chinese_aliases[0]
-            display_title = f"{primary_chinese_name} {person_data['full_name']}"
+            display_title = f"{primary_chinese_name} ({person_data['full_name']})"
+        elif lang == "zh-TW":
+            generated_chinese_name = ai_service.chinese_name_for_person(
+                person_data["full_name"],
+                current_appointment,
+                str((person_data["raw_payload"] or {}).get("jurisdiction_name") or ""),
+            )
+            if generated_chinese_name:
+                display_title = f"{generated_chinese_name} ({person_data['full_name']})"
         st.subheader(display_title)
         chinese_name_label = "中文譯名" if lang == "zh-TW" else "Chinese names"
         if chinese_aliases:
             st.write(chinese_name_label)
-            st.write("?".join(chinese_aliases) if lang == "zh-TW" else ", ".join(chinese_aliases))
+            st.write(" / ".join(chinese_aliases) if lang == "zh-TW" else ", ".join(chinese_aliases))
+        elif generated_chinese_name:
+            st.caption("中文名由 AI 協助生成" if lang == "zh-TW" else "Chinese name generated with AI assistance")
+
+        _render_db_person_highlights(
+            recent_events=recent_statements,
+            recent_legislation=recent_legislation,
+            recent_visits=recent_visits,
+            proposal_count=proposal_count,
+            cosponsor_count=cosponsor_count,
+            ai_service=ai_service,
+            lang=lang,
+            labels=labels,
+        )
 
         if person_data["full_name_display"] and person_data["full_name_display"] != person_data["full_name"]:
             full_name_label = "全名" if lang == "zh-TW" else "Full name"
@@ -984,35 +1053,6 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 st.markdown(
                     f"[{congress_search_label}]({build_congress_member_search_url(person_data['full_name'], current_appointment)})"
                 )
-        if person_data["date_of_birth"]:
-            st.write(f"{labels['date_of_birth']}: {person_data['date_of_birth']}")
-            source_note = _format_background_source("date_of_birth", person_data, labels, lang)
-            if source_note:
-                st.caption(source_note)
-        if person_data["place_of_birth"]:
-            st.write(f"{labels['place_of_birth']}: {person_data['place_of_birth']}")
-            source_note = _format_background_source("place_of_birth", person_data, labels, lang)
-            if source_note:
-                st.caption(source_note)
-        if person_data["ethnicity"]:
-            st.write(f"{labels['ethnicity']}: {person_data['ethnicity']}")
-        if person_data["religion"]:
-            st.write(f"{labels['religion']}: {person_data['religion']}")
-        if person_data["education"]:
-            st.write(labels["education"])
-            st.write(person_data["education"])
-            source_note = _format_background_source("education", person_data, labels, lang)
-            if source_note:
-                st.caption(source_note)
-        if person_data["career_history"]:
-            st.write(labels["career_history"])
-            st.markdown(str(person_data["career_history"]))
-            source_note = _format_background_source("career_history", person_data, labels, lang)
-            if source_note:
-                st.caption(source_note)
-        if person_data["bio"]:
-            st.write(person_data["bio"])
-
         if person_data["social_profiles"]:
             st.write(labels["social_profiles"])
             render_social_links(person_data["social_profiles"], key_prefix=f"person-social-{person_id}")
@@ -1457,11 +1497,89 @@ def _render_sheet_person_highlights(
         st.caption("目前沒有訪台記錄。" if lang == "zh-TW" else "No Taiwan visit records yet.")
 
 
+def _render_db_person_highlights(
+    recent_events: list[Statement],
+    recent_legislation: list[Legislation],
+    recent_visits: list[Statement],
+    proposal_count: int,
+    cosponsor_count: int,
+    ai_service: AIAssistService,
+    lang: str,
+    labels: dict[str, str],
+) -> None:
+    statements_label = "最近台灣相關言論" if lang == "zh-TW" else "Recent Taiwan-related statements"
+    legislation_label = "最近台灣相關法案" if lang == "zh-TW" else "Recent Taiwan-related legislation"
+    visits_label = "最近訪台記錄" if lang == "zh-TW" else "Recent Taiwan visit records"
+
+    st.markdown(f"**{statements_label}**")
+    if recent_events:
+        for item in recent_events[:3]:
+            localized_summary = (
+                ai_service.summarize_statement(item.title, item.excerpt or item.full_text or item.raw_text or "")
+                if lang == "zh-TW"
+                else None
+            )
+            display_summary = localized_summary or _truncate_text(item.excerpt or item.full_text or item.raw_text or item.title, 110)
+            event_date = item.date_published or item.date_collected
+            st.markdown(f"- `{event_date.strftime('%Y-%m-%d') if event_date else 'N/A'}`: {display_summary}")
+    else:
+        st.caption(labels["no_recent_statements"])
+
+    st.markdown(f"**{legislation_label}**")
+    st.caption(f"{'提案數' if lang == 'zh-TW' else 'Sponsored'}: {proposal_count} | {'聯署數' if lang == 'zh-TW' else 'Cosponsored'}: {cosponsor_count}")
+    if recent_legislation:
+        for item in recent_legislation[:3]:
+            payload = item.raw_payload or {}
+            localized_summary = (
+                ai_service.summarize_legislation(
+                    str(item.bill_number or ""),
+                    str(item.title or ""),
+                    str(item.summary or ""),
+                    str(payload.get("latest_action_text") or ""),
+                )
+                if lang == "zh-TW"
+                else None
+            )
+            display_summary = localized_summary or _truncate_text(item.summary or item.title, 110)
+            item_date = item.introduced_date or item.last_action_date
+            st.markdown(f"- `{item_date.strftime('%Y-%m-%d') if item_date else 'N/A'}` {item.bill_number or ''}: {display_summary}")
+    else:
+        st.caption("目前沒有相關法案。" if lang == "zh-TW" else "No related legislation yet.")
+
+    st.markdown(f"**{visits_label}**")
+    if recent_visits:
+        for item in recent_visits[:3]:
+            localized_summary = (
+                ai_service.summarize_statement(item.title, item.excerpt or item.full_text or item.raw_text or "")
+                if lang == "zh-TW"
+                else None
+            )
+            display_summary = localized_summary or _truncate_text(item.excerpt or item.full_text or item.raw_text or item.title, 110)
+            event_date = item.date_published or item.date_collected
+            st.markdown(f"- `{event_date.strftime('%Y-%m-%d') if event_date else 'N/A'}`: {display_summary}")
+    else:
+        st.caption("目前沒有訪台記錄。" if lang == "zh-TW" else "No Taiwan visit records yet.")
+
+
 def _truncate_text(value: str, limit: int) -> str:
     text = " ".join(str(value or "").split())
     if len(text) <= limit:
         return text
     return f"{text[: limit - 1].rstrip()}…"
+
+
+def _looks_like_taiwan_visit_statement(statement: Statement) -> bool:
+    text = "\n".join(
+        [
+            str(statement.title or ""),
+            str(statement.excerpt or ""),
+            str(statement.full_text or ""),
+            str(statement.raw_text or ""),
+        ]
+    ).lower()
+    has_taiwan = "taiwan" in text or "訪台" in text or "台灣" in text
+    has_visit = any(keyword in text for keyword in ("visit", "visited", "trip", "delegation", "訪", "出訪"))
+    return has_taiwan and has_visit
 
 
 def _looks_like_taiwan_visit_sheet_event(item: dict[str, object]) -> bool:

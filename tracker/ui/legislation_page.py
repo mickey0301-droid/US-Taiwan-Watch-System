@@ -6,6 +6,7 @@ import streamlit as st
 
 from tracker.db import session_scope
 from tracker.models import Legislation, Person
+from tracker.services.ai_assist_service import AIAssistService
 from tracker.services.google_sheet_read_service import GoogleSheetReadService
 from tracker.services.legislation_service import LegislationService
 from tracker.ui.navigation import render_person_links
@@ -15,6 +16,7 @@ from tracker.utils.source_types import source_bucket_label, source_priority_key
 
 def render(lang: str, labels: dict[str, str]) -> None:
     st.header(labels["legislation"])
+    ai_service = AIAssistService()
     with session_scope() as session:
         service = LegislationService(session)
         people_by_id = {person.id: person for person in session.query(Person).all()}
@@ -97,6 +99,16 @@ def render(lang: str, labels: dict[str, str]) -> None:
             committees = [str(committees)]
         cosponsor_count = raw_payload.get("cosponsor_count")
         text_page_url = raw_payload.get("text_page_url")
+        localized_summary = (
+            ai_service.summarize_legislation(
+                str(selected.bill_number or ""),
+                str(selected.title or ""),
+                str(selected.summary or ""),
+                str(latest_action or ""),
+            )
+            if lang == "zh-TW"
+            else None
+        )
 
         with st.container(border=True):
             heading = selected.title
@@ -104,7 +116,9 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 heading = f"{selected.bill_number} | {heading}"
             st.markdown(f"**{heading}**")
             st.markdown(f"`{time_label}`ï¼š{_format_date(selected.introduced_date or selected.last_action_date)}")
-            st.markdown(f"`{description_label}`ï¼š{selected.summary or selected.title}")
+            st.markdown(f"`{description_label}`ï¼š{localized_summary or selected.summary or selected.title}")
+            if localized_summary:
+                st.caption("AI 中文摘要" if lang == "zh-TW" else "AI summary")
             st.markdown(f"`{status_label}`ï¼š{selected.status_text or ('æœªçŸ¥' if lang == 'zh-TW' else 'Unknown')}")
             if official_link:
                 st.markdown(f"`{official_link_label}`ï¼š[Congress.gov]({official_link})")
@@ -135,6 +149,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
 
 def _render_google_sheet_fallback(lang: str) -> bool:
     rows = GoogleSheetReadService().list_legislation()
+    ai_service = AIAssistService()
     if not rows:
         return False
 
@@ -183,9 +198,21 @@ def _render_google_sheet_fallback(lang: str) -> bool:
         heading = selected.get("title") or ""
         if selected.get("bill_number"):
             heading = f"{selected['bill_number']} | {heading}"
+        localized_summary = (
+            ai_service.summarize_legislation(
+                str(selected.get("bill_number") or ""),
+                str(selected.get("title") or ""),
+                str(selected.get("summary") or ""),
+                str(selected.get("latest_action") or ""),
+            )
+            if lang == "zh-TW"
+            else None
+        )
         st.markdown(f"**{heading}**")
         st.markdown(f"`{time_label}`ï¼š{selected['date_date'].strftime('%Y-%m-%d') if selected.get('date_date') else 'N/A'}")
-        st.markdown(f"`{description_label}`ï¼š{selected.get('summary') or selected.get('title') or ''}")
+        st.markdown(f"`{description_label}`ï¼š{localized_summary or selected.get('summary') or selected.get('title') or ''}")
+        if localized_summary:
+            st.caption("AI 中文摘要" if lang == "zh-TW" else "AI summary")
         st.markdown(f"`{status_label}`ï¼š{selected.get('status') or ('æœªçŸ¥' if lang == 'zh-TW' else 'Unknown')}")
         if selected.get("official_page"):
             st.markdown(f"`Congress.gov`ï¼š[Congress.gov]({selected['official_page']})")
