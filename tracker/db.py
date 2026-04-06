@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Iterator
 
 from sqlalchemy import create_engine, event
@@ -16,6 +17,9 @@ class Base(DeclarativeBase):
 settings = get_settings()
 engine_kwargs = {"future": True, "echo": False}
 if settings.database_url.startswith("sqlite"):
+    sqlite_path = settings.database_url.removeprefix("sqlite:///")
+    if sqlite_path and sqlite_path != ":memory:":
+        Path(sqlite_path).parent.mkdir(parents=True, exist_ok=True)
     engine_kwargs["connect_args"] = {"timeout": 30}
 engine = create_engine(settings.database_url, **engine_kwargs)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False, future=True)

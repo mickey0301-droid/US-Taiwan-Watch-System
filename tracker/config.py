@@ -74,7 +74,16 @@ def get_settings() -> AppSettings:
     google_sheet_id = os.getenv("GOOGLE_SHEET_ID") or _streamlit_secret("GOOGLE_SHEET_ID")
     if google_sheet_id:
         raw["google_sheet_id"] = google_sheet_id
-    return AppSettings(**raw)
+    settings = AppSettings(**raw)
+    if settings.database_url.startswith("sqlite:///") and not settings.database_url.startswith("sqlite:////"):
+        sqlite_path = settings.database_url.removeprefix("sqlite:///")
+        settings.database_url = f"sqlite:///{(BASE_DIR / sqlite_path).resolve().as_posix()}"
+    for field_name in ("raw_data_dir", "processed_data_dir", "snapshots_dir"):
+        value = getattr(settings, field_name)
+        path = Path(value)
+        if not path.is_absolute():
+            setattr(settings, field_name, str((BASE_DIR / path).resolve()))
+    return settings
 
 
 @lru_cache(maxsize=1)
