@@ -1,0 +1,1161 @@
+from __future__ import annotations
+
+import pandas as pd
+import streamlit as st
+from sqlalchemy import desc, select
+
+from tracker.db import session_scope
+from tracker.models import Alias, Appointment, Jurisdiction, Office, Person, Statement, SyncRun, Tracker
+from tracker.services.statements_service import StatementsService
+from tracker.services.x_candidate_confirmation_service import XCandidateConfirmationService
+from tracker.ui.badges import render_source_badges
+from tracker.ui.display import localize_dataframe, localize_value, style_source_columns
+from tracker.ui.navigation import render_person_links
+from tracker.ui.social_links import render_social_links
+from tracker.ui.source_labels import source_label, statement_source_label
+from tracker.utils.congress import build_congress_member_search_url, extract_legislator_metadata
+from tracker.utils.names import display_person_name
+from tracker.utils.official_search import (
+    build_google_official_bio_search_url,
+    build_google_official_search_url,
+    build_x_search_url,
+)
+from tracker.utils.social import social_display_name
+from tracker.utils.source_types import is_government_url, source_bucket_label
+from tracker.utils.wikipedia_links import build_wikipedia_search_url, resolve_wikipedia_url
+
+
+PERSON_CATEGORIES = {
+    "federal_executive": {"label_zh": "聯邦政府部門官員", "label_en": "Federal executive officials", "level": "federal", "branch": "executive", "chamber": None},
+    "federal_senate": {"label_zh": "聯邦參議員", "label_en": "U.S. Senators", "level": "federal", "branch": "legislative", "chamber": "senate"},
+    "federal_house": {"label_zh": "聯邦眾議員", "label_en": "U.S. Representatives", "level": "federal", "branch": "legislative", "chamber": "house"},
+    "state_executive": {"label_zh": "州政府官員", "label_en": "State executive officials", "level": "state", "branch": "executive", "chamber": None},
+    "state_senate": {"label_zh": "州參議員", "label_en": "State senators", "level": "state", "branch": "legislative", "chamber": "senate"},
+    "state_house": {"label_zh": "州眾議員", "label_en": "State representatives", "level": "state", "branch": "legislative", "chamber": "house"},
+    "all": {"label_zh": "全部人物", "label_en": "All people", "level": None, "branch": None, "chamber": None},
+}
+
+CABINET_DEPARTMENT_ORDER = [
+    "White House",
+    "Department of State",
+    "Department of the Treasury",
+    "Department of Defense",
+    "Department of Justice",
+    "Department of the Interior",
+    "Department of Agriculture",
+    "Department of Commerce",
+    "Department of Labor",
+    "Department of Health and Human Services",
+    "Department of Housing and Urban Development",
+    "Department of Transportation",
+    "Department of Energy",
+    "Department of Education",
+    "Department of Veterans Affairs",
+    "Department of Homeland Security",
+]
+
+CABINET_DEPARTMENT_RANK = {name: index for index, name in enumerate(CABINET_DEPARTMENT_ORDER)}
+
+
+def _category_label(category: dict, lang: str) -> str:
+    return category["label_zh"] if lang == "zh-TW" else category["label_en"]
+
+
+def _format_statement_rows(statements: list[Statement], lang: str, source_counts: dict[int, int] | None = None) -> pd.DataFrame:
+    source_counts = source_counts or {}
+    return pd.DataFrame(
+        [
+            {
+                "published_at": item.date_published or item.date_collected,
+                "title": item.title,
+                "source_type": statement_source_label(item, lang, item.event_source_preference or item.source_type),
+                "source_count": source_counts.get(item.id, 0),
+                "review_status": item.review_status,
+                "source_url": item.source_url,
+            }
+            for item in statements
+        ]
+    )
+
+
+def _get_base_people_query(category_key: str):
+    category = PERSON_CATEGORIES[category_key]
+    stmt = (
+        select(
+            Person.id,
+            Person.full_name,
+            Person.given_name,
+            Person.family_name,
+            Office.office_name,
+            Jurisdiction.name,
+            Appointment.raw_payload,
+        )
+        .join(Appointment, Appointment.person_id == Person.id)
+        .join(Office, Office.id == Appointment.office_id)
+        .outerjoin(Jurisdiction, Jurisdiction.id == Office.jurisdiction_id)
+        .order_by(Person.full_name.asc())
+        .distinct()
+    )
+    if category["level"]:
+        stmt = stmt.where(Office.level == category["level"])
+    if category["branch"]:
+        stmt = stmt.where(Office.branch == category["branch"])
+    if category["chamber"]:
+        stmt = stmt.where(Office.chamber == category["chamber"])
+    return stmt
+
+
+def _get_people_for_category(
+    session,
+    category_key: str,
+    state_filter: str | None = None,
+    department_filter: str | None = None,
+    subdepartment_filter: str | None = None,
+    unit_filter: str | None = None,
+    status_filter: str | None = None,
+) -> list[tuple[int, str, str | None, str | None, str, str | None, dict | None]]:
+    stmt = _get_base_people_query(category_key)
+    if state_filter:
+        stmt = stmt.where(Jurisdiction.name == state_filter)
+    if status_filter:
+        stmt = stmt.where(Appointment.status == status_filter)
+    rows = session.execute(stmt).all()
+    if department_filter and category_key == "federal_executive":
+        rows = [row for row in rows if _executive_hierarchy(row[4], row[6])[0] == department_filter]
+    if subdepartment_filter and category_key == "federal_executive":
+        rows = [row for row in rows if _executive_hierarchy(row[4], row[6])[1] == subdepartment_filter]
+    if unit_filter and category_key == "federal_executive":
+        rows = [row for row in rows if _executive_hierarchy(row[4], row[6])[2] == unit_filter]
+    return rows
+
+
+def _categories_with_state_filter() -> set[str]:
+    return {"federal_senate", "federal_house", "state_executive", "state_senate", "state_house"}
+
+
+def _categories_with_department_filter() -> set[str]:
+    return {"federal_executive"}
+
+
+def _get_state_options(session, category_key: str) -> list[str]:
+    rows = session.execute(_get_base_people_query(category_key)).all()
+    return sorted({row[5] for row in rows if row[5]})
+
+
+def _get_department_options(session, category_key: str) -> list[str]:
+    rows = session.execute(_get_base_people_query(category_key)).all()
+    if category_key == "federal_executive":
+        departments = {_executive_hierarchy(row[4], row[6])[0] for row in rows if row[4]}
+        return sorted(departments, key=_executive_department_sort_key)
+    return sorted({row[4] for row in rows if row[4]})
+
+
+def _get_subdepartment_options(session, category_key: str, department_filter: str) -> list[str]:
+    rows = session.execute(_get_base_people_query(category_key)).all()
+    options = {
+        hierarchy[1]
+        for row in rows
+        for hierarchy in [_executive_hierarchy(row[4], row[6])]
+        if hierarchy[0] == department_filter and hierarchy[1]
+    }
+    return sorted(options)
+
+
+def _get_unit_options(session, category_key: str, department_filter: str, subdepartment_filter: str) -> list[str]:
+    rows = session.execute(_get_base_people_query(category_key)).all()
+    options = {
+        hierarchy[2]
+        for row in rows
+        for hierarchy in [_executive_hierarchy(row[4], row[6])]
+        if hierarchy[0] == department_filter and hierarchy[1] == subdepartment_filter and hierarchy[2]
+    }
+    return sorted(options)
+
+
+def _executive_department_name(office_name: str | None) -> str:
+    if not office_name:
+        return ""
+
+    cleaned_office_name = " ".join(str(office_name).split()).strip()
+    if cleaned_office_name.startswith(":"):
+        cleaned_office_name = cleaned_office_name[1:].strip()
+    if ":" in cleaned_office_name:
+        prefix, suffix = cleaned_office_name.split(":", 1)
+        prefix = prefix.strip()
+        suffix = suffix.strip()
+        if prefix:
+            return prefix
+        cleaned_office_name = suffix
+
+    lower_name = cleaned_office_name.lower().strip()
+    normalized_name = lower_name
+    for prefix in ["acting ", "interim ", "former ", "principal ", "performing the delegable duties of the ", "performing the duties of the "]:
+        if normalized_name.startswith(prefix):
+            normalized_name = normalized_name[len(prefix) :].strip()
+
+    if normalized_name.startswith("deputy secretary of the "):
+        suffix = cleaned_office_name[lower_name.index("deputy secretary of the ") + len("deputy secretary of the ") :].strip()
+        return f"Department of the {suffix}" if suffix else cleaned_office_name
+    if normalized_name.startswith("deputy secretary of "):
+        suffix = cleaned_office_name[lower_name.index("deputy secretary of ") + len("deputy secretary of ") :].strip()
+        return f"Department of {suffix}" if suffix else cleaned_office_name
+    if normalized_name.startswith("secretary of "):
+        suffix = cleaned_office_name[lower_name.index("secretary of ") + len("secretary of ") :].strip()
+        return f"Department of {suffix}" if suffix else cleaned_office_name
+    if normalized_name.startswith("secretary of the "):
+        suffix = cleaned_office_name[lower_name.index("secretary of the ") + len("secretary of the ") :].strip()
+        return f"Department of the {suffix}" if suffix else cleaned_office_name
+
+    department_map = {
+        "attorney general": "Department of Justice",
+        "acting attorney general": "Department of Justice",
+        "deputy attorney general": "Department of Justice",
+        "deputy secretary performing the delegable duties of the secretary": "Department of the Treasury",
+        "director of national intelligence": "Office of the Director of National Intelligence",
+        "principal deputy director of national intelligence": "Office of the Director of National Intelligence",
+        "administrator of the environmental protection agency": "Environmental Protection Agency",
+        "deputy administrator of the environmental protection agency": "Environmental Protection Agency",
+        "administrator of the small business administration": "Small Business Administration",
+        "deputy administrator of the small business administration": "Small Business Administration",
+        "director of the office of management and budget": "Office of Management and Budget",
+        "deputy director of the office of management and budget": "Office of Management and Budget",
+        "united states trade representative": "Office of the United States Trade Representative",
+        "deputy united states trade representative": "Office of the United States Trade Representative",
+        "ambassador to the united nations": "United States Mission to the United Nations",
+        "united states ambassador to the united nations": "United States Mission to the United Nations",
+        "deputy ambassador to the united nations": "United States Mission to the United Nations",
+        "chair of the council of economic advisers": "Council of Economic Advisers",
+        "chief of staff": "White House",
+        "white house chief of staff": "White House",
+        "president of the united states": "White House",
+        "vice president of the united states": "White House",
+        "vice president": "White House",
+        "assistant to the president for national security affairs": "White House",
+        "national security advisor": "White House",
+        "national security adviser": "White House",
+        "director of the central intelligence agency": "Central Intelligence Agency",
+        "deputy director of the central intelligence agency": "Central Intelligence Agency",
+        "general counsel of the central intelligence agency": "Central Intelligence Agency",
+        "inspector general of the central intelligence agency": "Central Intelligence Agency",
+        "director of the office of science and technology policy": "Office of Science and Technology Policy",
+        "director of the national counter intelligence and security center": "National Counterintelligence and Security Center",
+        "inspector general of the intelligence community": "Office of the Director of National Intelligence",
+        "general counsel of the office of the director of national intelligence": "Office of the Director of National Intelligence",
+        "general counsel of veterans affairs": "Department of Veterans Affairs",
+        "inspector general of veterans affairs": "Department of Veterans Affairs",
+        "chief financial officer of veterans affairs": "Department of Veterans Affairs",
+    }
+
+    if normalized_name in department_map:
+        return department_map[normalized_name]
+    if lower_name in department_map:
+        return department_map[lower_name]
+
+    pattern_map = [
+        (" of veterans affairs", "Department of Veterans Affairs"),
+        (" of the environmental protection agency", "Environmental Protection Agency"),
+        (" of the office of management and budget", "Office of Management and Budget"),
+        (" of the office of the director of national intelligence", "Office of the Director of National Intelligence"),
+        (" of the central intelligence agency", "Central Intelligence Agency"),
+        (" of national intelligence", "Office of the Director of National Intelligence"),
+    ]
+    for pattern, department in pattern_map:
+        if normalized_name.endswith(pattern):
+            return department
+
+    if "white house" in normalized_name or "executive office of the president" in normalized_name:
+        return "White House"
+    if "national security council" in normalized_name or "national security affairs" in normalized_name:
+        return "White House"
+    if "council of economic advisers" in normalized_name:
+        return "Council of Economic Advisers"
+    if "trade representative" in normalized_name:
+        return "Office of the United States Trade Representative"
+    if "small business administration" in normalized_name:
+        return "Small Business Administration"
+    if "environmental protection agency" in normalized_name:
+        return "Environmental Protection Agency"
+    if "central intelligence agency" in normalized_name:
+        return "Central Intelligence Agency"
+    if "office of science and technology policy" in normalized_name:
+        return "Office of Science and Technology Policy"
+    if "national counter intelligence and security center" in normalized_name or "national counterintelligence and security center" in normalized_name:
+        return "National Counterintelligence and Security Center"
+    if "united nations" in normalized_name:
+        return "United States Mission to the United Nations"
+    if normalized_name == "secretary of war":
+        return "Department of War"
+
+    phrase_prefixes = [
+        "administrator of the ",
+        "administrator of ",
+        "deputy administrator of the ",
+        "deputy administrator of ",
+        "director of the ",
+        "director of ",
+        "deputy director of the ",
+        "deputy director of ",
+        "chairman of the ",
+        "chairman of ",
+        "chairwoman of the ",
+        "chairwoman of ",
+        "chair of the ",
+        "chair of ",
+        "commissioner of the ",
+        "commissioner of ",
+        "member of the ",
+        "member of ",
+        "general counsel of the ",
+        "general counsel of ",
+        "chief financial officer of the ",
+        "chief financial officer of ",
+        "chief counsel for ",
+        "chief counsel of ",
+        "special counsel of the ",
+        "special counsel of ",
+        "archivist of the ",
+        "archivist of ",
+        "chief executive officer of the ",
+        "ceo of the ",
+        "associate administrator for ",
+        "senior advisor to the ",
+        "vice chair of the ",
+        "vice chairman of the ",
+        "vice chairman and vice president of the ",
+        "chairman and president of the ",
+        "board of directors of ",
+        "board of governors of ",
+        "commissioners of the ",
+        "commissioners of ",
+    ]
+    for prefix in phrase_prefixes:
+        if normalized_name.startswith(prefix):
+            organization = cleaned_office_name[len(prefix) :].strip()
+            if organization:
+                if organization.lower() in {
+                    "agriculture",
+                    "commerce",
+                    "defense",
+                    "education",
+                    "energy",
+                    "health and human services",
+                    "homeland security",
+                    "housing and urban development",
+                    "labor",
+                    "state",
+                    "transportation",
+                    "veterans affairs",
+                }:
+                    return f"Department of {organization}"
+                if organization.lower() in {"the interior", "the treasury"}:
+                    return f"Department of {organization}"
+                return organization
+
+    return cleaned_office_name
+
+
+def _executive_hierarchy(office_name: str | None, appointment_payload: dict | None) -> tuple[str, str | None, str | None]:
+    payload = appointment_payload or {}
+    payload_office_title = payload.get("office_title") if isinstance(payload, dict) else None
+    department_name = payload.get("department_name") if isinstance(payload, dict) else None
+    top_department_name = payload.get("top_department_name") if isinstance(payload, dict) else None
+    top_department = (
+        top_department_name
+        or department_name
+        or _executive_department_name(payload_office_title)
+        or _executive_department_name(office_name)
+        or "Other"
+    )
+    if top_department in {"Other", ""} and payload_office_title:
+        top_department = _executive_department_name(payload_office_title) or top_department
+    if top_department in {"Other", ""} and office_name:
+        top_department = _executive_department_name(office_name) or top_department
+    if top_department in {"", ":"}:
+        top_department = "Other"
+
+    subdepartment = payload.get("subdepartment_name")
+    unit = payload.get("unit_name")
+    title_for_grouping = str(payload_office_title or office_name or "").lower()
+    if top_department == "White House" and not subdepartment:
+        if (
+            "national security council" in title_for_grouping
+            or "national security adviser" in title_for_grouping
+            or "national security advisor" in title_for_grouping
+            or "national security affairs" in title_for_grouping
+        ):
+            subdepartment = "National Security Council"
+        elif "chief of staff" in title_for_grouping or "white house office" in title_for_grouping:
+            subdepartment = "White House Office"
+    return top_department, subdepartment, unit
+
+
+def _executive_role_rank(office_name: str | None) -> tuple[int, str]:
+    title = (office_name or "").lower()
+    if ":" in title:
+        title = title.split(":", 1)[1].strip()
+    if title.startswith("president of the united states"):
+        return (0, title)
+    if title.startswith("vice president of the united states"):
+        return (1, title)
+    if "chief of staff" in title:
+        return (2, title)
+    if title.startswith("secretary of") or title.startswith("secretary of the"):
+        return (3, title)
+    if title.startswith("attorney general"):
+        return (3, title)
+    if "director of national intelligence" in title or "trade representative" in title:
+        return (4, title)
+    if title.startswith("administrator"):
+        return (5, title)
+    if title.startswith("deputy secretary"):
+        return (6, title)
+    if title.startswith("under secretary"):
+        return (7, title)
+    if title.startswith("principal deputy assistant secretary"):
+        return (8, title)
+    if title.startswith("deputy assistant secretary"):
+        return (9, title)
+    if title.startswith("assistant secretary"):
+        return (10, title)
+    if "general counsel" in title:
+        return (11, title)
+    if title.startswith("director"):
+        return (12, title)
+    return (99, title)
+
+
+def _executive_department_sort_key(department_name: str | None) -> tuple[int, str]:
+    department = (department_name or "").strip()
+    if not department:
+        return (999, "")
+    if department in CABINET_DEPARTMENT_RANK:
+        return (CABINET_DEPARTMENT_RANK[department], department.lower())
+    return (100 + len(CABINET_DEPARTMENT_RANK), department.lower())
+
+
+def _display_office_name(office_name: str | None, appointment_payload: dict | None = None) -> str:
+    payload = appointment_payload or {}
+    payload_title = payload.get("office_title") if isinstance(payload, dict) else None
+    clean_title = " ".join(str(payload_title).split()).strip() if payload_title else ""
+    if clean_title:
+        return clean_title
+    clean_office = " ".join(str(office_name or "").split()).strip()
+    if clean_office.startswith(":"):
+        clean_office = clean_office[1:].strip()
+    if ":" in clean_office:
+        prefix, suffix = clean_office.split(":", 1)
+        if suffix.strip():
+            return suffix.strip()
+        return prefix.strip()
+    return clean_office
+
+
+def _format_background_source(field_name: str, person_data: dict[str, object], labels: dict[str, str], lang: str) -> str | None:
+    background_sources = person_data.get("background_sources") or {}
+    if not isinstance(background_sources, dict):
+        return None
+    source_info = background_sources.get(field_name)
+    if not isinstance(source_info, dict):
+        return None
+    source_type = source_bucket_label(source_info.get("source_type"), source_info.get("source_url"), lang)
+    return f"{labels['field_source']}: {source_type}"
+
+
+def _background_search_links(person_data: dict[str, object], current_appointment: str | None) -> list[tuple[str, str]]:
+    raw_payload = person_data.get("raw_payload") or {}
+    if not isinstance(raw_payload, dict):
+        raw_payload = {}
+    stored_links = raw_payload.get("background_search_urls") or {}
+    if not isinstance(stored_links, dict):
+        stored_links = {}
+
+    wikipedia_url = resolve_wikipedia_url(person_data.get("source_url"), raw_payload)
+    links: list[tuple[str, str]] = []
+    if wikipedia_url:
+        links.append(("wikipedia_page", wikipedia_url))
+    elif stored_links.get("wikipedia_search"):
+        links.append(("wikipedia_search", str(stored_links["wikipedia_search"])))
+    else:
+        links.append(("wikipedia_search", build_wikipedia_search_url(str(person_data.get("full_name") or ""), current_appointment)))
+
+    links.append(
+        (
+            "google_official_search",
+            str(
+                stored_links.get("google_official_search")
+                or build_google_official_search_url(str(person_data.get("full_name") or ""), current_appointment)
+            ),
+        )
+    )
+    links.append(
+        (
+            "google_official_bio_search",
+            str(
+                stored_links.get("google_official_bio_search")
+                or build_google_official_bio_search_url(str(person_data.get("full_name") or ""), current_appointment)
+            ),
+        )
+    )
+
+    for key in ("official_page", "whitehouse_search", "department_search"):
+        if stored_links.get(key):
+            links.append((key, str(stored_links[key])))
+
+    deduped: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+    for key, url in links:
+        cleaned_url = (url or "").strip()
+        if not cleaned_url or cleaned_url in seen_urls:
+            continue
+        seen_urls.add(cleaned_url)
+        deduped.append((key, cleaned_url))
+    return deduped
+
+
+def _background_search_label(link_key: str, lang: str) -> str:
+    labels_zh = {
+        "wikipedia_page": "Wikipedia 頁面",
+        "wikipedia_search": "Wikipedia 搜尋",
+        "google_official_search": "Google 搜尋官方資料",
+        "google_official_bio_search": "Google 搜尋官方簡歷",
+        "official_page": "官方頁面",
+        "whitehouse_search": "Google 搜尋白宮資料",
+        "department_search": "Google 搜尋部會資料",
+    }
+    labels_en = {
+        "wikipedia_page": "Wikipedia page",
+        "wikipedia_search": "Wikipedia search",
+        "google_official_search": "Search official sources",
+        "google_official_bio_search": "Search official biography",
+        "official_page": "Official page",
+        "whitehouse_search": "Search White House sources",
+        "department_search": "Search department sources",
+    }
+    mapping = labels_zh if lang == "zh-TW" else labels_en
+    return mapping.get(link_key, link_key)
+
+
+def _candidate_sections(raw_payload: dict[str, object]) -> tuple[list[dict[str, str]], list[dict[str, str]], list[dict[str, str]]]:
+    x_links = raw_payload.get("x_candidate_links", {}) if isinstance(raw_payload, dict) else {}
+    candidates = x_links.get("candidates", []) if isinstance(x_links, dict) else []
+    if not isinstance(candidates, list):
+        return [], [], []
+    high_confidence = [item for item in candidates if item.get("status") == "high_confidence"]
+    needs_review = [item for item in candidates if item.get("status") == "needs_review"]
+    rejected = [item for item in candidates if item.get("status") == "rejected"]
+    return high_confidence, needs_review, rejected
+
+
+def _confirmed_x_profiles(raw_payload: dict[str, object]) -> list[dict[str, str]]:
+    x_links = raw_payload.get("x_candidate_links", {}) if isinstance(raw_payload, dict) else {}
+    confirmed_profiles = x_links.get("confirmed_profiles", []) if isinstance(x_links, dict) else []
+    if not isinstance(confirmed_profiles, list):
+        return []
+    return [item for item in confirmed_profiles if isinstance(item, dict) and item.get("profile_url")]
+
+
+def _merged_confirmed_x_profiles(raw_payload: dict[str, object], social_profiles: dict[str, str]) -> list[dict[str, str]]:
+    confirmed_profiles = list(_confirmed_x_profiles(raw_payload))
+    existing_urls = {
+        item.get("profile_url")
+        for item in confirmed_profiles
+        if isinstance(item, dict) and item.get("profile_url")
+    }
+    official_x_url = (social_profiles or {}).get("x")
+    if official_x_url and official_x_url not in existing_urls:
+        confirmed_profiles.insert(
+            0,
+            {
+                "profile_url": official_x_url,
+                "source_reason": "official_site_match",
+            },
+        )
+    return confirmed_profiles
+
+
+def _confirmed_x_source_label(source_reason: str | None, lang: str) -> str:
+    reason = (source_reason or "").strip().lower()
+    if "official" in reason:
+        return "官方網站確認" if lang == "zh-TW" else "Official website confirmation"
+    if "manual" in reason:
+        return "人工確認" if lang == "zh-TW" else "Manual confirmation"
+    if "candidate" in reason or "search" in reason:
+        return "搜尋結果認證線索" if lang == "zh-TW" else "Search-result verification hint"
+    return "人工確認" if lang == "zh-TW" else "Manual confirmation"
+
+
+def _group_confirmed_x_profiles(
+    confirmed_profiles: list[dict[str, str]],
+    lang: str,
+) -> list[tuple[str, list[dict[str, str]]]]:
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for confirmed_profile in confirmed_profiles:
+        label = _confirmed_x_source_label(confirmed_profile.get("source_reason"), lang)
+        grouped.setdefault(label, []).append(confirmed_profile)
+    ordering = [
+        "官方網站確認" if lang == "zh-TW" else "Official website confirmation",
+        "搜尋結果認證線索" if lang == "zh-TW" else "Search-result verification hint",
+        "人工確認" if lang == "zh-TW" else "Manual confirmation",
+    ]
+    return [(label, grouped[label]) for label in ordering if label in grouped]
+
+
+def _query_person_id() -> int | None:
+    raw_value = st.query_params.get("person_id")
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, list):
+        raw_value = raw_value[0] if raw_value else None
+    if raw_value is None:
+        return None
+    text = str(raw_value).strip()
+    if text.isdigit():
+        return int(text)
+    return None
+
+
+def _render_x_candidate_block(person_id: int, candidate: dict[str, str], lang: str, button_prefix: str) -> None:
+    title = candidate.get("title") or candidate.get("handle") or candidate.get("profile_url") or ""
+    profile_url = candidate.get("profile_url") or ""
+    if profile_url:
+        st.markdown(f"- [{title}]({profile_url})")
+    else:
+        st.markdown(f"- {title}")
+    if candidate.get("snippet"):
+        st.caption(candidate["snippet"])
+    if candidate.get("verification_hint") == "true":
+        st.caption("認證線索: 有" if lang == "zh-TW" else "Verification hint: yes")
+    if candidate.get("reasons"):
+        reason_label = "理由" if lang == "zh-TW" else "Reasons"
+        st.caption(f"{reason_label}: {candidate['reasons']}")
+    confirm_label = "加入已確認 X 帳號" if lang == "zh-TW" else "Add confirmed X account"
+    if profile_url and st.button(confirm_label, key=f"{button_prefix}-{person_id}-{profile_url}"):
+        with session_scope() as session:
+            service = XCandidateConfirmationService(session)
+            source_reason = (
+                "x_candidate_search_verified"
+                if candidate.get("verification_hint") == "true"
+                else "x_candidate_manual_confirmed"
+            )
+            confirmed = service.confirm_candidate(person_id, profile_url, source_reason=source_reason)
+        if confirmed:
+            st.success("已加入已確認 X 帳號。" if lang == "zh-TW" else "Confirmed X account added.")
+            st.rerun()
+        st.error("無法更新 X 帳號。" if lang == "zh-TW" else "Unable to update X account.")
+
+
+def _participant_entries(participants: list[object]) -> list[dict[str, object]]:
+    entries: list[dict[str, object]] = []
+    seen_ids: set[int] = set()
+    for participant in participants:
+        person = getattr(participant, "person", None)
+        person_id = getattr(participant, "person_id", None)
+        if not person or not person_id or person_id in seen_ids:
+            continue
+        entries.append(
+            {
+                "person_id": person_id,
+                "display_name": display_person_name(person.full_name, person.given_name, person.family_name),
+            }
+        )
+        seen_ids.add(person_id)
+    return entries
+
+
+def _render_statement_cards(
+    items: list[Statement],
+    source_counts_map: dict[int, int],
+    sources_map: dict[int, list[object]],
+    participants_map: dict[int, list[dict[str, object]]],
+    lang: str,
+    labels: dict[str, str],
+) -> None:
+    if not items:
+        st.info(labels["no_recent_statements"])
+        return
+    for item in items:
+        with st.container(border=True):
+            st.markdown(f"**{item.title}**")
+            source_count = source_counts_map.get(item.id, 0)
+            source_type = statement_source_label(item, lang, str(localize_value(item.event_source_preference or item.source_type, lang)))
+            review_status = localize_value(item.review_status, lang)
+            st.caption(f"{item.date_published or item.date_collected} | {source_type} | {source_count} | {review_status}")
+            participants = participants_map.get(item.id, [])
+            if participants:
+                participants_label = "參與人" if lang == "zh-TW" else "Participants"
+                st.write(f"{participants_label}:")
+                render_person_links(participants, lang, key_prefix=f"statement-{item.id}")
+            if item.excerpt:
+                st.write(item.excerpt[:500])
+            representative_label = statement_source_label(item, lang, str(item.event_source_preference or item.source_type or labels["unknown"]))
+            st.write(f"{labels['representative_source']}: {representative_label} | {item.source_url}")
+            sources = sources_map.get(item.id, [])
+            if sources:
+                citation_label = "引述來源" if lang == "zh-TW" else "Quoted sources"
+                top_sources = " | ".join(
+                    f"[{source.source_title or source_label(source, lang, str(source.source_type or labels['unknown']))}]({source.source_url})"
+                    for source in sources[:3]
+                )
+                st.markdown(f"{citation_label}: {top_sources}")
+                with st.expander(labels["sources"]):
+                    for source in sources:
+                        display_label = source_label(source, lang, str(source.source_type or labels["unknown"]))
+                        st.write(f"[{display_label}] {source.source_url}")
+
+
+def render(lang: str, labels: dict[str, str]) -> None:
+    st.header(labels["person_detail"])
+
+    pending_person_id = _query_person_id()
+    if pending_person_id:
+        clear_label = "返回人物瀏覽" if lang == "zh-TW" else "Back to person browser"
+        if st.button(clear_label, key="clear-pending-person"):
+            if "person_id" in st.query_params:
+                del st.query_params["person_id"]
+            if st.query_params.get("page") == "person_detail":
+                del st.query_params["page"]
+            st.rerun()
+
+    selected_category = st.selectbox(
+        labels["person_category"],
+        list(PERSON_CATEGORIES.keys()),
+        format_func=lambda key: _category_label(PERSON_CATEGORIES[key], lang),
+    )
+
+    with session_scope() as session:
+        state_filter = None
+        department_filter = None
+        subdepartment_filter = None
+        unit_filter = None
+        person = None
+        person_id = None
+
+        if pending_person_id:
+            person = session.get(Person, int(pending_person_id))
+            if person:
+                person_id = int(pending_person_id)
+            else:
+                pass
+
+        if person is None and selected_category in _categories_with_department_filter():
+            department_options = _get_department_options(session, selected_category)
+            if not department_options:
+                st.info(labels["no_people_loaded"])
+                return
+            department_filter = st.selectbox(labels["department"], department_options)
+            subdepartment_options = _get_subdepartment_options(session, selected_category, department_filter)
+            if subdepartment_options:
+                subdepartment_label = "次部門" if lang == "zh-TW" else "Subdepartment"
+                sub_selection = st.selectbox(subdepartment_label, ["全部", *subdepartment_options])
+                subdepartment_filter = None if sub_selection == "全部" else sub_selection
+                if subdepartment_filter:
+                    unit_options = _get_unit_options(session, selected_category, department_filter, subdepartment_filter)
+                    if unit_options:
+                        unit_label = "下屬部門" if lang == "zh-TW" else "Sub-unit"
+                        unit_selection = st.selectbox(unit_label, ["全部", *unit_options])
+                        unit_filter = None if unit_selection == "全部" else unit_selection
+
+        if person is None and selected_category in _categories_with_state_filter():
+            state_options = _get_state_options(session, selected_category)
+            if not state_options:
+                st.info(labels["no_people_loaded"])
+                return
+            state_selection = st.selectbox(labels["state"], [labels["all"], *state_options])
+            state_filter = None if state_selection == labels["all"] else state_selection
+
+        if person is None:
+            status_options = ["current", "former"]
+            status_labels = {
+                "current": localize_value("current", lang),
+                "former": localize_value("former", lang),
+            }
+            selected_status = st.selectbox(
+                labels["status_filter"],
+                status_options,
+                format_func=lambda value: str(status_labels[value]),
+                key=f"person-status-{selected_category}",
+            )
+
+            candidates = _get_people_for_category(
+                session,
+                selected_category,
+                state_filter=state_filter,
+                department_filter=department_filter,
+                subdepartment_filter=subdepartment_filter,
+                unit_filter=unit_filter,
+                status_filter=selected_status,
+            )
+            if not candidates:
+                st.info(labels["no_people_loaded"])
+                return
+
+            if selected_category == "federal_executive":
+                candidates = sorted(
+                    candidates,
+                    key=lambda row: (
+                        _executive_role_rank(_display_office_name(row[4], row[6])),
+                        display_person_name(row[1], row[2], row[3]).lower(),
+                    ),
+                )
+
+            person_options = {
+                f"{display_person_name(row[1], row[2], row[3])} ({_display_office_name(row[4], row[6])})": row[0]
+                for row in candidates
+            }
+            selected_person_label = st.selectbox(labels["select_person"], list(person_options.keys()))
+            person_id = person_options[selected_person_label]
+            person = session.get(Person, int(person_id))
+            if not person:
+                st.info(labels["person_not_found"])
+                return
+
+        person_data = {
+            "full_name": display_person_name(person.full_name, person.given_name, person.family_name),
+            "full_name_display": (person.raw_payload or {}).get("full_name_display"),
+            "portrait_url": person.portrait_url,
+            "portrait_source_url": person.portrait_source_url,
+            "portrait_source_type": person.portrait_source_type,
+            "profile_status": person.profile_status,
+            "seed_source_type": person.seed_source_type,
+            "source_type": person.source_type,
+            "canonical_official_url": person.canonical_official_url,
+            "source_url": person.source_url,
+            "social_profiles": person.social_profiles or {},
+            "date_of_birth": person.date_of_birth,
+            "place_of_birth": person.place_of_birth,
+            "ethnicity": person.ethnicity,
+            "religion": person.religion,
+            "education": person.education,
+            "career_history": person.career_history,
+            "bio": person.bio,
+            "background_sources": (person.raw_payload or {}).get("background_sources", {}),
+            "raw_payload": person.raw_payload or {},
+        }
+
+        statements_service = StatementsService(session)
+        aliases = session.execute(select(Alias.alias).where(Alias.person_id == person.id, Alias.alias_type != "chinese_name")).scalars().all()
+        chinese_aliases = session.execute(select(Alias.alias).where(Alias.person_id == person.id, Alias.alias_type == "chinese_name")).scalars().all()
+        appointments = session.execute(
+            select(Appointment.role_title, Appointment.party, Appointment.status, Appointment.start_date, Appointment.end_date, Appointment.district)
+            .where(Appointment.person_id == person.id)
+            .order_by(Appointment.start_date.desc())
+        ).all()
+        current_appointment_row = session.execute(
+            select(Appointment.role_title, Appointment.party, Appointment.district, Appointment.raw_payload, Office.chamber)
+            .join(Office, Office.id == Appointment.office_id)
+            .where(Appointment.person_id == person.id, Appointment.status == "current")
+            .order_by(Appointment.start_date.desc())
+            .limit(1)
+        ).first()
+        current_appointment = current_appointment_row[0] if current_appointment_row else None
+        legislator_metadata = (
+            extract_legislator_metadata(
+                {
+                    **(person_data["raw_payload"] if isinstance(person_data["raw_payload"], dict) else {}),
+                    "full_name": person_data["full_name"],
+                    "source_url": person.source_url,
+                    "canonical_official_url": person.canonical_official_url,
+                },
+                current_appointment_row[3] if current_appointment_row else {},
+                current_appointment,
+                current_appointment_row[1] if current_appointment_row else None,
+                current_appointment_row[2] if current_appointment_row else None,
+                current_appointment_row[4] if current_appointment_row else None,
+            )
+            if selected_category in {"federal_senate", "federal_house"}
+            else None
+        )
+
+        recent_statements = statements_service.list_recent_taiwan_statements(person.id, limit=3)
+        recent_official_statements = statements_service.list_recent_official_statements(person.id, limit=3)
+        recent_social_posts = statements_service.list_recent_social_posts(person.id, limit=5)
+        statement_years = statements_service.list_statement_years(person.id)
+        media_reports = statements_service.list_recent_media_reports(person.id, limit=10)
+
+        recent_statement_sources = {item.id: statements_service.list_sources_for_statement(item.id) for item in recent_statements}
+        recent_statement_source_counts = {item.id: len(recent_statement_sources[item.id]) for item in recent_statements}
+        recent_statement_participants = {
+            item.id: _participant_entries(statements_service.list_participants_for_statement(item.id))
+            for item in recent_statements
+        }
+        recent_official_sources = {item.id: statements_service.list_sources_for_statement(item.id) for item in recent_official_statements}
+        recent_official_source_counts = {item.id: len(recent_official_sources[item.id]) for item in recent_official_statements}
+        recent_official_participants = {
+            item.id: _participant_entries(statements_service.list_participants_for_statement(item.id))
+            for item in recent_official_statements
+        }
+        recent_social_sources = {item.id: statements_service.list_sources_for_statement(item.id) for item in recent_social_posts}
+        recent_social_source_counts = {item.id: len(recent_social_sources[item.id]) for item in recent_social_posts}
+        recent_social_participants = {
+            item.id: _participant_entries(statements_service.list_participants_for_statement(item.id))
+            for item in recent_social_posts
+        }
+        media_sources = {item.id: statements_service.list_sources_for_statement(item.id) for item in media_reports}
+        media_source_counts = {item.id: len(media_sources[item.id]) for item in media_reports}
+        media_participants = {
+            item.id: _participant_entries(statements_service.list_participants_for_statement(item.id))
+            for item in media_reports
+        }
+
+        trackers = session.execute(
+            select(Tracker.name, Tracker.status, Tracker.last_run_at, Tracker.last_run_status).where(Tracker.person_id == person.id)
+        ).all()
+        last_sync = None
+        if trackers:
+            last_sync = session.execute(
+                select(SyncRun.job_name, SyncRun.status, SyncRun.started_at, SyncRun.ended_at, SyncRun.error_message)
+                .where(SyncRun.job_name.like("tracker_sync_%"))
+                .order_by(desc(SyncRun.started_at))
+                .limit(1)
+            ).first()
+
+    top_left, top_right = st.columns([1, 2])
+    with top_left:
+        if person_data["portrait_url"]:
+            st.image(person_data["portrait_url"])
+            if person_data["portrait_source_type"] or person_data["portrait_source_url"]:
+                source_type = source_bucket_label(person_data["portrait_source_type"], person_data["portrait_source_url"], lang)
+                source_url = person_data["portrait_source_url"] or ""
+                render_source_badges(source_type, source_url, lang)
+        else:
+            st.info(labels["no_portrait"])
+
+    with top_right:
+        display_title = person_data["full_name"]
+        if chinese_aliases:
+            primary_chinese_name = chinese_aliases[0]
+            display_title = f"{primary_chinese_name} {person_data['full_name']}"
+        st.subheader(display_title)
+        chinese_name_label = "中文譯名" if lang == "zh-TW" else "Chinese names"
+        if chinese_aliases:
+            st.write(chinese_name_label)
+            st.write("?".join(chinese_aliases) if lang == "zh-TW" else ", ".join(chinese_aliases))
+
+        if person_data["full_name_display"] and person_data["full_name_display"] != person_data["full_name"]:
+            full_name_label = "全名" if lang == "zh-TW" else "Full name"
+            st.write(f"{full_name_label}: {person_data['full_name_display']}")
+            source_note = _format_background_source("full_name_display", person_data, labels, lang)
+            if source_note:
+                st.caption(source_note)
+        if legislator_metadata:
+            party_label = "黨籍" if lang == "zh-TW" else "Party"
+            district_label = "選區" if lang == "zh-TW" else "District"
+            committees_label = "委員會" if lang == "zh-TW" else "Committees"
+            service_label = "過去國會資歷" if lang == "zh-TW" else "Prior congressional service"
+            congress_label = "Congress.gov 頁面" if lang == "zh-TW" else "Congress.gov profile"
+            congress_search_label = "Congress.gov 搜尋" if lang == "zh-TW" else "Congress.gov search"
+            if legislator_metadata.get("party"):
+                st.write(f"{party_label}: {legislator_metadata['party']}")
+            if legislator_metadata.get("district"):
+                st.write(f"{district_label}: {legislator_metadata['district']}")
+            if legislator_metadata.get("committees"):
+                st.write(f"{committees_label}:")
+                for committee in legislator_metadata["committees"]:
+                    if isinstance(committee, dict):
+                        label = committee.get("name") or committee.get("title") or str(committee)
+                    else:
+                        label = str(committee)
+                    st.markdown(f"- {label}")
+            if legislator_metadata.get("congress_service_history"):
+                st.write(service_label)
+                for item in legislator_metadata["congress_service_history"]:
+                    chamber_label = item.get("label") or item.get("chamber") or "Congress"
+                    congress_number = item.get("congress")
+                    district = item.get("district")
+                    years = " - ".join([str(value) for value in [item.get("start_year"), item.get("end_year")] if value])
+                    detail_bits = [str(chamber_label)]
+                    if congress_number:
+                        detail_bits.append(f"{congress_number}th Congress")
+                    if district:
+                        detail_bits.append(f"district {district}")
+                    if years:
+                        detail_bits.append(years)
+                    st.markdown(f"- {' | '.join(detail_bits)}")
+            if legislator_metadata.get("congress_profile_url"):
+                st.markdown(f"[{congress_label}]({legislator_metadata['congress_profile_url']})")
+            else:
+                st.markdown(
+                    f"[{congress_search_label}]({build_congress_member_search_url(person_data['full_name'], current_appointment)})"
+                )
+        if person_data["date_of_birth"]:
+            st.write(f"{labels['date_of_birth']}: {person_data['date_of_birth']}")
+            source_note = _format_background_source("date_of_birth", person_data, labels, lang)
+            if source_note:
+                st.caption(source_note)
+        if person_data["place_of_birth"]:
+            st.write(f"{labels['place_of_birth']}: {person_data['place_of_birth']}")
+            source_note = _format_background_source("place_of_birth", person_data, labels, lang)
+            if source_note:
+                st.caption(source_note)
+        if person_data["ethnicity"]:
+            st.write(f"{labels['ethnicity']}: {person_data['ethnicity']}")
+        if person_data["religion"]:
+            st.write(f"{labels['religion']}: {person_data['religion']}")
+        if person_data["education"]:
+            st.write(labels["education"])
+            st.write(person_data["education"])
+            source_note = _format_background_source("education", person_data, labels, lang)
+            if source_note:
+                st.caption(source_note)
+        if person_data["career_history"]:
+            st.write(labels["career_history"])
+            st.markdown(str(person_data["career_history"]))
+            source_note = _format_background_source("career_history", person_data, labels, lang)
+            if source_note:
+                st.caption(source_note)
+        if person_data["bio"]:
+            st.write(person_data["bio"])
+
+        if person_data["social_profiles"]:
+            st.write(labels["social_profiles"])
+            render_social_links(person_data["social_profiles"], key_prefix=f"person-social-{person_id}")
+            with st.expander(labels["social_profiles"]):
+                for platform, url in person_data["social_profiles"].items():
+                    st.markdown(f"- [{social_display_name(platform)}]({url})")
+
+        person_source_url = person_data["source_url"]
+        official_page_url = person_data["canonical_official_url"] if is_government_url(person_data["canonical_official_url"]) else None
+        if not official_page_url and is_government_url(person_source_url):
+            official_page_url = person_source_url
+
+        st.write(f"{labels['profile_status']}: {person_data['profile_status'] or labels['unknown']}")
+        st.write(f"{labels['seed_source']}: {source_bucket_label(person_data['seed_source_type'], person_source_url, lang)}")
+        st.write(f"{labels['primary_source']}: {source_bucket_label(person_data['source_type'], person_source_url, lang)}")
+        st.write(f"{labels['official_page']}: {official_page_url or 'N/A'}")
+
+        st.write(labels["aliases"])
+        st.write(", ".join(aliases) if aliases else "N/A")
+
+        wikipedia_url = resolve_wikipedia_url(person_data["source_url"], person_data["raw_payload"])
+        wikipedia_search_url = build_wikipedia_search_url(person_data["full_name"], current_appointment)
+        wikipedia_label = "Wikipedia 頁面" if lang == "zh-TW" else "Wikipedia page"
+        wikipedia_search_label = "Wikipedia 搜尋" if lang == "zh-TW" else "Wikipedia search"
+        if wikipedia_url:
+            st.markdown(f"[{wikipedia_label}]({wikipedia_url})")
+        else:
+            st.markdown(f"[{wikipedia_search_label}]({wikipedia_search_url})")
+
+        if not official_page_url:
+            official_search_url = build_google_official_search_url(person_data["full_name"], current_appointment)
+            official_bio_search_url = build_google_official_bio_search_url(person_data["full_name"], current_appointment)
+            official_search_label = "Google 搜尋官方資料" if lang == "zh-TW" else "Search official sources"
+            official_bio_label = "Google 搜尋官方簡歷" if lang == "zh-TW" else "Search official biography"
+            st.markdown(f"[{official_search_label}]({official_search_url})")
+            st.markdown(f"[{official_bio_label}]({official_bio_search_url})")
+            extra_official_links = (person_data["raw_payload"] or {}).get("official_search_urls", {})
+            if extra_official_links.get("whitehouse_search"):
+                whitehouse_label = "Google 搜尋白宮資料" if lang == "zh-TW" else "Search White House sources"
+                st.markdown(f"[{whitehouse_label}]({extra_official_links['whitehouse_search']})")
+            if extra_official_links.get("department_search"):
+                department_label = "Google 搜尋部會資料" if lang == "zh-TW" else "Search department sources"
+                st.markdown(f"[{department_label}]({extra_official_links['department_search']})")
+
+        x_links = (person_data["raw_payload"] or {}).get("x_candidate_links", {})
+        x_search_url = x_links.get("google_x_search") or build_x_search_url(person_data["full_name"], current_appointment)
+        x_search_label = "X 搜尋候選帳號" if lang == "zh-TW" else "Search X candidates"
+        st.markdown(f"[{x_search_label}]({x_search_url})")
+
+        confirmed_x_profiles = _merged_confirmed_x_profiles(person_data["raw_payload"], person_data["social_profiles"])
+        if confirmed_x_profiles:
+            st.caption("已確認 X 帳號" if lang == "zh-TW" else "Confirmed X accounts")
+            for source_label_text, source_profiles in _group_confirmed_x_profiles(confirmed_x_profiles, lang):
+                st.caption(source_label_text)
+                for confirmed_profile in source_profiles:
+                    profile_url = confirmed_profile.get("profile_url")
+                    if profile_url:
+                        st.markdown(f"- [{profile_url}]({profile_url})")
+
+        high_confidence_candidates, review_candidates, rejected_candidates = _candidate_sections(person_data["raw_payload"])
+        if not high_confidence_candidates and not review_candidates and not rejected_candidates:
+            st.caption("目前尚未解析出 X 候選帳號，請先使用搜尋連結。" if lang == "zh-TW" else "No parsed X candidates yet. Use the search link for now.")
+        if high_confidence_candidates:
+            st.caption("高可信 X 候選帳號" if lang == "zh-TW" else "High-confidence X candidates")
+            for candidate in high_confidence_candidates:
+                _render_x_candidate_block(person_id, candidate, lang, "x-high")
+        if review_candidates:
+            with st.expander("待審核 X 候選帳號" if lang == "zh-TW" else "X candidates needing review"):
+                for candidate in review_candidates:
+                    _render_x_candidate_block(person_id, candidate, lang, "x-review")
+        if rejected_candidates:
+            with st.expander("已排除 X 候選帳號" if lang == "zh-TW" else "Rejected X candidates"):
+                for candidate in rejected_candidates:
+                    st.markdown(f"- [{candidate.get('title') or candidate.get('handle')}]({candidate.get('profile_url')})")
+                    if candidate.get("reasons"):
+                        st.caption(f"排除原因: {candidate['reasons']}" if lang == "zh-TW" else f"Rejected because: {candidate['reasons']}")
+        missing_background_fields = [
+            field_name
+            for field_name in ("date_of_birth", "place_of_birth", "education", "career_history")
+            if not person_data.get(field_name)
+        ]
+        if missing_background_fields:
+            section_label = "背景資料搜尋入口" if lang == "zh-TW" else "Background research links"
+            missing_label = "尚缺欄位" if lang == "zh-TW" else "Missing fields"
+            with st.expander(section_label):
+                st.caption(f"{missing_label}: {', '.join(labels.get(field_name, field_name) for field_name in missing_background_fields)}")
+                for link_key, link_url in _background_search_links(person_data, current_appointment):
+                    st.markdown(f"- [{_background_search_label(link_key, lang)}]({link_url})")
+        if last_sync:
+            st.caption(f"{labels['last_sync']}: {last_sync.started_at} | {last_sync.status} | {last_sync.error_message or 'OK'}")
+
+    st.subheader(labels["recent_taiwan_statements"])
+    overview_tab_label = "最新綜覽" if lang == "zh-TW" else "Overview"
+    official_tab_label = "官方聲明" if lang == "zh-TW" else "Official statements"
+    social_tab_label = "社群貼文" if lang == "zh-TW" else "Social posts"
+    media_tab_label = "媒體報導" if lang == "zh-TW" else "Media reports"
+    overview_tab, official_tab, social_tab, media_tab = st.tabs(
+        [overview_tab_label, official_tab_label, social_tab_label, media_tab_label]
+    )
+
+    with overview_tab:
+        _render_statement_cards(recent_statements, recent_statement_source_counts, recent_statement_sources, recent_statement_participants, lang, labels)
+    with official_tab:
+        _render_statement_cards(recent_official_statements, recent_official_source_counts, recent_official_sources, recent_official_participants, lang, labels)
+    with social_tab:
+        _render_statement_cards(recent_social_posts, recent_social_source_counts, recent_social_sources, recent_social_participants, lang, labels)
+    with media_tab:
+        _render_statement_cards(media_reports, media_source_counts, media_sources, media_participants, lang, labels)
+
+    st.subheader(labels["browse_by_year"])
+    if statement_years:
+        selected_year = st.selectbox(labels["year"], statement_years)
+        with session_scope() as session:
+            statements_service = StatementsService(session)
+            yearly_statements = statements_service.list_statements_by_year(person_id, int(selected_year))
+            yearly_source_counts = {item.id: statements_service.get_source_count(item.id) for item in yearly_statements}
+        yearly_df = localize_dataframe(
+            _format_statement_rows(yearly_statements, lang, yearly_source_counts),
+            lang,
+            value_columns=["review_status"],
+        )
+        yearly_df = style_source_columns(yearly_df, ["來源類型", "Source type"])
+        st.dataframe(yearly_df, use_container_width=True)
+    else:
+        st.info(labels["no_historical_statements"])
+
+    tab1, tab2, tab3 = st.tabs([labels["office_history"], labels["recent_media_reports"], labels["tracker_status"]])
+    with tab1:
+        st.dataframe(
+            localize_dataframe(
+                pd.DataFrame(appointments, columns=["role", "party", "status", "start_date", "end_date", "district"]),
+                lang,
+                value_columns=["status"],
+            ),
+            use_container_width=True,
+        )
+    with tab2:
+        media_df = localize_dataframe(
+            _format_statement_rows(media_reports, lang, media_source_counts),
+            lang,
+            value_columns=["review_status"],
+        )
+        media_df = style_source_columns(media_df, ["來源類型", "Source type"])
+        st.dataframe(media_df, use_container_width=True)
+    with tab3:
+        st.dataframe(
+            localize_dataframe(
+                pd.DataFrame(trackers, columns=["name", "status", "last_run_at", "last_run_status"]),
+                lang,
+                value_columns=["status", "last_run_status"],
+            ),
+            use_container_width=True,
+        )

@@ -1,0 +1,266 @@
+from __future__ import annotations
+
+import streamlit as st
+
+from tracker.config import get_settings
+from tracker.database_setup import ensure_database_ready
+from tracker.ui import dashboard, jobs_page, legislation_page, notifications_page, officials_page, person_page, review_page, settings_page, trackers_page
+
+
+LABELS = {
+    "zh-TW": {
+        "app_title": "US Taiwan Watch",
+        "dashboard": "首頁",
+        "officials": "官員名單",
+        "person_detail": "人物頁面",
+        "trackers": "追蹤器",
+        "review_queue": "事件",
+        "legislation": "立法",
+        "jobs_scheduler": "排程與工作",
+        "notifications": "通知",
+        "settings": "設定",
+        "total_officials": "官員總數",
+        "total_trackers": "追蹤器總數",
+        "recent_statements": "近期聲明",
+        "recent_sync_runs": "近期同步",
+        "recent_alerts": "近期提醒",
+        "search_name": "搜尋姓名",
+        "aliases": "別名",
+        "office_history": "職務歷程",
+        "tracker_status": "追蹤狀態",
+        "person_not_found": "找不到此人物。",
+        "run_sample_sync": "執行官方名單同步",
+        "run_profile_enrichment": "批次補全背景資料",
+        "run_portrait_backfill": "補全人物照片",
+        "run_tracker_sync": "執行人物追蹤同步",
+        "wiki_import": "從維基名單匯入人物",
+        "wiki_url": "維基名單網址",
+        "office_name": "職位名稱",
+        "role_title": "角色名稱",
+        "level": "層級",
+        "state": "州",
+        "department": "部門",
+        "branch": "部門",
+        "chamber": "議院",
+        "jurisdiction_name": "轄區名稱",
+        "jurisdiction_type": "轄區類型",
+        "appointment_status": "任職狀態",
+        "auto_create_trackers": "自動建立 Taiwan 媒體追蹤器",
+        "import_list": "匯入名單",
+        "status_filter": "狀態",
+        "all": "全部",
+        "unknown": "未知",
+        "no_people_loaded": "這個類別目前還沒有人物資料。",
+        "select_person": "選擇人物",
+        "person_category": "人物層級",
+        "profile_status": "資料狀態",
+        "seed_source": "種子來源",
+        "primary_source": "目前主要來源",
+        "official_page": "官方頁面",
+        "date_of_birth": "生日",
+        "place_of_birth": "出生地",
+        "ethnicity": "族裔",
+        "religion": "宗教",
+        "education": "學歷",
+        "career_history": "過去經歷",
+        "field_source": "資料來源",
+        "recent_taiwan_statements": "近期台灣相關發言",
+        "browse_by_year": "依年份瀏覽發言",
+        "recent_media_reports": "近期媒體報導",
+        "sources": "來源",
+        "representative_source": "代表來源",
+        "attached_sources": "附加來源數",
+        "keywords": "關鍵字",
+        "confirm_related": "確認為台灣相關",
+        "needs_review": "保留待審",
+        "dismiss": "排除",
+        "social_profiles": "社群帳號",
+        "no_portrait": "尚無官方肖像，請加入或同步官方網站 target。",
+        "no_recent_statements": "目前尚未蒐集到台灣相關發言。",
+        "no_historical_statements": "目前尚無歷年台灣相關發言。",
+        "last_sync": "最近同步",
+        "no_people_found_sync_first": "目前還沒有人物資料，請先同步官員名單。",
+        "new_tracker": "新增追蹤器",
+        "tracker_label": "追蹤器",
+        "tracker_name": "追蹤器名稱",
+        "tracker_targets": "追蹤目標明細",
+        "status": "狀態",
+        "include_primary": "包含第一手官方發言",
+        "include_media": "包含媒體報導",
+        "schedule_note": "排程備註 / cron 預留欄位",
+        "targets": "追蹤目標（每行一筆：type|name|url）",
+        "job_result": "執行結果",
+        "save_tracker": "儲存追蹤器",
+        "tracker_saved": "已儲存追蹤器",
+        "run_tracker_now": "立即執行此追蹤器",
+        "person": "人物",
+        "settings_yaml": "設定檔 settings.yaml",
+        "keywords_yaml": "關鍵字檔 keywords.yaml",
+        "source_registry_yaml": "來源登錄 source_registry.yaml",
+        "statement": "事件 / 發言",
+        "year": "年份",
+    },
+    "en": {
+        "app_title": "US Taiwan Watch",
+        "dashboard": "Home",
+        "officials": "Officials",
+        "person_detail": "Person Detail",
+        "trackers": "Trackers",
+        "review_queue": "Events",
+        "legislation": "Legislation",
+        "jobs_scheduler": "Jobs / Scheduler",
+        "notifications": "Notifications",
+        "settings": "Settings",
+        "total_officials": "Total officials",
+        "total_trackers": "Total trackers",
+        "recent_statements": "Recent statements",
+        "recent_sync_runs": "Recent sync runs",
+        "recent_alerts": "Recent alerts",
+        "search_name": "Search by name",
+        "aliases": "Aliases",
+        "office_history": "Office history",
+        "tracker_status": "Tracker status",
+        "person_not_found": "Person not found.",
+        "run_sample_sync": "Run officials sync",
+        "run_profile_enrichment": "Run profile enrichment",
+        "run_portrait_backfill": "Backfill portraits",
+        "run_tracker_sync": "Run tracker sync",
+        "wiki_import": "Import people from Wikipedia list",
+        "wiki_url": "Wikipedia list URL",
+        "office_name": "Office name",
+        "role_title": "Role title",
+        "level": "Level",
+        "state": "State",
+        "department": "Department",
+        "branch": "Branch",
+        "chamber": "Chamber",
+        "jurisdiction_name": "Jurisdiction name",
+        "jurisdiction_type": "Jurisdiction type",
+        "appointment_status": "Appointment status",
+        "auto_create_trackers": "Auto-create Taiwan media tracker",
+        "import_list": "Import list",
+        "status_filter": "Status",
+        "all": "All",
+        "unknown": "Unknown",
+        "no_people_loaded": "No people are loaded for this category yet.",
+        "select_person": "Select person",
+        "person_category": "Person category",
+        "profile_status": "Profile status",
+        "seed_source": "Seed source",
+        "primary_source": "Current primary source",
+        "official_page": "Official page",
+        "date_of_birth": "Date of birth",
+        "place_of_birth": "Place of birth",
+        "ethnicity": "Ethnicity",
+        "religion": "Religion",
+        "education": "Education",
+        "career_history": "Past experience",
+        "field_source": "Source",
+        "recent_taiwan_statements": "Recent Taiwan-related statements",
+        "browse_by_year": "Browse statements by year",
+        "recent_media_reports": "Recent media reports",
+        "sources": "Sources",
+        "representative_source": "Representative source",
+        "attached_sources": "Attached sources",
+        "keywords": "Keywords",
+        "confirm_related": "Confirm Taiwan-related",
+        "needs_review": "Needs review",
+        "dismiss": "Dismiss",
+        "social_profiles": "Social profiles",
+        "no_portrait": "No official portrait yet. Add or sync an official website target.",
+        "no_recent_statements": "No Taiwan-related statements collected yet.",
+        "no_historical_statements": "No historical Taiwan-related statements available yet.",
+        "last_sync": "Last sync",
+        "no_people_found_sync_first": "No people found yet. Run officials sync first.",
+        "new_tracker": "New tracker",
+        "tracker_label": "Tracker",
+        "tracker_name": "Tracker name",
+        "tracker_targets": "Tracker targets",
+        "status": "Status",
+        "include_primary": "Include primary-source statements",
+        "include_media": "Include media reports",
+        "schedule_note": "Schedule note / cron placeholder",
+        "targets": "Targets (one per line: type|name|url)",
+        "job_result": "Result",
+        "save_tracker": "Save tracker",
+        "tracker_saved": "Saved tracker",
+        "run_tracker_now": "Run this tracker now",
+        "person": "Person",
+        "settings_yaml": "settings.yaml",
+        "keywords_yaml": "keywords.yaml",
+        "source_registry_yaml": "source_registry.yaml",
+        "statement": "Statement / Event",
+        "year": "Year",
+    },
+}
+
+
+PAGES = {
+    "dashboard": dashboard.render,
+    "person_detail": person_page.render,
+    "review_queue": review_page.render,
+    "legislation": legislation_page.render,
+    "officials": officials_page.render,
+    "trackers": trackers_page.render,
+    "jobs_scheduler": jobs_page.render,
+    "notifications": notifications_page.render,
+    "settings": settings_page.render,
+}
+
+NAV_PAGE_ORDER = [
+    "dashboard",
+    "person_detail",
+    "review_queue",
+    "legislation",
+    "officials",
+    "trackers",
+    "jobs_scheduler",
+    "notifications",
+    "settings",
+]
+
+
+def main() -> None:
+    settings = get_settings()
+    ensure_database_ready()
+    st.set_page_config(page_title=settings.app_name, layout="wide")
+
+    language = st.session_state.get("ui_language", settings.default_language)
+    if language not in settings.supported_languages:
+        language = settings.default_language
+
+    labels = LABELS[language]
+    st.sidebar.markdown(f"## [US Taiwan Watch](?page=dashboard)")
+    query_page = st.query_params.get("page")
+    if query_page in PAGES and "sidebar_nav_radio" not in st.session_state:
+        st.session_state["sidebar_nav_radio"] = str(query_page)
+    page_options = [page for page in NAV_PAGE_ORDER if page in PAGES]
+    current_page = st.session_state.get("sidebar_nav_radio", "dashboard")
+    if current_page not in PAGES:
+        current_page = "dashboard"
+        st.session_state["sidebar_nav_radio"] = current_page
+    page_key = st.sidebar.radio(
+        "導覽 / Navigation",
+        page_options,
+        format_func=lambda key: labels[key],
+        index=page_options.index(current_page),
+        key="sidebar_nav_radio",
+    )
+    if st.query_params.get("page") != page_key:
+        st.query_params["page"] = page_key
+    if page_key != "person_detail" and "person_id" in st.query_params:
+        del st.query_params["person_id"]
+    selected_language = st.sidebar.selectbox(
+        "語言 / Language",
+        settings.supported_languages,
+        index=settings.supported_languages.index(language),
+        key="ui_language_selector",
+    )
+    if selected_language != language:
+        st.session_state["ui_language"] = selected_language
+        st.rerun()
+
+    PAGES[page_key](selected_language, LABELS[selected_language])
+
+if __name__ == "__main__":
+    main()

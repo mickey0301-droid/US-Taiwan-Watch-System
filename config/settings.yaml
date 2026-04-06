@@ -1,0 +1,43 @@
+app_name: "US Taiwan Watch"
+default_language: "zh-TW"
+supported_languages:
+  - "zh-TW"
+  - "en"
+database_url: "sqlite:///data/tracker.db"
+congress_api_key: null
+google_service_account_file: null
+google_sheet_id: null
+congress_current_number: 119
+log_level: "INFO"
+timezone: "Asia/Taipei"
+raw_data_dir: "data/raw"
+processed_data_dir: "data/processed"
+snapshots_dir: "data/snapshots"
+snapshot_raw_responses: true
+scheduler_enabled: true
+scheduler_timezone: "Asia/Taipei"
+historical_seed_cutoff_year: 1990
+scheduler_jobs:
+  sync_officials:
+    enabled: true
+    minutes: 720
+  sync_trackers:
+    enabled: false
+    minutes: 180
+  sync_media:
+    enabled: false
+    minutes: 240
+  cleanup:
+    enabled: false
+    minutes: 1440
+notifications:
+  webhook:
+    enabled: false
+    webhook_url: ""
+  email:
+    enabled: false
+source_priority:
+  - official
+  - state_portal
+  - legislature_directory
+  - media

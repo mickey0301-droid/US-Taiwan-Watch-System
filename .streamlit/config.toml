@@ -1,0 +1,6 @@
+[server]
+headless = true
+enableXsrfProtection = true
+
+[theme]
+base = "light"

@@ -1,0 +1,16 @@
+.env
+.env.*
+.streamlit/secrets.toml
+__pycache__/
+*.py[cod]
+*.sqlite
+*.db
+data/raw/
+data/processed/
+data/snapshots/
+data/*.db
+tracker.db
+district-*.json
+*.service-account.json
+tmp_*.js
+.cache/
