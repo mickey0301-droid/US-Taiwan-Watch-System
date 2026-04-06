@@ -61,21 +61,28 @@ class LegislationService:
             self.session.flush()
             created = True
         else:
-            legislation.title = payload.get("title") or legislation.title
+            incoming_rank = self.officials_service.source_sort_key(payload.get("source_type"), payload.get("source_url"))
+            current_rank = self.officials_service.source_sort_key(legislation.source_type, legislation.source_url)
+            if payload.get("title") and (not legislation.title or incoming_rank <= current_rank):
+                legislation.title = payload.get("title") or legislation.title
             legislation.bill_number = payload.get("bill_number") or legislation.bill_number
             legislation.legislation_type = payload.get("legislation_type") or legislation.legislation_type
             legislation.jurisdiction_name = payload.get("jurisdiction_name") or legislation.jurisdiction_name
             legislation.jurisdiction_id = jurisdiction_id or legislation.jurisdiction_id
             legislation.chamber = payload.get("chamber") or legislation.chamber
-            legislation.summary = payload.get("summary") or legislation.summary
-            legislation.status_text = payload.get("status_text") or legislation.status_text
+            if payload.get("summary") and (not legislation.summary or incoming_rank <= current_rank):
+                legislation.summary = payload.get("summary") or legislation.summary
+            if payload.get("status_text") and (not legislation.status_text or incoming_rank <= current_rank):
+                legislation.status_text = payload.get("status_text") or legislation.status_text
             legislation.introduced_date = payload.get("introduced_date") or legislation.introduced_date
             legislation.last_action_date = payload.get("last_action_date") or legislation.last_action_date
-            legislation.source_url = payload.get("source_url") or legislation.source_url
-            legislation.source_type = payload.get("source_type") or legislation.source_type
+            if payload.get("source_url") and (not legislation.source_url or incoming_rank <= current_rank):
+                legislation.source_url = payload.get("source_url") or legislation.source_url
+            if payload.get("source_type") and (not legislation.source_type or incoming_rank <= current_rank):
+                legislation.source_type = payload.get("source_type") or legislation.source_type
             legislation.parser_identity = payload.get("parser_identity") or legislation.parser_identity
             legislation.relevance_score = max(legislation.relevance_score or 0, payload.get("relevance_score", 0))
-            legislation.raw_payload = payload.get("raw_payload") or legislation.raw_payload
+            legislation.raw_payload = self._merge_raw_payload(legislation.raw_payload, payload.get("raw_payload"))
 
         for source in payload.get("sources", []):
             self.ensure_legislation_source(legislation.id, source)
@@ -213,3 +220,18 @@ class LegislationService:
                 alias_type="chinese_name",
             )
         return person
+
+    def _merge_raw_payload(self, current: dict[str, Any] | None, incoming: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not incoming:
+            return current
+        if not current:
+            return incoming
+        merged = dict(current)
+        for key, value in incoming.items():
+            if key not in merged or merged[key] in (None, "", [], {}):
+                merged[key] = value
+            elif isinstance(merged[key], dict) and isinstance(value, dict):
+                nested = dict(merged[key])
+                nested.update({nested_key: nested_value for nested_key, nested_value in value.items() if nested_key not in nested or nested[nested_key] in (None, "", [], {})})
+                merged[key] = nested
+        return merged

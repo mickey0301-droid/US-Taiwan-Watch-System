@@ -157,11 +157,16 @@ class OfficialsService:
             created = True
         else:
             person.last_seen_at = datetime.utcnow()
-            person.source_url = payload.get("source_url") or person.source_url
-            person.source_type = payload.get("source_type") or person.source_type
+            incoming_rank = self.source_sort_key(payload.get("source_type"), payload.get("source_url"))
+            current_rank = self.source_sort_key(person.source_type, person.source_url)
+            if payload.get("source_url") and (not person.source_url or incoming_rank <= current_rank):
+                person.source_url = payload.get("source_url") or person.source_url
+            if payload.get("source_type") and (not person.source_type or incoming_rank <= current_rank):
+                person.source_type = payload.get("source_type") or person.source_type
             person.seed_source_type = person.seed_source_type or payload.get("seed_source_type") or payload.get("source_type")
             person.profile_status = payload.get("profile_status") or person.profile_status
-            person.canonical_official_url = payload.get("canonical_official_url") or person.canonical_official_url
+            if payload.get("canonical_official_url") and (not person.canonical_official_url or incoming_rank <= current_rank):
+                person.canonical_official_url = payload.get("canonical_official_url") or person.canonical_official_url
             if payload.get("portrait_url"):
                 self.set_best_portrait(
                     person,
@@ -174,7 +179,7 @@ class OfficialsService:
                 merged_profiles.update(payload["social_profiles"])
                 person.social_profiles = merged_profiles
             person.parser_identity = payload.get("parser_identity") or person.parser_identity
-            person.raw_payload = payload.get("raw_payload") or person.raw_payload
+            person.raw_payload = self._merge_raw_payload(person.raw_payload, payload.get("raw_payload"))
         return person, created
 
     def enrich_person_profile(
@@ -311,6 +316,66 @@ class OfficialsService:
                 source_type=source_type,
             )
         )
+
+    def chinese_alias_sort_key(self, source_type: str | None, source_url: str | None = None) -> tuple[int, str]:
+        return self.source_sort_key(source_type, source_url)
+
+    def source_sort_key(self, source_type: str | None, source_url: str | None = None) -> tuple[int, str]:
+        normalized = str(source_type or "").lower()
+        ranking = {
+            "official": 0,
+            "official_api": 0,
+            "legislature_directory": 0,
+            "state_portal": 0,
+            "media": 1,
+            "social": 2,
+            "google_sheet": 3,
+            "wikipedia": 4,
+            "seed": 5,
+            "ai": 9,
+            "ai_generated": 9,
+        }
+        return (ranking.get(normalized, 5), str(source_url or ""))
+
+    def _merge_raw_payload(self, current: dict[str, Any] | None, incoming: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not incoming:
+            return current
+        if not current:
+            return incoming
+        merged = dict(current)
+        for key, value in incoming.items():
+            if key not in merged or merged[key] in (None, "", [], {}):
+                merged[key] = value
+            elif isinstance(merged[key], dict) and isinstance(value, dict):
+                nested = dict(merged[key])
+                nested.update({nested_key: nested_value for nested_key, nested_value in value.items() if nested_key not in nested or nested[nested_key] in (None, "", [], {})})
+                merged[key] = nested
+        return merged
+
+    def list_chinese_aliases(self, person_id: int) -> list[str]:
+        aliases = self.session.execute(
+            select(Alias).where(
+                Alias.person_id == person_id,
+                Alias.alias_type == "chinese_name",
+                Alias.is_current.is_(True),
+            )
+        ).scalars().all()
+        aliases = sorted(
+            aliases,
+            key=lambda alias: (
+                self.chinese_alias_sort_key(alias.source_type, alias.source_url),
+                alias.id,
+            ),
+        )
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for alias in aliases:
+            alias_text = (alias.alias or "").strip()
+            if not alias_text or alias_text in seen:
+                continue
+            seen.add(alias_text)
+            ordered.append(alias_text)
+        return ordered
 
     def upsert_appointment(self, person: Person, office: Office, jurisdiction_id: int | None, payload: dict[str, Any]) -> bool:
         stmt = select(Appointment).where(

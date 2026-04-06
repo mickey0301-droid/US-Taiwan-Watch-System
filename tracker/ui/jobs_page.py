@@ -104,6 +104,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
     row7_col1, row7_col2 = st.columns(2)
     row8_col1, row8_col2 = st.columns(2)
     row9_col1, row9_col2 = st.columns(2)
+    row10_col1, row10_col2 = st.columns(2)
 
     if row1_col1.button(labels["run_sample_sync"], use_container_width=True):
         st.subheader(labels["job_result"])
@@ -190,6 +191,10 @@ def render(lang: str, labels: dict[str, str]) -> None:
     if row9_col2.button(congress_detail_label, use_container_width=True):
         st.subheader(labels["job_result"])
         st.json(_localize_job_result(JOB_REGISTRY["enrich_congress_bill_details"](), lang))
+    import_sheet_label = "匯入 Google Sheet 資料" if lang == "zh-TW" else "Import Google Sheet data"
+    if row10_col1.button(import_sheet_label, use_container_width=True):
+        st.subheader(labels["job_result"])
+        st.json(_localize_job_result(JOB_REGISTRY["import_google_sheet_data"](), lang))
     cleanup_legislation_people_label = "清理立法髒人名" if lang == "zh-TW" else "Clean malformed legislation people"
     if row7_col2.button(cleanup_legislation_people_label, use_container_width=True):
         st.subheader(labels["job_result"])

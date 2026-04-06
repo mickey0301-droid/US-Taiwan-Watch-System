@@ -8,6 +8,7 @@ from tracker.db import session_scope
 from tracker.models import Alias, Appointment, Jurisdiction, Legislation, LegislationSponsor, Office, Person, Statement, SyncRun, Tracker
 from tracker.services.ai_assist_service import AIAssistService
 from tracker.services.google_sheet_read_service import GoogleSheetReadService
+from tracker.services.officials_service import OfficialsService
 from tracker.services.statements_service import StatementsService
 from tracker.services.x_candidate_confirmation_service import XCandidateConfirmationService
 from tracker.ui.badges import render_source_badges
@@ -840,8 +841,9 @@ def render(lang: str, labels: dict[str, str]) -> None:
         }
 
         statements_service = StatementsService(session)
+        officials_service = OfficialsService(session)
         aliases = session.execute(select(Alias.alias).where(Alias.person_id == person.id, Alias.alias_type != "chinese_name")).scalars().all()
-        chinese_aliases = session.execute(select(Alias.alias).where(Alias.person_id == person.id, Alias.alias_type == "chinese_name")).scalars().all()
+        chinese_aliases = officials_service.list_chinese_aliases(person.id)
         appointments = session.execute(
             select(Appointment.role_title, Appointment.party, Appointment.status, Appointment.start_date, Appointment.end_date, Appointment.district)
             .where(Appointment.person_id == person.id)

@@ -183,7 +183,7 @@ class StatementsService:
             existing.date_collected = datetime.utcnow()
             existing.relevance_score = max(existing.relevance_score or 0.0, score)
             existing.matched_keywords = self._merge_hits(existing.matched_keywords, hits)
-            existing.raw_payload = payload.get("raw_payload") or existing.raw_payload
+            existing.raw_payload = self._merge_raw_payload(existing.raw_payload, payload.get("raw_payload"))
             if payload.get("full_text") and (not existing.full_text or len(payload["full_text"]) > len(existing.full_text)):
                 existing.full_text = payload["full_text"]
             if payload.get("excerpt") and (not existing.excerpt or len(payload["excerpt"]) > len(existing.excerpt)):
@@ -240,6 +240,21 @@ class StatementsService:
         merged = set((current or {}).get("hits", []))
         merged.update(new_hits)
         return {"hits": sorted(merged)}
+
+    def _merge_raw_payload(self, current: dict | None, incoming: dict | None) -> dict | None:
+        if not incoming:
+            return current
+        if not current:
+            return incoming
+        merged = dict(current)
+        for key, value in incoming.items():
+            if key not in merged or merged[key] in (None, "", [], {}):
+                merged[key] = value
+            elif isinstance(merged[key], dict) and isinstance(value, dict):
+                nested = dict(merged[key])
+                nested.update({nested_key: nested_value for nested_key, nested_value in value.items() if nested_key not in nested or nested[nested_key] in (None, "", [], {})})
+                merged[key] = nested
+        return merged
 
     def _ensure_statement_source(self, statement_id: int, payload: dict) -> None:
         existing = self.session.execute(

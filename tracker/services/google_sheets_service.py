@@ -66,6 +66,8 @@ class GoogleSheetsService:
                 self.auth = auth
                 self.session = AuthorizedSession(auth)
                 self.session.trust_env = False
+                if getattr(self.session, "_auth_request_session", None) is not None:
+                    self.session._auth_request_session.trust_env = False
                 self.timeout = None
 
         service_account_file, service_account_json, _sheet_id = self._require_config()
