@@ -259,8 +259,29 @@ GOOGLE_SHEET_PRIMARY_PAGES = [
 def main() -> None:
     _install_streamlit_text_repair()
     settings = get_settings()
-    ensure_database_ready()
     st.set_page_config(page_title=settings.app_name, layout="wide")
+    db_ready = ensure_database_ready()
+    if not db_ready.ok:
+        st.title("US Taiwan Watch")
+        st.error(
+            "Cloud database connection failed."
+            if settings.default_language != "zh-TW"
+            else "雲端主資料庫連線失敗。"
+        )
+        if db_ready.safe_database_url:
+            st.caption(
+                f"Database target: {db_ready.safe_database_url}"
+                if settings.default_language != "zh-TW"
+                else f"目前目標資料庫：{db_ready.safe_database_url}"
+            )
+        if db_ready.message:
+            st.code(db_ready.message)
+        st.info(
+            "Check TRACKER_DATABASE_URL, database host allowlist, credentials, and sslmode."
+            if settings.default_language != "zh-TW"
+            else "請檢查 TRACKER_DATABASE_URL、資料庫主機白名單、帳密，以及 sslmode 設定。"
+        )
+        return
 
     language = st.session_state.get("ui_language", settings.default_language)
     if language not in settings.supported_languages:
