@@ -366,6 +366,18 @@ Last updated: 2026-04-06
 - Status:
   - Works well for many bills, but not every historical bill has a clean modern `Congress.gov` mapping.
 
+### 4.4 Streamlit Cloud requirements install failure
+
+- Symptom:
+  - Streamlit Cloud showed:
+    - `Error installing requirements`
+- Cause:
+  - `requirements.txt` pinned `gspread==6.1.2`, which was not available in the install environment.
+- Resolution:
+  - Updated the dependency to:
+    - `gspread==6.2.1`
+  - Verified that `gspread==6.2.1` installs successfully.
+
 ## 5. Recommended next logging practice
 
 - When a new source is added, record:
