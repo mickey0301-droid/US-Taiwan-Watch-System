@@ -8,8 +8,6 @@ import re
 from urllib.parse import quote
 from typing import Any
 
-import httpx
-
 from tracker.config import get_settings
 
 
@@ -114,36 +112,25 @@ class GoogleSheetsService:
             credentials = credentials.with_always_use_jwt_access(True)
         return credentials
 
-    def _access_token(self) -> str:
+    def _api_get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         try:
-            from google.auth.transport.requests import Request
+            from google.auth.transport.requests import AuthorizedSession
         except ImportError as exc:  # pragma: no cover
             raise GoogleSheetsConfigurationError(
                 "Google Sheets dependencies are not installed. Run `pip install -r requirements.txt`."
             ) from exc
 
-        credentials = self._credentials()
-        if not credentials.valid:
-            try:
-                credentials.refresh(Request())
-            except Exception as exc:
-                raise GoogleSheetsConfigurationError(
-                    f"Failed to obtain Google Sheets access token: {type(exc).__name__}: {exc}"
-                ) from exc
-        if not credentials.token:
-            raise GoogleSheetsConfigurationError("Unable to obtain Google Sheets access token.")
-        return str(credentials.token)
-
-    def _api_get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         _service_account_file, service_account_json, sheet_id = self._require_config()
         service_account_email = self._service_account_email(service_account_json)
         url = f"https://sheets.googleapis.com/v4/spreadsheets/{sheet_id.strip()}{path}"
-        headers = {"Authorization": f"Bearer {self._access_token()}"}
+        credentials = self._credentials()
         try:
-            with httpx.Client(timeout=30.0, follow_redirects=True, trust_env=True) as client:
-                response = client.get(url, params=params, headers=headers)
+            session = AuthorizedSession(credentials)
+            response = session.get(url, params=params, timeout=30)
         except Exception as exc:
-            raise GoogleSheetsConfigurationError(f"Google Sheets API request failed: {type(exc).__name__}: {exc}") from exc
+            raise GoogleSheetsConfigurationError(
+                f"Google Sheets API request failed: {type(exc).__name__}: {repr(exc)}"
+            ) from exc
 
         if response.status_code == 404:
             hint = f" Share the sheet with {service_account_email}." if service_account_email else ""
