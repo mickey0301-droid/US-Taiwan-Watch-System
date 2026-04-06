@@ -5,7 +5,10 @@ import json
 import logging
 from pathlib import Path
 import re
+from urllib.parse import quote
 from typing import Any
+
+import httpx
 
 from tracker.config import get_settings
 
@@ -89,6 +92,62 @@ class GoogleSheetsService:
                     f"Failed to initialize Google Sheets client: {type(fallback_exc).__name__}: {fallback_exc}"
                 ) from fallback_exc
 
+    def _credentials(self):  # type: ignore[no-untyped-def]
+        try:
+            from google.oauth2.service_account import Credentials
+        except ImportError as exc:  # pragma: no cover
+            raise GoogleSheetsConfigurationError(
+                "Google Sheets dependencies are not installed. Run `pip install -r requirements.txt`."
+            ) from exc
+
+        service_account_file, service_account_json, _sheet_id = self._require_config()
+        if service_account_json:
+            return Credentials.from_service_account_info(self._load_service_account_info(service_account_json), scopes=SCOPES)
+        return Credentials.from_service_account_file(service_account_file, scopes=SCOPES)
+
+    def _access_token(self) -> str:
+        try:
+            from google.auth.transport.requests import Request
+        except ImportError as exc:  # pragma: no cover
+            raise GoogleSheetsConfigurationError(
+                "Google Sheets dependencies are not installed. Run `pip install -r requirements.txt`."
+            ) from exc
+
+        credentials = self._credentials()
+        if not credentials.valid:
+            credentials.refresh(Request())
+        if not credentials.token:
+            raise GoogleSheetsConfigurationError("Unable to obtain Google Sheets access token.")
+        return str(credentials.token)
+
+    def _api_get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        _service_account_file, service_account_json, sheet_id = self._require_config()
+        service_account_email = self._service_account_email(service_account_json)
+        url = f"https://sheets.googleapis.com/v4/spreadsheets/{sheet_id.strip()}{path}"
+        headers = {"Authorization": f"Bearer {self._access_token()}"}
+        try:
+            with httpx.Client(timeout=30.0, follow_redirects=True, trust_env=True) as client:
+                response = client.get(url, params=params, headers=headers)
+        except Exception as exc:
+            raise GoogleSheetsConfigurationError(f"Google Sheets API request failed: {type(exc).__name__}: {exc}") from exc
+
+        if response.status_code == 404:
+            hint = f" Share the sheet with {service_account_email}." if service_account_email else ""
+            raise GoogleSheetsConfigurationError(
+                f"Google Sheet '{sheet_id}' was not found or is not shared with the service account.{hint}"
+            )
+        if response.status_code == 403:
+            hint = f" Share the sheet with {service_account_email}." if service_account_email else ""
+            raise GoogleSheetsConfigurationError(f"Google Sheets access denied.{hint}")
+        if response.status_code >= 400:
+            raise GoogleSheetsConfigurationError(
+                f"Google Sheets API error {response.status_code}: {response.text[:300]}"
+            )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise GoogleSheetsConfigurationError("Google Sheets API returned an unexpected response.")
+        return payload
+
     def open_sheet(self):  # type: ignore[no-untyped-def]
         client = self._client()
         _service_account_file, service_account_json, sheet_id = self._require_config()
@@ -105,22 +164,28 @@ class GoogleSheetsService:
             raise GoogleSheetsConfigurationError(f"Unable to open Google Sheet '{sheet_id}': {message}") from exc
 
     def list_worksheets(self) -> list[GoogleSheetTabInfo]:
-        spreadsheet = self.open_sheet()
+        payload = self._api_get("", params={"fields": "sheets.properties"})
         tabs: list[GoogleSheetTabInfo] = []
-        for worksheet in spreadsheet.worksheets():
+        for sheet in payload.get("sheets", []):
+            properties = sheet.get("properties", {})
+            grid_properties = properties.get("gridProperties", {})
             tabs.append(
                 GoogleSheetTabInfo(
-                    title=worksheet.title,
-                    row_count=worksheet.row_count,
-                    col_count=worksheet.col_count,
+                    title=str(properties.get("title") or ""),
+                    row_count=int(grid_properties.get("rowCount") or 0),
+                    col_count=int(grid_properties.get("columnCount") or 0),
                 )
             )
         return tabs
 
     def read_header_row(self, worksheet_title: str) -> list[str]:
-        spreadsheet = self.open_sheet()
-        worksheet = spreadsheet.worksheet(worksheet_title)
-        values = worksheet.row_values(1)
+        sheet_range = f"'{worksheet_title}'!1:1"
+        payload = self._api_get(f"/values/{quote(sheet_range, safe='')}")
+        values = payload.get("values", [[]])
+        first_row = values[0] if values else []
+        if not isinstance(first_row, list):
+            return []
+        values = first_row
         return [str(value).strip() for value in values if str(value).strip()]
 
     def worksheet_exists(self, worksheet_title: str) -> bool:
@@ -128,21 +193,29 @@ class GoogleSheetsService:
         return worksheet_title in titles
 
     def worksheet_preview(self, worksheet_title: str, limit: int = 5) -> list[dict[str, Any]]:
-        spreadsheet = self.open_sheet()
-        worksheet = spreadsheet.worksheet(worksheet_title)
-        rows = worksheet.get_all_records(head=1, default_blank="")
+        rows = self.read_records(worksheet_title)
         return rows[:limit]
 
     def read_records(self, worksheet_title: str) -> list[dict[str, Any]]:
-        spreadsheet = self.open_sheet()
-        try:
-            worksheet = spreadsheet.worksheet(worksheet_title)
-        except Exception as exc:
-            message = str(exc)
+        if not self.worksheet_exists(worksheet_title):
             raise GoogleSheetsConfigurationError(
-                f"Worksheet '{worksheet_title}' is missing in Google Sheet '{self.settings.google_sheet_id}': {message}"
-            ) from exc
-        return worksheet.get_all_records(head=1, default_blank="")
+                f"Worksheet '{worksheet_title}' is missing in Google Sheet '{self.settings.google_sheet_id}'."
+            )
+        sheet_range = f"'{worksheet_title}'!A:ZZ"
+        payload = self._api_get(f"/values/{quote(sheet_range, safe='')}")
+        rows = payload.get("values", [])
+        if not isinstance(rows, list) or not rows:
+            return []
+        header_row = [str(value).strip() for value in rows[0] if str(value).strip()]
+        if not header_row:
+            return []
+        records: list[dict[str, Any]] = []
+        for raw_row in rows[1:]:
+            if not isinstance(raw_row, list):
+                continue
+            padded_row = list(raw_row) + [""] * max(0, len(header_row) - len(raw_row))
+            records.append({header_row[index]: str(padded_row[index]) if index < len(padded_row) else "" for index in range(len(header_row))})
+        return records
 
     def _service_account_email(self, service_account_json: str | None) -> str | None:
         if not service_account_json:
