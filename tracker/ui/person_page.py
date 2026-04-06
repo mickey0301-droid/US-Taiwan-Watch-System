@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 
 from tracker.db import session_scope
 from tracker.models import Alias, Appointment, Jurisdiction, Office, Person, Statement, SyncRun, Tracker
+from tracker.services.google_sheet_read_service import GoogleSheetReadService
 from tracker.services.statements_service import StatementsService
 from tracker.services.x_candidate_confirmation_service import XCandidateConfirmationService
 from tracker.ui.badges import render_source_badges
@@ -716,6 +717,11 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 del st.query_params["page"]
             st.rerun()
 
+    with session_scope() as session:
+        total_people = session.scalar(select(func.count()).select_from(Person)) or 0
+    if total_people == 0 and _render_google_sheet_fallback(lang, labels, pending_person_id):
+        return
+
     selected_category = st.selectbox(
         labels["person_category"],
         list(PERSON_CATEGORIES.keys()),
@@ -1159,3 +1165,147 @@ def render(lang: str, labels: dict[str, str]) -> None:
             ),
             use_container_width=True,
         )
+
+
+def _render_google_sheet_fallback(lang: str, labels: dict[str, str], pending_person_id: int | None) -> bool:
+    sheet_service = GoogleSheetReadService()
+    people = sheet_service.list_people()
+    if not people:
+        return False
+
+    st.info(
+        "Google Sheet fallback mode is active. The cloud app is showing exported profile data."
+        if lang != "zh-TW"
+        else "目前使用 Google Sheet fallback 模式，雲端版先顯示已匯出的人物資料。"
+    )
+    categories = list(PERSON_CATEGORIES.keys())
+    selected_category = st.selectbox(
+        labels["person_category"],
+        categories,
+        format_func=lambda key: _category_label(PERSON_CATEGORIES[key], lang),
+        key="sheet-person-category",
+    )
+    selected_status = st.selectbox(
+        labels["status_filter"],
+        ["current", "former", "unknown"],
+        format_func=lambda value: str(localize_value(value, lang)),
+        key="sheet-person-status",
+    )
+    candidates = [person for person in people if _sheet_person_matches_category(person, selected_category) and person.get("status") == selected_status]
+    if not candidates and selected_status == "unknown":
+        candidates = [person for person in people if _sheet_person_matches_category(person, selected_category)]
+    if not candidates:
+        st.info(labels["no_people_loaded"])
+        return True
+
+    person = sheet_service.get_person(int(pending_person_id)) if pending_person_id else None
+    if person is None:
+        person_options = {
+            f"{person_item.get('display_name_en') or person_item.get('full_name')} ({person_item.get('office_title') or labels['unknown']})": person_item
+            for person_item in candidates
+        }
+        selected_person_label = st.selectbox(labels["select_person"], list(person_options.keys()), key="sheet-person-select")
+        person = person_options[selected_person_label]
+
+    person_id = int(person.get("person_id") or 0)
+    social_profiles = {}
+    if person.get("x_accounts_list"):
+        social_profiles["x"] = person["x_accounts_list"][0]
+    if person.get("facebook_accounts_list"):
+        social_profiles["facebook"] = person["facebook_accounts_list"][0]
+    if person.get("instagram_accounts_list"):
+        social_profiles["instagram"] = person["instagram_accounts_list"][0]
+
+    top_left, top_right = st.columns([1, 2])
+    with top_left:
+        if person.get("portrait_url"):
+            st.image(person["portrait_url"])
+        else:
+            st.info(labels["no_portrait"])
+    with top_right:
+        st.subheader(str(person.get("display_name_en") or person.get("full_name") or ""))
+        if person.get("display_name_zh"):
+            chinese_name_label = "ä¸­æ–‡è­¯å" if lang == "zh-TW" else "Chinese names"
+            st.write(f"{chinese_name_label}: {person['display_name_zh']}")
+        st.write(f"{labels['profile_status']}: {person.get('status') or labels['unknown']}")
+        st.write(f"{labels['official_page']}: {person.get('official_page') or 'N/A'}")
+        st.write(f"{labels['date_of_birth']}: {person.get('date_of_birth') or 'N/A'}")
+        st.write(f"{labels['place_of_birth']}: {person.get('place_of_birth') or 'N/A'}")
+        if person.get("education"):
+            st.write(labels["education"])
+            st.write(person["education"])
+        if person.get("past_experience"):
+            st.write(labels["career_history"])
+            st.write(person["past_experience"])
+        if person.get("committees_list"):
+            committees_label = "å§”å“¡æœƒ" if lang == "zh-TW" else "Committees"
+            st.write(f"{committees_label}: {' | '.join(person['committees_list'])}")
+        if social_profiles:
+            st.write(labels["social_profiles"])
+            render_social_links(social_profiles, key_prefix=f"sheet-person-social-{person_id}")
+        if person.get("wikipedia_page"):
+            st.markdown(f"[Wikipedia]({person['wikipedia_page']})")
+
+    recent_events = sheet_service.list_events_for_person(person_id)[:5]
+    related_legislation = sheet_service.list_legislation_for_person(person_id)[:5]
+
+    st.subheader(labels["recent_taiwan_statements"])
+    if recent_events:
+        event_rows = pd.DataFrame(
+            [
+                {
+                    "published_at": item.get("event_date_date"),
+                    "title": item.get("title"),
+                    "source_type": item.get("primary_source_type"),
+                    "source_count": item.get("source_count_int"),
+                    "review_status": item.get("review_status"),
+                }
+                for item in recent_events
+            ]
+        )
+        st.dataframe(localize_dataframe(event_rows, lang, value_columns=["review_status"]), use_container_width=True)
+    else:
+        st.info(labels["no_recent_statements"])
+
+    related_label = "ç›¸é—œç«‹æ³•" if lang == "zh-TW" else "Related legislation"
+    st.subheader(related_label)
+    if related_legislation:
+        legislation_rows = pd.DataFrame(
+            [
+                {
+                    "date": item.get("date_date"),
+                    "bill_number": item.get("bill_number"),
+                    "title": item.get("title"),
+                    "status": item.get("status"),
+                    "official_page": item.get("official_page"),
+                }
+                for item in related_legislation
+            ]
+        )
+        st.dataframe(localize_dataframe(legislation_rows, lang, value_columns=["status"]), use_container_width=True)
+    else:
+        st.info("ç›®å‰é‚„æ²’æœ‰ç›¸é—œç«‹æ³•è³‡æ–™ã€‚" if lang == "zh-TW" else "No related legislation is available yet.")
+    return True
+
+
+def _sheet_person_matches_category(person: dict[str, object], category_key: str) -> bool:
+    if category_key == "all":
+        return True
+    level = str(person.get("level") or "").lower()
+    branch = str(person.get("branch") or "").lower()
+    office_title = str(person.get("office_title") or "").lower()
+    is_senate = "sen" in office_title
+    is_house = any(token in office_title for token in ("rep", "house", "assembly", "delegate"))
+    if category_key == "federal_executive":
+        return level == "federal" and branch == "executive"
+    if category_key == "federal_senate":
+        return level == "federal" and branch == "legislative" and is_senate
+    if category_key == "federal_house":
+        return level == "federal" and branch == "legislative" and (is_house or not is_senate)
+    if category_key == "state_executive":
+        return level == "state" and branch == "executive"
+    if category_key == "state_senate":
+        return level == "state" and branch == "legislative" and is_senate
+    if category_key == "state_house":
+        return level == "state" and branch == "legislative" and (is_house or not is_senate)
+    return True

@@ -109,6 +109,11 @@ class GoogleSheetsService:
         rows = worksheet.get_all_records(head=1, default_blank="")
         return rows[:limit]
 
+    def read_records(self, worksheet_title: str) -> list[dict[str, Any]]:
+        spreadsheet = self.open_sheet()
+        worksheet = spreadsheet.worksheet(worksheet_title)
+        return worksheet.get_all_records(head=1, default_blank="")
+
     def ensure_header_row(self, worksheet_title: str, headers: list[str]) -> dict[str, Any]:
         spreadsheet = self.open_sheet()
         worksheet = spreadsheet.worksheet(worksheet_title)

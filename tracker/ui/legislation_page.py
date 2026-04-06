@@ -6,6 +6,7 @@ import streamlit as st
 
 from tracker.db import session_scope
 from tracker.models import Legislation, Person
+from tracker.services.google_sheet_read_service import GoogleSheetReadService
 from tracker.services.legislation_service import LegislationService
 from tracker.ui.navigation import render_person_links
 from tracker.utils.congress_bills import congress_bill_url
@@ -23,24 +24,26 @@ def render(lang: str, labels: dict[str, str]) -> None:
             Legislation.id.desc(),
         ).all()
         if not all_rows:
-            st.info("目前還沒有立法資料。" if lang == "zh-TW" else "No legislation is available yet.")
+            if _render_google_sheet_fallback(lang):
+                return
+            st.info("ç›®å‰é‚„æ²’æœ‰ç«‹æ³•è³‡æ–™ã€‚" if lang == "zh-TW" else "No legislation is available yet.")
             return
 
-        scope_label = "法案範圍" if lang == "zh-TW" else "Scope"
-        year_label = "年份" if lang == "zh-TW" else "Year"
-        month_label = "月份" if lang == "zh-TW" else "Month"
-        bill_label = "法案" if lang == "zh-TW" else "Legislation"
-        time_label = "時間" if lang == "zh-TW" else "Time"
-        description_label = "法案摘要" if lang == "zh-TW" else "Summary"
-        sponsors_label = "提案人" if lang == "zh-TW" else "Sponsors"
-        sources_label = "來源" if lang == "zh-TW" else "Sources"
-        status_label = "進度" if lang == "zh-TW" else "Status"
+        scope_label = "æ³•æ¡ˆç¯„åœ" if lang == "zh-TW" else "Scope"
+        year_label = "å¹´ä»½" if lang == "zh-TW" else "Year"
+        month_label = "æœˆä»½" if lang == "zh-TW" else "Month"
+        bill_label = "æ³•æ¡ˆ" if lang == "zh-TW" else "Legislation"
+        time_label = "æ™‚é–“" if lang == "zh-TW" else "Time"
+        description_label = "æ³•æ¡ˆæ‘˜è¦" if lang == "zh-TW" else "Summary"
+        sponsors_label = "ææ¡ˆäºº" if lang == "zh-TW" else "Sponsors"
+        sources_label = "ä¾†æº" if lang == "zh-TW" else "Sources"
+        status_label = "é€²åº¦" if lang == "zh-TW" else "Status"
         official_link_label = "Congress.gov"
-        topic_label = "其他相關主題" if lang == "zh-TW" else "Additional topics"
-        latest_action_label = "最新動作" if lang == "zh-TW" else "Latest action"
-        committees_label = "委員會" if lang == "zh-TW" else "Committees"
-        cosponsors_label = "聯署人數" if lang == "zh-TW" else "Cosponsors"
-        text_link_label = "法案全文" if lang == "zh-TW" else "Bill text"
+        topic_label = "å…¶ä»–ç›¸é—œä¸»é¡Œ" if lang == "zh-TW" else "Additional topics"
+        latest_action_label = "æœ€æ–°å‹•ä½œ" if lang == "zh-TW" else "Latest action"
+        committees_label = "å§”å“¡æœƒ" if lang == "zh-TW" else "Committees"
+        cosponsors_label = "è¯ç½²äººæ•¸" if lang == "zh-TW" else "Cosponsors"
+        text_link_label = "æ³•æ¡ˆå…¨æ–‡" if lang == "zh-TW" else "Bill text"
 
         scopes = _scope_options(lang)
         selected_scope = st.selectbox(scope_label, list(scopes.keys()), format_func=lambda key: scopes[key])
@@ -48,7 +51,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
         scoped_rows = [row for row in all_rows if _match_scope(row, selected_scope)]
         years = _list_years(scoped_rows)
         if not years:
-            st.info("目前沒有符合條件的法案。" if lang == "zh-TW" else "No legislation matches this filter.")
+            st.info("ç›®å‰æ²’æœ‰ç¬¦åˆæ¢ä»¶çš„æ³•æ¡ˆã€‚" if lang == "zh-TW" else "No legislation matches this filter.")
             return
 
         selected_year = st.selectbox(year_label, years)
@@ -57,7 +60,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
 
         legislation_rows = _rows_for_year_month(scoped_rows, selected_year, selected_month)
         if not legislation_rows:
-            st.info("這個月份目前沒有立法資料。" if lang == "zh-TW" else "No legislation is available for this month.")
+            st.info("é€™å€‹æœˆä»½ç›®å‰æ²’æœ‰ç«‹æ³•è³‡æ–™ã€‚" if lang == "zh-TW" else "No legislation is available for this month.")
             return
 
         options = {
@@ -100,42 +103,124 @@ def render(lang: str, labels: dict[str, str]) -> None:
             if selected.bill_number:
                 heading = f"{selected.bill_number} | {heading}"
             st.markdown(f"**{heading}**")
-            st.markdown(f"`{time_label}`：{_format_date(selected.introduced_date or selected.last_action_date)}")
-            st.markdown(f"`{description_label}`：{selected.summary or selected.title}")
-            st.markdown(f"`{status_label}`：{selected.status_text or ('未知' if lang == 'zh-TW' else 'Unknown')}")
+            st.markdown(f"`{time_label}`ï¼š{_format_date(selected.introduced_date or selected.last_action_date)}")
+            st.markdown(f"`{description_label}`ï¼š{selected.summary or selected.title}")
+            st.markdown(f"`{status_label}`ï¼š{selected.status_text or ('æœªçŸ¥' if lang == 'zh-TW' else 'Unknown')}")
             if official_link:
-                st.markdown(f"`{official_link_label}`：[Congress.gov]({official_link})")
+                st.markdown(f"`{official_link_label}`ï¼š[Congress.gov]({official_link})")
             if text_page_url:
-                st.markdown(f"`{text_link_label}`：[{text_link_label}]({text_page_url})")
+                st.markdown(f"`{text_link_label}`ï¼š[{text_link_label}]({text_page_url})")
             if latest_action:
-                st.markdown(f"`{latest_action_label}`：{latest_action}")
+                st.markdown(f"`{latest_action_label}`ï¼š{latest_action}")
             if committees:
-                st.markdown(f"`{committees_label}`：{' | '.join(item for item in committees if item)}")
+                st.markdown(f"`{committees_label}`ï¼š{' | '.join(item for item in committees if item)}")
             if cosponsor_count not in (None, ""):
-                st.markdown(f"`{cosponsors_label}`：{cosponsor_count}")
+                st.markdown(f"`{cosponsors_label}`ï¼š{cosponsor_count}")
             if additional_topics:
-                st.markdown(f"`{topic_label}`：{', '.join(additional_topics)}")
+                st.markdown(f"`{topic_label}`ï¼š{', '.join(additional_topics)}")
 
-            st.markdown(f"`{sponsors_label}`：")
+            st.markdown(f"`{sponsors_label}`ï¼š")
             if sponsors:
                 render_person_links(sponsors, lang, key_prefix=f"legislation-{selected.id}")
             else:
-                st.write("目前未附提案人。" if lang == "zh-TW" else "No sponsors attached yet.")
+                st.write("ç›®å‰æœªé™„ææ¡ˆäººã€‚" if lang == "zh-TW" else "No sponsors attached yet.")
 
             if sources:
                 formatted = " | ".join(
                     f"[{source_bucket_label(source.source_type, source.source_url, lang)}]({source.source_url})"
                     for source in sources[:5]
                 )
-                st.markdown(f"`{sources_label}`：{formatted}")
+                st.markdown(f"`{sources_label}`ï¼š{formatted}")
+
+
+def _render_google_sheet_fallback(lang: str) -> bool:
+    rows = GoogleSheetReadService().list_legislation()
+    if not rows:
+        return False
+
+    st.info(
+        "Google Sheet fallback mode is active. The cloud app is showing exported legislation data."
+        if lang != "zh-TW"
+        else "目前使用 Google Sheet fallback 模式，雲端版先顯示已匯出的立法資料。"
+    )
+    scope_label = "æ³•æ¡ˆç¯„åœ" if lang == "zh-TW" else "Scope"
+    year_label = "å¹´ä»½" if lang == "zh-TW" else "Year"
+    month_label = "æœˆä»½" if lang == "zh-TW" else "Month"
+    bill_label = "æ³•æ¡ˆ" if lang == "zh-TW" else "Legislation"
+    time_label = "æ™‚é–“" if lang == "zh-TW" else "Time"
+    description_label = "æ³•æ¡ˆæ‘˜è¦" if lang == "zh-TW" else "Summary"
+    sponsors_label = "ææ¡ˆäºº" if lang == "zh-TW" else "Sponsors"
+    status_label = "é€²åº¦" if lang == "zh-TW" else "Status"
+    latest_action_label = "æœ€æ–°å‹•ä½œ" if lang == "zh-TW" else "Latest action"
+    committees_label = "å§”å“¡æœƒ" if lang == "zh-TW" else "Committees"
+    cosponsors_label = "è¯ç½²äººæ•¸" if lang == "zh-TW" else "Cosponsors"
+
+    scopes = {"all": "å…¨éƒ¨æ³•æ¡ˆ" if lang == "zh-TW" else "All legislation"}
+    for row in rows:
+        scope = str(row.get("scope") or "").strip()
+        if scope and scope not in scopes:
+            scopes[scope] = scope
+    selected_scope = st.selectbox(scope_label, list(scopes.keys()), format_func=lambda key: scopes[key], key="sheet-legislation-scope")
+    scoped_rows = [row for row in rows if selected_scope == "all" or str(row.get("scope") or "").strip() == selected_scope]
+    years = sorted({row.get("date_date").year for row in scoped_rows if row.get("date_date")}, reverse=True)
+    if not years:
+        return True
+    selected_year = st.selectbox(year_label, years, key="sheet-legislation-year")
+    months = sorted({row.get("date_date").month for row in scoped_rows if row.get("date_date") and row["date_date"].year == selected_year}, reverse=True)
+    selected_month = st.selectbox(month_label, months, format_func=lambda value: f"{value:02d}", key="sheet-legislation-month")
+    filtered_rows = [row for row in scoped_rows if row.get("date_date") and row["date_date"].year == selected_year and row["date_date"].month == selected_month]
+    if not filtered_rows:
+        return True
+    options = {
+        f"{row['date_date'].strftime('%Y-%m-%d')} | {row.get('bill_number') or str(row.get('title') or '')[:80]}": row
+        for row in filtered_rows
+    }
+    selected_row = st.selectbox(bill_label, list(options.keys()), key="sheet-legislation-select")
+    selected = options[selected_row]
+    sponsors = _sheet_sponsors(selected)
+
+    with st.container(border=True):
+        heading = selected.get("title") or ""
+        if selected.get("bill_number"):
+            heading = f"{selected['bill_number']} | {heading}"
+        st.markdown(f"**{heading}**")
+        st.markdown(f"`{time_label}`ï¼š{selected['date_date'].strftime('%Y-%m-%d') if selected.get('date_date') else 'N/A'}")
+        st.markdown(f"`{description_label}`ï¼š{selected.get('summary') or selected.get('title') or ''}")
+        st.markdown(f"`{status_label}`ï¼š{selected.get('status') or ('æœªçŸ¥' if lang == 'zh-TW' else 'Unknown')}")
+        if selected.get("official_page"):
+            st.markdown(f"`Congress.gov`ï¼š[Congress.gov]({selected['official_page']})")
+        if selected.get("official_text_page"):
+            st.markdown(f"`Bill text`ï¼š[Bill text]({selected['official_text_page']})")
+        if selected.get("latest_action"):
+            st.markdown(f"`{latest_action_label}`ï¼š{selected['latest_action']}")
+        if selected.get("committees_list"):
+            st.markdown(f"`{committees_label}`ï¼š{' | '.join(selected['committees_list'])}")
+        if selected.get("cosponsor_count_int") is not None:
+            st.markdown(f"`{cosponsors_label}`ï¼š{selected['cosponsor_count_int']}")
+        st.markdown(f"`{sponsors_label}`ï¼š")
+        render_person_links(sponsors, lang, key_prefix=f"sheet-legislation-{selected.get('legislation_id')}")
+    return True
+
+
+def _sheet_sponsors(selected: dict[str, object]) -> list[dict[str, object]]:
+    sponsor_ids = list(selected.get("sponsor_ids_list") or [])
+    sponsor_names = list(selected.get("sponsors_en_list") or [])
+    sponsor_names_zh = list(selected.get("sponsors_zh_list") or [])
+    sponsors: list[dict[str, object]] = []
+    for index, name in enumerate(sponsor_names):
+        person_id = sponsor_ids[index] if index < len(sponsor_ids) else None
+        zh_name = sponsor_names_zh[index] if index < len(sponsor_names_zh) else ""
+        display_name = f"{zh_name} {name}".strip() if zh_name else str(name)
+        sponsors.append({"person_id": person_id, "display_name": display_name})
+    return sponsors
 
 
 def _scope_options(lang: str) -> dict[str, str]:
     if lang == "zh-TW":
         return {
-            "all": "全部法案",
-            "excel_history": "Excel 歷史法案",
-            "non_excel": "其他法案",
+            "all": "å…¨éƒ¨æ³•æ¡ˆ",
+            "excel_history": "Excel æ­·å²æ³•æ¡ˆ",
+            "non_excel": "å…¶ä»–æ³•æ¡ˆ",
         }
     return {
         "all": "All legislation",

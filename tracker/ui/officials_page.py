@@ -6,8 +6,10 @@ from sqlalchemy import select
 
 from tracker.db import session_scope
 from tracker.models import Appointment, Office, Person
+from tracker.services.google_sheet_read_service import GoogleSheetReadService
 from tracker.services.wikipedia_list_service import WikipediaListService
 from tracker.ui.display import localize_dataframe
+from tracker.ui.navigation import person_detail_href
 from tracker.ui.person_page import (
     _display_office_name,
     _executive_department_sort_key,
@@ -139,24 +141,23 @@ def render(lang: str, labels: dict[str, str]) -> None:
 
     federal_executive_mask = (data["level"] == "federal") & (data["branch"] == "executive") if not data.empty else None
     if federal_executive_mask is not None and federal_executive_mask.any():
-        st.subheader("聯邦官員階層瀏覽" if lang == "zh-TW" else "Federal executive hierarchy")
+        st.subheader("è¯é‚¦å®˜å“¡éšŽå±¤ç€è¦½" if lang == "zh-TW" else "Federal executive hierarchy")
         federal_exec = data[federal_executive_mask].copy()
         departments = sorted([item for item in federal_exec["department"].dropna().unique().tolist() if item], key=_executive_department_sort_key)
         if departments:
-            selected_department = st.selectbox("部門" if lang == "zh-TW" else "Department", departments, key="officials-department")
+            selected_department = st.selectbox("éƒ¨é–€" if lang == "zh-TW" else "Department", departments, key="officials-department")
             federal_exec = federal_exec[federal_exec["department"] == selected_department]
 
             subdepartments = sorted([item for item in federal_exec["subdepartment"].dropna().unique().tolist() if item])
-            selected_subdepartment = None
             if subdepartments:
-                selected_subdepartment = st.selectbox("次部門" if lang == "zh-TW" else "Subdepartment", ["全部", *subdepartments], key="officials-subdepartment")
-                if selected_subdepartment != "全部":
+                selected_subdepartment = st.selectbox("æ¬¡éƒ¨é–€" if lang == "zh-TW" else "Subdepartment", ["å…¨éƒ¨", *subdepartments], key="officials-subdepartment")
+                if selected_subdepartment != "å…¨éƒ¨":
                     federal_exec = federal_exec[federal_exec["subdepartment"] == selected_subdepartment]
 
             units = sorted([item for item in federal_exec["unit"].dropna().unique().tolist() if item])
             if units:
-                selected_unit = st.selectbox("下屬部門" if lang == "zh-TW" else "Sub-unit", ["全部", *units], key="officials-unit")
-                if selected_unit != "全部":
+                selected_unit = st.selectbox("ä¸‹å±¬éƒ¨é–€" if lang == "zh-TW" else "Sub-unit", ["å…¨éƒ¨", *units], key="officials-unit")
+                if selected_unit != "å…¨éƒ¨":
                     federal_exec = federal_exec[federal_exec["unit"] == selected_unit]
 
             federal_exec = federal_exec.sort_values(
@@ -191,20 +192,20 @@ def render(lang: str, labels: dict[str, str]) -> None:
         social_profiles = selected_person["social_profiles"] or {}
         wikipedia_url = resolve_wikipedia_url(selected_person["source_url"], selected_person["raw_payload"])
         wikipedia_search_url = build_wikipedia_search_url(selected_person["name"], selected_person["office"])
-        st.markdown(f"[Google 搜尋官方資料]({build_google_official_search_url(selected_person['name'], selected_person['office'])})")
-        st.markdown(f"[Google 搜尋官方簡歷]({build_google_official_bio_search_url(selected_person['name'], selected_person['office'])})")
+        st.markdown(f"[Google æœå°‹å®˜æ–¹è³‡æ–™]({build_google_official_search_url(selected_person['name'], selected_person['office'])})")
+        st.markdown(f"[Google æœå°‹å®˜æ–¹ç°¡æ­·]({build_google_official_bio_search_url(selected_person['name'], selected_person['office'])})")
         official_search_urls = (selected_person["raw_payload"] or {}).get("official_search_urls", {})
         if official_search_urls.get("whitehouse_search"):
-            st.markdown(f"[Google 搜尋白宮資料]({official_search_urls['whitehouse_search']})")
+            st.markdown(f"[Google æœå°‹ç™½å®®è³‡æ–™]({official_search_urls['whitehouse_search']})")
         if official_search_urls.get("department_search"):
-            st.markdown(f"[Google 搜尋部會資料]({official_search_urls['department_search']})")
+            st.markdown(f"[Google æœå°‹éƒ¨æœƒè³‡æ–™]({official_search_urls['department_search']})")
         if wikipedia_url:
-            st.markdown(f"[Wikipedia 頁面]({wikipedia_url})")
+            st.markdown(f"[Wikipedia é é¢]({wikipedia_url})")
         else:
-            st.markdown(f"[Wikipedia 搜尋]({wikipedia_search_url})")
+            st.markdown(f"[Wikipedia æœå°‹]({wikipedia_search_url})")
         x_links = (selected_person["raw_payload"] or {}).get("x_candidate_links", {})
         x_search_url = x_links.get("google_x_search") or build_x_search_url(selected_person["name"], selected_person["office"])
-        x_search_label = "X 搜尋候選帳號" if lang == "zh-TW" else "Search X candidates"
+        x_search_label = "X æœå°‹å€™é¸å¸³è™Ÿ" if lang == "zh-TW" else "Search X candidates"
         st.markdown(f"[{x_search_label}]({x_search_url})")
         if social_profiles:
             st.caption(labels["social_profiles"])
@@ -212,5 +213,65 @@ def render(lang: str, labels: dict[str, str]) -> None:
             with st.expander(labels["social_profiles"]):
                 for platform, url in social_profiles.items():
                     st.markdown(f"- [{social_display_name(platform)}]({url})")
-    else:
+        return
+
+    _render_google_sheet_fallback(lang, labels)
+
+
+def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
+    people = GoogleSheetReadService().list_people()
+    if not people:
         st.info(labels["person_not_found"])
+        return False
+
+    st.info(
+        "Google Sheet fallback mode is active. The cloud app is using exported people data."
+        if lang != "zh-TW"
+        else "目前使用 Google Sheet fallback 模式，雲端版先讀取已匯出的 People 資料。"
+    )
+    query = st.text_input(labels["search_name"], key="sheet-officials-search")
+    status_filter = st.selectbox(labels["status_filter"], ["all", "current", "former", "unknown"], key="sheet-officials-status")
+    rows = people
+    if query:
+        rows = [item for item in rows if query.lower() in str(item.get("display_name_en") or item.get("full_name") or "").lower()]
+    if status_filter != "all":
+        rows = [item for item in rows if item.get("status") == status_filter]
+    if not rows:
+        st.info(labels["person_not_found"])
+        return True
+
+    display_rows = [
+        {
+            "name": item.get("display_name_en") or item.get("full_name"),
+            "office_display": item.get("office_title"),
+            "department": item.get("department"),
+            "jurisdiction": item.get("jurisdiction"),
+            "status": item.get("status"),
+            "level": item.get("level"),
+        }
+        for item in rows
+    ]
+    st.dataframe(localize_dataframe(pd.DataFrame(display_rows), lang, value_columns=["status", "level"]), use_container_width=True)
+
+    person_choices = {
+        f"{item.get('display_name_en') or item.get('full_name')} ({item.get('office_title') or labels['unknown']})": item
+        for item in rows
+    }
+    selected_label = st.selectbox(labels["select_person"], list(person_choices.keys()), key="sheet-officials-person-preview")
+    selected_person = person_choices[selected_label]
+    st.markdown(f"[{labels['person_detail']}]({person_detail_href(int(selected_person['person_id']))})")
+    if selected_person.get("official_page"):
+        st.markdown(f"[Official page]({selected_person['official_page']})")
+    if selected_person.get("wikipedia_page"):
+        st.markdown(f"[Wikipedia]({selected_person['wikipedia_page']})")
+    social_profiles = {}
+    if selected_person.get("x_accounts_list"):
+        social_profiles["x"] = selected_person["x_accounts_list"][0]
+    if selected_person.get("facebook_accounts_list"):
+        social_profiles["facebook"] = selected_person["facebook_accounts_list"][0]
+    if selected_person.get("instagram_accounts_list"):
+        social_profiles["instagram"] = selected_person["instagram_accounts_list"][0]
+    if social_profiles:
+        st.caption(labels["social_profiles"])
+        render_social_links(social_profiles, key_prefix=f"sheet-officials-social-{selected_person['person_id']}")
+    return True
