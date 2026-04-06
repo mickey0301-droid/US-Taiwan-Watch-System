@@ -15,7 +15,24 @@ from tracker.ui import (
     settings_page,
     trackers_page,
 )
-from tracker.utils.text import install_streamlit_text_repair, repair_nested_text
+
+try:
+    from tracker.utils import text as text_utils
+except Exception:  # pragma: no cover - keep app bootable on partially deployed environments
+    text_utils = None
+
+
+def _install_streamlit_text_repair() -> None:
+    installer = getattr(text_utils, "install_streamlit_text_repair", None)
+    if callable(installer):
+        installer(st)
+
+
+def _repair_nested_text(value):
+    repairer = getattr(text_utils, "repair_nested_text", None)
+    if callable(repairer):
+        return repairer(value)
+    return value
 
 
 LABELS = {
@@ -232,7 +249,7 @@ NAV_PAGE_ORDER = [
 
 
 def main() -> None:
-    install_streamlit_text_repair(st)
+    _install_streamlit_text_repair()
     settings = get_settings()
     ensure_database_ready()
     st.set_page_config(page_title=settings.app_name, layout="wide")
@@ -241,7 +258,7 @@ def main() -> None:
     if language not in settings.supported_languages:
         language = settings.default_language
 
-    labels = repair_nested_text(LABELS[language])
+    labels = _repair_nested_text(LABELS[language])
     st.sidebar.markdown("## [US Taiwan Watch](?page=dashboard)")
     query_page = st.query_params.get("page")
     if query_page in PAGES and "sidebar_nav_radio" not in st.session_state:
@@ -274,7 +291,7 @@ def main() -> None:
         st.session_state["ui_language"] = selected_language
         st.rerun()
 
-    PAGES[page_key](selected_language, repair_nested_text(LABELS[selected_language]))
+    PAGES[page_key](selected_language, _repair_nested_text(LABELS[selected_language]))
 
 
 if __name__ == "__main__":
