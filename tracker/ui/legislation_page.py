@@ -51,7 +51,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
         type_options = _type_options(lang)
         selected_type = st.selectbox(type_label, list(type_options.keys()), format_func=lambda key: type_options[key])
 
-        typed_rows = _filter_db_rows_by_type(all_rows, selected_type)
+        typed_rows = _dedupe_db_legislation_rows(_filter_db_rows_by_type(all_rows, selected_type))
         years = _list_years(typed_rows)
         if not years:
             st.info("目前沒有符合條件的法案。" if lang == "zh-TW" else "No legislation matches this filter.")
@@ -179,7 +179,7 @@ def _render_sheet_legislation_rows(rows: list[dict[str, object]], people: list[d
 
     type_options = _type_options(lang)
     selected_type = st.selectbox(type_label, list(type_options.keys()), format_func=lambda key: type_options[key], key="sheet-legislation-type")
-    typed_rows = _filter_sheet_rows_by_type(rows, selected_type)
+    typed_rows = _dedupe_sheet_legislation_rows(_filter_sheet_rows_by_type(rows, selected_type))
 
     years = sorted({row.get("date_date").year for row in typed_rows if row.get("date_date")}, reverse=True)
     if not years:
@@ -362,7 +362,13 @@ def _filter_sheet_rows_by_type(rows: list[dict[str, object]], selected_type: str
         level = str(item.get("level") or "").lower()
         if level:
             return level == "federal"
-        jurisdiction = str(item.get("jurisdiction_name") or "").strip().lower()
+        jurisdiction = str(item.get("jurisdiction") or item.get("jurisdiction_name") or "").strip().lower()
+        session_year = str(item.get("session_year") or item.get("session") or "").strip()
+        bill_number = str(item.get("bill_number") or "").strip().lower()
+        if session_year.isdigit() and int(session_year) >= 100:
+            return True
+        if bill_number.startswith(("hr ", "hres", "hjres", "hconres", "s ", "sres", "sjres", "sconres")):
+            return True
         return jurisdiction in {"united states", "us", "u.s."}
 
     if selected_type == "federal":
@@ -414,13 +420,63 @@ def _format_date(value) -> str:
     return value.strftime("%Y-%m-%d")
 
 
+def _dedupe_db_legislation_rows(rows: list[Legislation]) -> list[Legislation]:
+    deduped: list[Legislation] = []
+    seen: set[str] = set()
+    for row in rows:
+        key = str(row.bill_slug or "").strip().lower()
+        if not key:
+            key = "|".join(
+                [
+                    str(row.level or "").strip().lower(),
+                    str(row.jurisdiction_name or "").strip().lower(),
+                    str(row.bill_number or "").strip().lower(),
+                    str(row.title or "").strip().lower(),
+                ]
+            )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    return deduped
+
+
+def _dedupe_sheet_legislation_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    deduped: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for item in rows:
+        key = _sheet_legislation_identity_key(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _sheet_legislation_identity_key(item: dict[str, object]) -> str:
+    jurisdiction = str(item.get("jurisdiction") or item.get("jurisdiction_name") or "").strip().lower()
+    session_year = str(item.get("session_year") or item.get("session") or "").strip().lower()
+    bill_number = str(item.get("bill_number") or "").strip().lower()
+    title = str(item.get("title") or "").strip().lower()
+    date_value = item.get("date_date")
+    year_text = str(getattr(date_value, "year", "") or "")
+    if bill_number:
+        return f"{jurisdiction}|{session_year}|{bill_number}"
+    return f"{jurisdiction}|{session_year}|{title}|{year_text}"
+
+
 def _effective_legislation_date(row: Legislation) -> date | None:
     if row.introduced_date:
         return row.introduced_date
+    payload = row.raw_payload or {}
+    # Prefer official introduced date from Congress payload before last action date.
+    for key in ("introduced_on_congress", "introduced_date"):
+        parsed = _parse_date_value(payload.get(key))
+        if parsed:
+            return parsed
     if row.last_action_date:
         return row.last_action_date
-    payload = row.raw_payload or {}
-    for key in ("introduced_on_congress", "introduced_date", "latest_action_date", "update_date", "update_date_including_text"):
+    for key in ("latest_action_date", "update_date", "update_date_including_text"):
         parsed = _parse_date_value(payload.get(key))
         if parsed:
             return parsed

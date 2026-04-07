@@ -879,20 +879,22 @@ def _format_legislation_title_with_description(title: str, summary: str, lang: s
     chinese_title = _clean_legislation_title_text(chinese_title_raw, fallback_title=title_text)
     if not chinese_title:
         chinese_title = _clean_legislation_title_text(_translate_event_text(title_text, lang).strip(), fallback_title=title_text)
+    cjk_chars = re.findall(r"[\u4e00-\u9fff]", chinese_title)
+    en_chars = re.findall(r"[A-Za-z]", chinese_title)
+    looks_weak_zh = len(cjk_chars) < 6 or len(en_chars) > len(cjk_chars) * 2
+    if looks_weak_zh:
+        summary_text = str(summary or "").strip()
+        summary_match = re.search(r"《([^》]{2,80})》", summary_text)
+        if summary_match:
+            chinese_title = summary_match.group(1).strip()
 
     if _looks_like_english(title_text):
         headline = f"{chinese_title}（{title_text}）"
     else:
         headline = chinese_title
 
-    summary_text = str(summary or "").strip()
-    if not summary_text or _normalize_compare_text(summary_text) == _normalize_compare_text(title_text):
-        return headline
-    summary_zh_raw = _localize_event_text(title=title_text, description=summary_text, lang=lang, is_title=False).strip()
-    summary_zh = _clean_legislation_summary_text(summary_zh_raw, title_text=title_text, chinese_title=chinese_title)
-    if not summary_zh:
-        return headline
-    return f"{headline}：{summary_zh}"
+    # Keep title strictly in "中文標題（English title）" format.
+    return headline
 
 
 def _select_preferred_legislation_title(title: str, source_url: str, raw_payload: dict[str, object] | None) -> str:
