@@ -64,7 +64,16 @@ def _restore_sqlite_from_bootstrap_snapshot_if_needed() -> None:
     if not snapshot_path.exists():
         return
 
-    should_restore = not target_path.exists() or _sqlite_data_score(target_path) <= 0
+    target_missing_or_empty = not target_path.exists() or _sqlite_data_score(target_path) <= 0
+    # On cloud deploys, data/tracker.db may survive across revisions with stale content.
+    # If a newer bundled bootstrap snapshot is shipped, refresh the bundled sqlite file once.
+    bundled_sqlite_path = Path(__file__).resolve().parent.parent / "data" / "tracker.db"
+    should_refresh_bundled_sqlite = (
+        target_path.resolve() == bundled_sqlite_path.resolve()
+        and target_path.exists()
+        and snapshot_path.stat().st_mtime > target_path.stat().st_mtime
+    )
+    should_restore = target_missing_or_empty or should_refresh_bundled_sqlite
     if not should_restore:
         return
 
