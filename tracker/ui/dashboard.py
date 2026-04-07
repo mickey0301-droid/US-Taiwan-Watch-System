@@ -33,7 +33,17 @@ def render(lang: str, labels: dict[str, str]) -> None:
     if use_google_sheet_primary_mode():
         if _render_google_sheet_fallback(lang, labels):
             return
-        _render_metrics(labels, 0, 0, 0, 0, 0)
+        _render_metrics(
+            {
+                "federal_officials": 0,
+                "congress_members": 0,
+                "state_officials": 0,
+                "state_legislators": 0,
+                "federal_legislation": 0,
+                "state_legislation": 0,
+            },
+            lang,
+        )
         st.warning(
             "Google Sheet primary mode is enabled, but no sheet data could be loaded."
             if lang != "zh-TW"
@@ -41,21 +51,22 @@ def render(lang: str, labels: dict[str, str]) -> None:
         )
         render_google_sheet_fallback_diagnostic(lang)
         return
-    total_officials = 0
-    total_trackers = 0
+    dashboard_counts = {
+        "federal_officials": 0,
+        "congress_members": 0,
+        "state_officials": 0,
+        "state_legislators": 0,
+        "federal_legislation": 0,
+        "state_legislation": 0,
+    }
     total_statements = 0
-    total_sync_runs = 0
-    total_alerts = 0
     recent_events_by_category: dict[str, list[dict[str, object]]] = _empty_event_buckets()
     recent_legislation_by_category: dict[str, list[dict[str, object]]] = _empty_legislation_buckets()
 
     with session_scope() as session:
         statements_service = StatementsService(session)
-        total_officials = session.scalar(select(func.count()).select_from(Person)) or 0
-        total_trackers = session.scalar(select(func.count()).select_from(Tracker)) or 0
+        dashboard_counts = _collect_dashboard_counts_db(session)
         total_statements = session.scalar(select(func.count()).select_from(Statement)) or 0
-        total_sync_runs = session.scalar(select(func.count()).select_from(SyncRun)) or 0
-        total_alerts = session.scalar(select(func.count()).select_from(NotificationLog)) or 0
         recent_statements = (
             session.execute(
                 select(Statement)
@@ -119,10 +130,10 @@ def render(lang: str, labels: dict[str, str]) -> None:
         )
         recent_legislation_by_category = _bucket_recent_legislation_db(legislation_rows, session=session, lang=lang)
 
-    if total_officials == 0 and total_statements == 0:
+    if sum(dashboard_counts.values()) == 0 and total_statements == 0:
         if _render_google_sheet_fallback(lang, labels):
             return
-        _render_metrics(labels, total_officials, total_trackers, total_statements, total_sync_runs, total_alerts)
+        _render_metrics(dashboard_counts, lang)
         st.warning(
             "The current app instance is connected to an empty database, and Google Sheet fallback is not available."
             if lang != "zh-TW"
@@ -136,7 +147,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
         render_google_sheet_fallback_diagnostic(lang)
         return
 
-    _render_metrics(labels, total_officials, total_trackers, total_statements, total_sync_runs, total_alerts)
+    _render_metrics(dashboard_counts, lang)
     _render_overview_sections(
         recent_legislation_by_category=recent_legislation_by_category,
         recent_events_by_category=recent_events_by_category,
@@ -152,7 +163,8 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
     if not (people or events or legislation):
         return False
 
-    _render_metrics(labels, len(people), 0, len(events), len(legislation), 0)
+    dashboard_counts = _collect_dashboard_counts_sheet(people, legislation)
+    _render_metrics(dashboard_counts, lang)
     st.info(
         "Google Sheet fallback mode is active. The cloud app is showing exported data."
         if lang != "zh-TW"
@@ -183,20 +195,96 @@ def render_google_sheet_fallback_diagnostic(lang: str) -> None:
     )
 
 
-def _render_metrics(
-    labels: dict[str, str],
-    total_officials: int,
-    total_trackers: int,
-    total_statements: int,
-    total_sync_runs: int,
-    total_alerts: int,
-) -> None:
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric(labels["total_officials"], total_officials)
-    col2.metric(labels["total_trackers"], total_trackers)
-    col3.metric(labels["recent_statements"], total_statements)
-    col4.metric(labels["recent_sync_runs"], total_sync_runs)
-    st.caption(f"{labels['recent_alerts']}: {total_alerts}")
+def _render_metrics(counts: dict[str, int], lang: str) -> None:
+    if lang == "zh-TW":
+        top_labels = [
+            ("聯邦官員", "federal_officials"),
+            ("國會議員", "congress_members"),
+            ("州政府官員", "state_officials"),
+            ("州議員", "state_legislators"),
+        ]
+        bottom_labels = [
+            ("國會法案", "federal_legislation"),
+            ("州議會法案", "state_legislation"),
+        ]
+    else:
+        top_labels = [
+            ("Federal Officials", "federal_officials"),
+            ("Members of Congress", "congress_members"),
+            ("State Officials", "state_officials"),
+            ("State Legislators", "state_legislators"),
+        ]
+        bottom_labels = [
+            ("Congressional Bills", "federal_legislation"),
+            ("State Bills", "state_legislation"),
+        ]
+    row1 = st.columns(4)
+    for column, (title, key) in zip(row1, top_labels):
+        column.metric(title, int(counts.get(key) or 0))
+    row2 = st.columns(2)
+    for column, (title, key) in zip(row2, bottom_labels):
+        column.metric(title, int(counts.get(key) or 0))
+
+
+def _collect_dashboard_counts_db(session) -> dict[str, int]:
+    def _count_people(level: str, branch: str) -> int:
+        return int(
+            session.scalar(
+                select(func.count(func.distinct(Appointment.person_id)))
+                .join(Office, Office.id == Appointment.office_id)
+                .where(
+                    Appointment.is_current.is_(True),
+                    Office.level == level,
+                    Office.branch == branch,
+                )
+            )
+            or 0
+        )
+
+    return {
+        "federal_officials": _count_people("federal", "executive"),
+        "congress_members": _count_people("federal", "legislative"),
+        "state_officials": _count_people("state", "executive"),
+        "state_legislators": _count_people("state", "legislative"),
+        "federal_legislation": int(
+            session.scalar(
+                select(func.count())
+                .select_from(Legislation)
+                .where(Legislation.is_taiwan_related.is_(True), Legislation.level == "federal")
+            )
+            or 0
+        ),
+        "state_legislation": int(
+            session.scalar(
+                select(func.count())
+                .select_from(Legislation)
+                .where(Legislation.is_taiwan_related.is_(True), Legislation.level == "state")
+            )
+            or 0
+        ),
+    }
+
+
+def _collect_dashboard_counts_sheet(people: list[dict[str, object]], legislation: list[dict[str, object]]) -> dict[str, int]:
+    counts = {
+        "federal_officials": 0,
+        "congress_members": 0,
+        "state_officials": 0,
+        "state_legislators": 0,
+        "federal_legislation": 0,
+        "state_legislation": 0,
+    }
+    for person in people:
+        category = _sheet_person_category(person)
+        if category in counts:
+            counts[category] += 1
+    for item in legislation:
+        level = str(item.get("level") or "").strip().lower()
+        if level == "federal":
+            counts["federal_legislation"] += 1
+        elif level == "state":
+            counts["state_legislation"] += 1
+    return counts
 
 
 def _render_overview_sections(
