@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import streamlit as st
 
 from tracker.config import get_settings, use_google_sheet_primary_mode
@@ -235,6 +237,8 @@ PAGES = {
     "settings": settings_page.render,
 }
 
+SIDEBAR_LOGO_PATH = Path(__file__).resolve().parent / "tracker" / "ui" / "assets" / "utw_sidebar_logo.svg"
+
 NAV_PAGE_ORDER = [
     "dashboard",
     "person_detail",
@@ -280,11 +284,10 @@ section[data-testid="stSidebar"] div[data-testid="stButton"] > button {
         with st.sidebar.container(border=True):
             is_current = page == selected_page
             label = str(labels.get(page, page))
-            st.markdown(f"**{label}**")
             if is_current:
                 st.caption("目前頁面")
             if st.button(
-                "前往 / Open",
+                label,
                 key=f"sidebar-nav-card-{page}",
                 use_container_width=True,
                 type="primary" if is_current else "secondary",
@@ -325,7 +328,9 @@ def main() -> None:
         language = settings.default_language
 
     labels = _repair_nested_text(LABELS[language])
-    st.sidebar.markdown("## [US Taiwan Watch](?page=dashboard)")
+    if SIDEBAR_LOGO_PATH.exists():
+        st.sidebar.image(str(SIDEBAR_LOGO_PATH), use_container_width=True)
+    st.sidebar.markdown("## US Taiwan Watch")
     google_sheet_primary = use_google_sheet_primary_mode()
     query_page = st.query_params.get("page")
     if query_page in PAGES and "sidebar_nav_radio" not in st.session_state:

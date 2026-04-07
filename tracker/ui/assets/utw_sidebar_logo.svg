@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" role="img" aria-label="US Taiwan Watch logo">
+  <rect width="400" height="400" fill="#f2f2f2" />
+  <defs>
+    <clipPath id="circleClip">
+      <circle cx="190" cy="200" r="185" />
+    </clipPath>
+  </defs>
+  <g clip-path="url(#circleClip)">
+    <g transform="rotate(-18 190 200)">
+      <g stroke="#1b84b8" stroke-width="18" stroke-linecap="round" fill="none">
+        <path d="M -40 40 C 80 20, 170 20, 290 40" />
+        <path d="M -40 72 C 80 52, 170 52, 290 72" />
+        <path d="M -40 104 C 80 84, 170 84, 290 104" />
+        <path d="M -40 136 C 80 116, 170 116, 290 136" />
+        <path d="M -40 168 C 80 148, 170 148, 290 168" />
+        <path d="M -40 200 C 80 180, 170 180, 290 200" />
+        <path d="M -40 232 C 80 212, 170 212, 290 232" />
+        <path d="M -40 264 C 80 244, 170 244, 290 264" />
+        <path d="M -40 296 C 80 276, 170 276, 290 296" />
+        <path d="M -40 328 C 80 308, 170 308, 290 328" />
+        <path d="M -40 360 C 80 340, 170 340, 290 360" />
+      </g>
+      <g stroke="#e3384f" stroke-width="10" stroke-linecap="butt" fill="none">
+        <path d="M 185 28 L 370 66" />
+        <path d="M 185 60 L 370 98" />
+        <path d="M 185 92 L 370 130" />
+        <path d="M 185 124 L 370 162" />
+        <path d="M 185 156 L 370 194" />
+        <path d="M 185 188 L 370 226" />
+        <path d="M 185 220 L 370 258" />
+        <path d="M 185 252 L 370 290" />
+        <path d="M 185 284 L 370 322" />
+        <path d="M 185 316 L 370 354" />
+      </g>
+    </g>
+  </g>
+</svg>
