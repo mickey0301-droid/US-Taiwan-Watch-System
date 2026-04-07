@@ -945,7 +945,8 @@ def _clean_legislation_title_text(text: str, fallback_title: str) -> str:
         if _normalize_compare_text(candidate) == fallback_norm:
             cleaned = cleaned.replace(f"（{candidate}）", "").strip()
     cleaned = re.sub(r"\s*\([A-Za-z][^)]{6,}\)\s*$", "", cleaned).strip()
-    cleaned = re.sub(r"\s+", "", cleaned)
+    # Keep normal word boundaries (especially for English title text).
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned.strip("。．.")
 
 
