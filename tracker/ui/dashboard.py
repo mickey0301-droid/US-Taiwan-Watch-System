@@ -119,6 +119,13 @@ def render(lang: str, labels: dict[str, str]) -> None:
         )
         recent_legislation_by_category = _bucket_recent_legislation_db(legislation_rows, session=session, lang=lang)
 
+    # Cloud DB can lag behind sheet exports; prefer fresher sheet counts when available.
+    total_officials, total_statements, total_sync_runs = _prefer_sheet_metrics_if_newer(
+        total_officials=total_officials,
+        total_statements=total_statements,
+        total_sync_runs=total_sync_runs,
+    )
+
     if total_officials == 0 and total_statements == 0:
         if _render_google_sheet_fallback(lang, labels):
             return
@@ -772,11 +779,14 @@ def _clean_legislation_title_text(text: str, fallback_title: str) -> str:
     if not cleaned:
         return ""
     cleaned = re.split(r"[：:]", cleaned, maxsplit=1)[0].strip()
+    # Drop accidental summary fragment in title translation.
+    cleaned = re.split(r"(?:旨在|此法案|本法案|法案旨在)", cleaned, maxsplit=1)[0].strip()
     fallback_norm = _normalize_compare_text(fallback_title)
     candidates = re.findall(r"（([^）]+)）", cleaned)
     for candidate in candidates:
         if _normalize_compare_text(candidate) == fallback_norm:
             cleaned = cleaned.replace(f"（{candidate}）", "").strip()
+    cleaned = re.sub(r"\s*\([A-Za-z][^)]{6,}\)\s*$", "", cleaned).strip()
     cleaned = re.sub(r"\s+", "", cleaned)
     return cleaned.strip("。．.")
 
@@ -794,6 +804,9 @@ def _clean_legislation_summary_text(text: str, title_text: str, chinese_title: s
     cleaned = re.sub(r"\(\s*\)", "", cleaned).strip()
     # Drop duplicated leading title phrase in summary, e.g. "《...》旨在..."
     cleaned = re.sub(r"^《[^》]{2,80}》\s*(旨在|在|係|是)\s*", "", cleaned)
+    # Remove embedded parenthetical English title duplication in summary body.
+    cleaned = re.sub(r"[（(]\s*[A-Za-z][A-Za-z\s,'\.-]{10,}[）)]", "", cleaned).strip()
+    cleaned = re.sub(r"[（(]\s*[）)]", "", cleaned).strip()
     if _normalize_compare_text(cleaned) in {"", _normalize_compare_text(title_text), _normalize_compare_text(chinese_title)}:
         return ""
     if len(cleaned) > 60:
@@ -1002,6 +1015,24 @@ def _normalize_person_display_name(name: str) -> str:
     text = re.sub(r"\b([A-Za-z]{2,})\s*\.\s*([A-Za-z]{2,})\b", r"\1 \2", text)
     text = re.sub(r"\s{2,}", " ", text).strip()
     return text
+
+
+def _prefer_sheet_metrics_if_newer(total_officials: int, total_statements: int, total_sync_runs: int) -> tuple[int, int, int]:
+    try:
+        sheet = GoogleSheetReadService()
+        people = sheet.list_people()
+        events = sheet.list_events()
+        legislation = sheet.list_legislation()
+    except Exception:
+        return total_officials, total_statements, total_sync_runs
+
+    if people:
+        total_officials = max(total_officials, len(people))
+    if events:
+        total_statements = max(total_statements, len(events))
+    if legislation:
+        total_sync_runs = max(total_sync_runs, len(legislation))
+    return total_officials, total_statements, total_sync_runs
 
 
 def _annotate_event_description_names(description: str, participants: list[dict[str, object]], lang: str) -> str:
