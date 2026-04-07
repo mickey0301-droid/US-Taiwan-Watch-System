@@ -201,6 +201,7 @@ def _render_sheet_legislation_card(selected: dict[str, object], sponsors: list[d
         lang=lang,
     )
 
+    sponsors = dashboard._dedupe_people_for_display(sponsors)
     sponsor = sponsors[0] if sponsors else None
     sponsor_text = dashboard._format_people_inline([sponsor], lang) if sponsor else ("未提供" if lang == "zh-TW" else "Not available")
     cosponsor_text = _format_cosponsor_people(sponsors[1:], lang)
@@ -224,7 +225,8 @@ def _render_sheet_legislation_card(selected: dict[str, object], sponsors: list[d
             st.markdown(f"[link]({source_url})")
 
 def _format_cosponsor_people(people: list[dict[str, object]], lang: str) -> str:
-    valid = [item for item in people if isinstance(item, dict) and str(item.get("display_name") or item.get("english_name") or "").strip()]
+    deduped_people = dashboard._dedupe_people_for_display(people)
+    valid = [item for item in deduped_people if isinstance(item, dict) and str(item.get("display_name") or item.get("english_name") or "").strip()]
     if not valid:
         return "無" if lang == "zh-TW" else "None"
     shown = valid[:3]

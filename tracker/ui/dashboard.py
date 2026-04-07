@@ -586,6 +586,7 @@ def _render_legislation_column(column, title: str, entries: list[dict[str, objec
                     sponsor_text = "未提供" if lang == "zh-TW" else "Not available"
                 st.markdown(f"`{sponsor_label}`：{sponsor_text}")
                 cosponsors = item.get("cosponsors") if isinstance(item.get("cosponsors"), list) else []
+                cosponsors = _dedupe_people_for_display(cosponsors)
                 if not cosponsors:
                     cosponsor_text = "無" if lang == "zh-TW" else "None"
                 else:
@@ -753,6 +754,8 @@ def _clean_legislation_summary_text(text: str, title_text: str, chinese_title: s
         cleaned = cleaned.replace(part, "").strip()
     cleaned = re.sub(r"^[：:，,\-–—\s]+", "", cleaned)
     cleaned = re.sub(r"\(\s*\)", "", cleaned).strip()
+    # Drop duplicated leading title phrase in summary, e.g. "《...》旨在..."
+    cleaned = re.sub(r"^《[^》]{2,80}》\s*(旨在|在|係|是)\s*", "", cleaned)
     if _normalize_compare_text(cleaned) in {"", _normalize_compare_text(title_text), _normalize_compare_text(chinese_title)}:
         return ""
     if len(cleaned) > 60:
@@ -876,6 +879,7 @@ def _render_event_column(
 
 
 def _format_people_inline(people: list[dict[str, object]], lang: str) -> str:
+    people = _dedupe_people_for_display(people)
     if not people:
         return "未提供" if lang == "zh-TW" else "Not available"
     parts: list[str] = []
@@ -897,6 +901,58 @@ def _format_people_inline(people: list[dict[str, object]], lang: str) -> str:
     if not parts:
         return "未提供" if lang == "zh-TW" else "Not available"
     return "、".join(parts)
+
+
+def _dedupe_people_for_display(people: list[dict[str, object]]) -> list[dict[str, object]]:
+    deduped: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for person in people:
+        if not isinstance(person, dict):
+            continue
+        key = _person_display_dedupe_key(person)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(person)
+    return deduped
+
+
+def _person_display_dedupe_key(person: dict[str, object]) -> str:
+    person_id = person.get("person_id")
+    if person_id:
+        try:
+            return f"id:{int(person_id)}"
+        except Exception:
+            pass
+    english_name = str(person.get("english_name") or "").strip()
+    chinese_name = str(person.get("chinese_name") or "").strip()
+    display_name = str(person.get("display_name") or "").strip()
+    if english_name:
+        return f"en:{_normalize_person_similarity_key(english_name)}"
+    if chinese_name:
+        return f"zh:{_normalize_person_name_key(chinese_name)}"
+    if display_name:
+        return f"display:{_normalize_person_similarity_key(display_name)}"
+    return ""
+
+
+def _normalize_person_similarity_key(name: str) -> str:
+    raw = str(name or "").strip().lower()
+    if not raw:
+        return ""
+    words = re.findall(r"[a-z]+", raw)
+    if len(words) >= 2:
+        first_root = words[0][:3]
+        last = words[-1]
+        return f"{last}|{first_root}"
+    return _normalize_person_name_key(raw)
+
+
+def _normalize_person_name_key(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    return re.sub(r"[\s\.\,\-\(\)\'\"_]+", "", text)
 
 
 def _normalize_person_display_name(name: str) -> str:
