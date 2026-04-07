@@ -214,30 +214,31 @@ def _render_overview_sections(
     )
 
     st.subheader(events_title)
-    event_columns = st.columns(4)
+    event_row_1 = st.columns(2)
     _render_event_column(
-        event_columns[0],
+        event_row_1[0],
         "聯邦官員" if lang == "zh-TW" else "Federal Officials",
         recent_events_by_category.get("federal_officials", []),
         lang,
         "federal-officials",
     )
     _render_event_column(
-        event_columns[1],
+        event_row_1[1],
         "國會議員" if lang == "zh-TW" else "Members of Congress",
         recent_events_by_category.get("congress_members", []),
         lang,
         "congress-members",
     )
+    event_row_2 = st.columns(2)
     _render_event_column(
-        event_columns[2],
+        event_row_2[0],
         "州政府官員" if lang == "zh-TW" else "State Officials",
         recent_events_by_category.get("state_officials", []),
         lang,
         "state-officials",
     )
     _render_event_column(
-        event_columns[3],
+        event_row_2[1],
         "州議員" if lang == "zh-TW" else "State Legislators",
         recent_events_by_category.get("state_legislators", []),
         lang,
