@@ -33,7 +33,17 @@ def render(lang: str, labels: dict[str, str]) -> None:
     if use_google_sheet_primary_mode():
         if _render_google_sheet_fallback(lang, labels):
             return
-        _render_metrics(labels, 0, 0, 0, 0, 0)
+        _render_metrics(
+            {
+                "federal_officials": 0,
+                "congress_members": 0,
+                "state_officials": 0,
+                "state_legislators": 0,
+                "federal_legislation": 0,
+                "state_legislation": 0,
+            },
+            lang,
+        )
         st.warning(
             "Google Sheet primary mode is enabled, but no sheet data could be loaded."
             if lang != "zh-TW"
@@ -41,21 +51,22 @@ def render(lang: str, labels: dict[str, str]) -> None:
         )
         render_google_sheet_fallback_diagnostic(lang)
         return
-    total_officials = 0
-    total_trackers = 0
+    dashboard_counts = {
+        "federal_officials": 0,
+        "congress_members": 0,
+        "state_officials": 0,
+        "state_legislators": 0,
+        "federal_legislation": 0,
+        "state_legislation": 0,
+    }
     total_statements = 0
-    total_sync_runs = 0
-    total_alerts = 0
     recent_events_by_category: dict[str, list[dict[str, object]]] = _empty_event_buckets()
     recent_legislation_by_category: dict[str, list[dict[str, object]]] = _empty_legislation_buckets()
 
     with session_scope() as session:
         statements_service = StatementsService(session)
-        total_officials = session.scalar(select(func.count()).select_from(Person)) or 0
-        total_trackers = session.scalar(select(func.count()).select_from(Tracker)) or 0
+        dashboard_counts = _collect_dashboard_counts_db(session)
         total_statements = session.scalar(select(func.count()).select_from(Statement)) or 0
-        total_sync_runs = session.scalar(select(func.count()).select_from(SyncRun)) or 0
-        total_alerts = session.scalar(select(func.count()).select_from(NotificationLog)) or 0
         recent_statements = (
             session.execute(
                 select(Statement)
@@ -120,16 +131,12 @@ def render(lang: str, labels: dict[str, str]) -> None:
         recent_legislation_by_category = _bucket_recent_legislation_db(legislation_rows, session=session, lang=lang)
 
     # Cloud DB can lag behind sheet exports; prefer fresher sheet counts when available.
-    total_officials, total_statements, total_sync_runs = _prefer_sheet_metrics_if_newer(
-        total_officials=total_officials,
-        total_statements=total_statements,
-        total_sync_runs=total_sync_runs,
-    )
+    dashboard_counts = _prefer_sheet_counts_if_newer(dashboard_counts)
 
-    if total_officials == 0 and total_statements == 0:
+    if sum(dashboard_counts.values()) == 0 and total_statements == 0:
         if _render_google_sheet_fallback(lang, labels):
             return
-        _render_metrics(labels, total_officials, total_trackers, total_statements, total_sync_runs, total_alerts)
+        _render_metrics(dashboard_counts, lang)
         st.warning(
             "The current app instance is connected to an empty database, and Google Sheet fallback is not available."
             if lang != "zh-TW"
@@ -143,7 +150,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
         render_google_sheet_fallback_diagnostic(lang)
         return
 
-    _render_metrics(labels, total_officials, total_trackers, total_statements, total_sync_runs, total_alerts)
+    _render_metrics(dashboard_counts, lang)
     _render_overview_sections(
         recent_legislation_by_category=recent_legislation_by_category,
         recent_events_by_category=recent_events_by_category,
@@ -159,7 +166,7 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
     if not (people or events or legislation):
         return False
 
-    _render_metrics(labels, len(people), 0, len(events), len(legislation), 0)
+    _render_metrics(_collect_dashboard_counts_sheet(people, legislation), lang)
     st.info(
         "Google Sheet fallback mode is active. The cloud app is showing exported data."
         if lang != "zh-TW"
@@ -190,20 +197,76 @@ def render_google_sheet_fallback_diagnostic(lang: str) -> None:
     )
 
 
-def _render_metrics(
-    labels: dict[str, str],
-    total_officials: int,
-    total_trackers: int,
-    total_statements: int,
-    total_sync_runs: int,
-    total_alerts: int,
-) -> None:
+def _render_metrics(counts: dict[str, int], lang: str) -> None:
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric(labels["total_officials"], total_officials)
-    col2.metric(labels["total_trackers"], total_trackers)
-    col3.metric(labels["recent_statements"], total_statements)
-    col4.metric(labels["recent_sync_runs"], total_sync_runs)
-    st.caption(f"{labels['recent_alerts']}: {total_alerts}")
+    col1.metric("聯邦官員" if lang == "zh-TW" else "Federal Officials", counts.get("federal_officials", 0))
+    col2.metric("國會議員" if lang == "zh-TW" else "Members of Congress", counts.get("congress_members", 0))
+    col3.metric("州政府官員" if lang == "zh-TW" else "State Officials", counts.get("state_officials", 0))
+    col4.metric("州議員" if lang == "zh-TW" else "State Legislators", counts.get("state_legislators", 0))
+    row2_col1, row2_col2 = st.columns(2)
+    row2_col1.metric("國會法案" if lang == "zh-TW" else "Congressional Bills", counts.get("federal_legislation", 0))
+    row2_col2.metric("州議會法案" if lang == "zh-TW" else "State Legislature Bills", counts.get("state_legislation", 0))
+
+
+def _collect_dashboard_counts_db(session) -> dict[str, int]:
+    def person_count(level: str, branch: str) -> int:
+        return (
+            session.scalar(
+                select(func.count(func.distinct(Appointment.person_id)))
+                .join(Office, Office.id == Appointment.office_id)
+                .where(
+                    Appointment.is_current.is_(True),
+                    Office.level == level,
+                    Office.branch == branch,
+                )
+            )
+            or 0
+        )
+
+    federal_legislation = (
+        session.scalar(select(func.count()).select_from(Legislation).where(Legislation.level == "federal", Legislation.is_taiwan_related.is_(True)))
+        or 0
+    )
+    state_legislation = (
+        session.scalar(select(func.count()).select_from(Legislation).where(Legislation.level == "state", Legislation.is_taiwan_related.is_(True)))
+        or 0
+    )
+    return {
+        "federal_officials": person_count("federal", "executive"),
+        "congress_members": person_count("federal", "legislative"),
+        "state_officials": person_count("state", "executive"),
+        "state_legislators": person_count("state", "legislative"),
+        "federal_legislation": federal_legislation,
+        "state_legislation": state_legislation,
+    }
+
+
+def _collect_dashboard_counts_sheet(people: list[dict[str, object]], legislation: list[dict[str, object]]) -> dict[str, int]:
+    federal_officials = 0
+    congress_members = 0
+    state_officials = 0
+    state_legislators = 0
+    for person in people:
+        level = str(person.get("level") or "").strip().lower()
+        branch = str(person.get("branch") or "").strip().lower()
+        if level == "federal" and branch == "executive":
+            federal_officials += 1
+        elif level == "federal" and branch == "legislative":
+            congress_members += 1
+        elif level == "state" and branch == "executive":
+            state_officials += 1
+        elif level == "state" and branch == "legislative":
+            state_legislators += 1
+    federal_legislation = sum(1 for item in legislation if str(item.get("level") or "").strip().lower() == "federal")
+    state_legislation = sum(1 for item in legislation if str(item.get("level") or "").strip().lower() == "state")
+    return {
+        "federal_officials": federal_officials,
+        "congress_members": congress_members,
+        "state_officials": state_officials,
+        "state_legislators": state_legislators,
+        "federal_legislation": federal_legislation,
+        "state_legislation": state_legislation,
+    }
 
 
 def _render_overview_sections(
@@ -804,6 +867,9 @@ def _clean_legislation_summary_text(text: str, title_text: str, chinese_title: s
     cleaned = re.sub(r"\(\s*\)", "", cleaned).strip()
     # Drop duplicated leading title phrase in summary, e.g. "《...》旨在..."
     cleaned = re.sub(r"^《[^》]{2,80}》\s*(旨在|在|係|是)\s*", "", cleaned)
+    # Also drop leading duplicated quoted title even without "旨在".
+    cleaned = re.sub(r"^《[^》]{2,120}》\s*", "", cleaned)
+    cleaned = re.sub(r"^《》\s*", "", cleaned)
     # Remove embedded parenthetical English title duplication in summary body.
     cleaned = re.sub(r"[（(]\s*[A-Za-z][A-Za-z\s,'\.-]{10,}[）)]", "", cleaned).strip()
     cleaned = re.sub(r"[（(]\s*[）)]", "", cleaned).strip()
@@ -1017,22 +1083,19 @@ def _normalize_person_display_name(name: str) -> str:
     return text
 
 
-def _prefer_sheet_metrics_if_newer(total_officials: int, total_statements: int, total_sync_runs: int) -> tuple[int, int, int]:
+def _prefer_sheet_counts_if_newer(current_counts: dict[str, int]) -> dict[str, int]:
     try:
         sheet = GoogleSheetReadService()
         people = sheet.list_people()
-        events = sheet.list_events()
         legislation = sheet.list_legislation()
     except Exception:
-        return total_officials, total_statements, total_sync_runs
+        return current_counts
 
-    if people:
-        total_officials = max(total_officials, len(people))
-    if events:
-        total_statements = max(total_statements, len(events))
-    if legislation:
-        total_sync_runs = max(total_sync_runs, len(legislation))
-    return total_officials, total_statements, total_sync_runs
+    sheet_counts = _collect_dashboard_counts_sheet(people, legislation)
+    merged = dict(current_counts)
+    for key, value in sheet_counts.items():
+        merged[key] = max(int(merged.get(key, 0) or 0), int(value or 0))
+    return merged
 
 
 def _annotate_event_description_names(description: str, participants: list[dict[str, object]], lang: str) -> str:
