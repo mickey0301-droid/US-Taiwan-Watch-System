@@ -17,6 +17,27 @@ from tracker.utils.congress_bills import congress_bill_url
 from tracker.utils.source_types import source_bucket_label, source_priority_key
 
 
+def _select_preferred_legislation_title(title: str, source_url: str, raw_payload: dict[str, object] | None) -> str:
+    selector = getattr(dashboard, "_select_preferred_legislation_title", None)
+    if callable(selector):
+        return str(selector(title=title, source_url=source_url, raw_payload=raw_payload))
+    title_text = str(title or "").strip()
+    if not title_text:
+        return ""
+    candidates = [part.strip() for part in re.split(r"\s*[|｜]+\s*", title_text) if part.strip()]
+    return candidates[0] if candidates else title_text
+
+
+def _should_prefix_bill_number(bill_number: str) -> bool:
+    checker = getattr(dashboard, "_should_prefix_bill_number", None)
+    if callable(checker):
+        return bool(checker(bill_number))
+    text = str(bill_number or "").strip()
+    if not text:
+        return False
+    return text.lower() not in {"n/a", "na", "unknown", "none", "null"}
+
+
 def render(lang: str, labels: dict[str, str]) -> None:
     st.header(labels["legislation"])
     with session_scope() as session:
@@ -124,7 +145,7 @@ def _render_db_legislation_card(selected: Legislation, service: LegislationServi
     )
 
     with st.container(border=True):
-        preferred_title = dashboard._select_preferred_legislation_title(
+        preferred_title = _select_preferred_legislation_title(
             title=str(selected.title or ""),
             source_url=str(official_link or selected.source_url or ""),
             raw_payload=raw_payload if isinstance(raw_payload, dict) else {},
@@ -134,7 +155,7 @@ def _render_db_legislation_card(selected: Legislation, service: LegislationServi
             summary=str(selected.summary or ""),
             lang=lang,
         )
-        if dashboard._should_prefix_bill_number(str(selected.bill_number or "")):
+        if _should_prefix_bill_number(str(selected.bill_number or "")):
             title = f"{selected.bill_number} {title}".strip()
         st.markdown(f"**{index}. {title}**")
         st.markdown(f"`{chamber_label}`：{chamber_text}")
@@ -225,7 +246,7 @@ def _render_sheet_legislation_card(selected: dict[str, object], sponsors: list[d
     cosponsor_text = _format_cosponsor_people(sponsors[1:], lang)
 
     with st.container(border=True):
-        preferred_title = dashboard._select_preferred_legislation_title(
+        preferred_title = _select_preferred_legislation_title(
             title=str(selected.get("title") or ""),
             source_url=str(selected.get("source_url") or selected.get("official_page") or ""),
             raw_payload=selected.get("raw_payload") if isinstance(selected.get("raw_payload"), dict) else {},
@@ -236,7 +257,7 @@ def _render_sheet_legislation_card(selected: dict[str, object], sponsors: list[d
             lang=lang,
         )
         bill_number = str(selected.get("bill_number") or "").strip()
-        if dashboard._should_prefix_bill_number(bill_number):
+        if _should_prefix_bill_number(bill_number):
             title = f"{bill_number} {title}".strip()
         st.markdown(f"**{index}. {title}**")
         st.markdown(f"`{chamber_label}`：{chamber_text}")
