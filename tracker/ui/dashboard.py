@@ -462,19 +462,20 @@ def _render_legislation_column(column, title: str, entries: list[dict[str, objec
             st.caption(empty_label)
             return
         for index, item in enumerate(entries, start=1):
-            headline = _localize_legislation_text(
-                bill_number=str(item.get("bill_number") or ""),
-                title=str(item.get("title") or ""),
-                summary=str(item.get("summary") or item.get("title") or ""),
-                latest_action=_format_event_time(item.get("date"), lang),
-                lang=lang,
-            )
-            bill_number = str(item.get("bill_number") or "").strip()
-            display_title = f"{bill_number} {headline}".strip() if bill_number else str(headline)
-            st.markdown(f"{index}. {display_title}")
-            st.caption(f"{date_label}: {_format_event_time(item.get('date'), lang)}")
-            if item.get("source_url"):
-                st.markdown(f"[link]({item['source_url']})")
+            with st.container(border=True):
+                headline = _localize_legislation_text(
+                    bill_number=str(item.get("bill_number") or ""),
+                    title=str(item.get("title") or ""),
+                    summary=str(item.get("summary") or item.get("title") or ""),
+                    latest_action=_format_event_time(item.get("date"), lang),
+                    lang=lang,
+                )
+                bill_number = str(item.get("bill_number") or "").strip()
+                display_title = f"{bill_number} {headline}".strip() if bill_number else str(headline)
+                st.markdown(f"**{index}. {display_title}**")
+                st.caption(f"{date_label}: {_format_event_time(item.get('date'), lang)}")
+                if item.get("source_url"):
+                    st.markdown(f"[link]({item['source_url']})")
 
 
 def _render_event_column(
