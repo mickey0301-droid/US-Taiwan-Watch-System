@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import gzip
+import logging
 import sqlite3
 from pathlib import Path
 from urllib.parse import parse_qsl, urlparse
@@ -11,6 +12,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from tracker import models  # noqa: F401
 from tracker.db import Base, engine
 from scripts.init_db import ensure_sqlite_columns
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -27,7 +30,7 @@ def ensure_database_ready() -> DatabaseReadyResult:
         Base.metadata.create_all(bind=engine)
         ensure_sqlite_columns()
         return DatabaseReadyResult(ok=True, safe_database_url=safe_database_url)
-    except SQLAlchemyError as exc:
+    except (SQLAlchemyError, sqlite3.Error, OSError, Exception) as exc:
         return DatabaseReadyResult(
             ok=False,
             message=f"{type(exc).__name__}: {exc}",
@@ -72,9 +75,21 @@ def _restore_sqlite_from_bootstrap_snapshot_if_needed() -> None:
     with gzip.open(snapshot_path, "rt", encoding="utf-8") as source:
         dump_sql = source.read()
 
-    with sqlite3.connect(target_path) as connection:
-        connection.executescript(dump_sql)
-        connection.commit()
+    try:
+        with sqlite3.connect(target_path) as connection:
+            connection.executescript(dump_sql)
+            connection.commit()
+    except sqlite3.Error as exc:
+        # In some cloud environments the bundled bootstrap SQL may fail to apply
+        # (sqlite version mismatch / partial script incompatibility). Fall back to
+        # an empty sqlite file so Base.metadata.create_all() can still initialize.
+        logger.warning("Bootstrap snapshot restore failed for %s: %s", target_path, exc)
+        try:
+            if target_path.exists():
+                target_path.unlink()
+            sqlite3.connect(target_path).close()
+        except sqlite3.Error:
+            pass
 
 
 def _sqlite_data_score(path: Path) -> int:
