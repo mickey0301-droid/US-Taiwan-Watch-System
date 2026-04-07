@@ -350,18 +350,33 @@ def _infer_sheet_legislation_category(item: dict[str, object]) -> str:
 
 def _sheet_legislation_identity_key(item: dict[str, object], category: str) -> str:
     bill_number = str(item.get("bill_number") or "").strip().lower()
+    bill_number = re.sub(r"[^a-z0-9]", "", bill_number)
     title = str(item.get("title") or "").strip().lower()
     date_value = item.get("date_date")
     year_text = str(getattr(date_value, "year", "") or "")
+    title_bill = _extract_bill_number_from_title_for_sheet(title)
     if category == "federal":
         session_year = str(item.get("session_year") or item.get("session") or "").strip()
         if bill_number:
             return f"fed|{session_year}|{bill_number}"
+        if title_bill:
+            return f"fed|{session_year}|{title_bill}"
         return f"fed|{session_year}|{title}"
     jurisdiction = str(item.get("jurisdiction") or item.get("jurisdiction_name") or "").strip().lower()
     if bill_number:
         return f"state|{jurisdiction}|{bill_number}|{year_text}"
+    if title_bill:
+        return f"state|{jurisdiction}|{title_bill}|{year_text}"
     return f"state|{jurisdiction}|{title}|{year_text}"
+
+
+def _extract_bill_number_from_title_for_sheet(title: str) -> str:
+    text = str(title or "").strip().lower()
+    if not text:
+        return ""
+    normalized = re.sub(r"[^a-z0-9]", "", text)
+    match = re.search(r"(hr|hres|hjres|hconres|s|sres|sjres|sconres)\d{1,6}", normalized)
+    return match.group(0) if match else ""
 
 
 def _render_overview_sections(
@@ -896,10 +911,13 @@ def _extract_english_legislation_title(title_text: str) -> str:
     if not text:
         return ""
     text = re.sub(r"《[^》]{1,120}》", " ", text)
-    text = text.replace("台灣", "Taiwan").replace("臺灣", "Taiwan").replace("中國", "China")
+    text = re.sub(r"[台臺]灣\s*'s", "Taiwan's", text)
+    text = re.sub(r"中國\s*'s", "China's", text)
     text = re.sub(r"[\u4e00-\u9fff]+", " ", text)
     text = re.sub(r"[（(]\s*[\u4e00-\u9fff][^）)]{0,120}[）)]", " ", text)
     text = re.sub(r"\s+", " ", text).strip(" -:：")
+    text = re.sub(r"^(?:H\.?\s*R\.?|S\.?)\s*\d+\s*", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"\(\s*([A-Za-z][^)]{6,})\s*\)\s*$", r" (\1)", text).strip()
     # If title became "A (A)" keep one copy.
     dup = re.match(r"^(?P<t>.+?)\s*[（(]\s*(?P=t)\s*[）)]$", text, flags=re.IGNORECASE)
     if dup:
@@ -937,10 +955,11 @@ def _normalize_chinese_legislation_title(chinese_title: str, title_text: str, qu
         if len(best) >= 2 and best not in {"台灣", "中國"}:
             return best
 
-    # Hard fallback for consistency in UI when translation is weak.
-    lowered = str(title_text or "").lower()
-    if "taiwan" in lowered or "台灣" in str(title_text or ""):
-        return "台灣相關法案"
+    english_title = _extract_english_legislation_title(title_text)
+    translated_from_english = _translate_english_legislation_title(english_title)
+    if translated_from_english:
+        return translated_from_english
+
     return "相關法案"
 
 
@@ -958,6 +977,90 @@ def _extract_mixed_chinese_title_candidate(title_text: str) -> str:
     return best
 
 
+@lru_cache(maxsize=256)
+def _translate_english_legislation_title(english_title: str) -> str:
+    source = str(english_title or "").strip()
+    if not source:
+        return ""
+
+    ai_output = _ai_translate_legislation_title(source)
+    if ai_output:
+        cleaned = _clean_legislation_title_text(ai_output, fallback_title=source)
+        if len(re.findall(r"[\u4e00-\u9fff]", cleaned)) >= 4:
+            return cleaned
+
+    return _rule_based_translate_legislation_title(source)
+
+
+@lru_cache(maxsize=256)
+def _ai_translate_legislation_title(english_title: str) -> str | None:
+    if not _looks_like_english(english_title):
+        return None
+    service = AIAssistService()
+    if not service.enabled:
+        return None
+    try:
+        result = service.translate_legislation_title(english_title)
+    except Exception:
+        return None
+    return result.strip() if result else None
+
+
+def _rule_based_translate_legislation_title(english_title: str) -> str:
+    text = str(english_title or "").strip()
+    if not text:
+        return ""
+    normalized = re.sub(r"\s+", " ", text)
+    lowered = normalized.lower()
+    lowered_no_bill = re.sub(r"^(?:h\.?r\.?|s\.?)\s*\d+\s*", "", lowered).strip()
+
+    specific_rules = [
+        (
+            r"^to enhance the security, resilience, and protection of critical undersea infrastructure vital to taiwan's national security, economic stability, and defense, particularly in countering gray zone tactics employed by the people's republic of china, and for other purposes\.?$",
+            "強化攸關台灣國家安全、經濟穩定與防衛之關鍵海底基礎設施安全、韌性及防護法案",
+        ),
+    ]
+    for pattern, translated in specific_rules:
+        if re.fullmatch(pattern, lowered_no_bill):
+            return translated
+
+    replacements = [
+        ("and for other purposes", ""),
+        ("to enhance", "強化"),
+        ("to support", "支持"),
+        ("to improve", "提升"),
+        ("to promote", "促進"),
+        ("security", "安全"),
+        ("resilience", "韌性"),
+        ("protection", "防護"),
+        ("critical undersea infrastructure", "關鍵海底基礎設施"),
+        ("taiwan's", "台灣"),
+        ("taiwan", "台灣"),
+        ("national security", "國家安全"),
+        ("economic stability", "經濟穩定"),
+        ("defense", "防衛"),
+        ("people's republic of china", "中華人民共和國"),
+        ("gray zone tactics", "灰色地帶戰術"),
+        ("act of", "法案"),
+        ("act", "法案"),
+        ("resolution", "決議案"),
+    ]
+    translated = lowered_no_bill
+    for source, target in replacements:
+        translated = translated.replace(source, target)
+    translated = re.sub(r"\s+", " ", translated).strip(" ,.;:")
+    translated = re.sub(r"^[a-z0-9\-\.\s]+", "", translated).strip()
+    translated = re.sub(r"[A-Za-z][A-Za-z\s,'\.-]{2,}", " ", translated)
+    translated = re.sub(r"\s+", " ", translated).strip(" ,.;:")
+    if len(re.findall(r"[\u4e00-\u9fff]", translated)) < 4:
+        if "taiwan" in lowered:
+            return "台灣相關法案中文譯名待補"
+        return "法案中文譯名待補"
+    if not re.search(r"(法案|決議案)$", translated):
+        translated = f"{translated}法案"
+    return translated
+
+
 def _select_preferred_legislation_title(title: str, source_url: str, raw_payload: dict[str, object] | None) -> str:
     title_text = str(title or "").strip()
     if not title_text:
@@ -966,6 +1069,12 @@ def _select_preferred_legislation_title(title: str, source_url: str, raw_payload
     candidates = [part.strip() for part in re.split(r"\s*[|｜]+\s*", title_text) if part.strip()]
     if not candidates:
         return title_text
+
+    # If any candidate already contains a Chinese legislation title, prefer it.
+    chinese_candidates = [candidate for candidate in candidates if _extract_quoted_chinese_title(candidate) or len(re.findall(r"[\u4e00-\u9fff]", candidate)) >= 4]
+    if chinese_candidates:
+        quoted = [candidate for candidate in chinese_candidates if _extract_quoted_chinese_title(candidate)]
+        return quoted[0] if quoted else chinese_candidates[0]
 
     congress_url = str(raw_payload.get("congress_gov_url") or "").strip().lower()
     source_url_lower = str(source_url or "").strip().lower()

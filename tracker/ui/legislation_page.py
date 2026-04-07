@@ -442,15 +442,17 @@ def _dedupe_db_legislation_rows(rows: list[Legislation]) -> list[Legislation]:
 
 
 def _dedupe_sheet_legislation_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
-    deduped: list[dict[str, object]] = []
-    seen: set[str] = set()
+    best_by_key: dict[str, dict[str, object]] = {}
+    order: list[str] = []
     for item in rows:
         key = _sheet_legislation_identity_key(item)
-        if key in seen:
+        if key not in best_by_key:
+            best_by_key[key] = item
+            order.append(key)
             continue
-        seen.add(key)
-        deduped.append(item)
-    return deduped
+        if _sheet_row_quality_score(item) > _sheet_row_quality_score(best_by_key[key]):
+            best_by_key[key] = item
+    return [best_by_key[key] for key in order]
 
 
 def _sheet_legislation_identity_key(item: dict[str, object]) -> str:
@@ -464,7 +466,36 @@ def _sheet_legislation_identity_key(item: dict[str, object]) -> str:
     year_text = str(getattr(date_value, "year", "") or "")
     if bill_number:
         return f"{jurisdiction}|{session_year}|{bill_number}"
+    title_bill = _extract_bill_number_from_title(str(item.get("title") or ""))
+    if title_bill:
+        return f"{jurisdiction}|{session_year}|{title_bill}"
     return f"{jurisdiction}|{session_year}|{title}|{year_text}"
+
+
+def _extract_bill_number_from_title(title: str) -> str:
+    text = str(title or "").strip().lower()
+    if not text:
+        return ""
+    normalized = re.sub(r"[^a-z0-9]", "", text)
+    match = re.search(r"(hr|hres|hjres|hconres|s|sres|sjres|sconres)\d{1,6}", normalized)
+    return match.group(0) if match else ""
+
+
+def _sheet_row_quality_score(item: dict[str, object]) -> int:
+    title = str(item.get("title") or "")
+    summary = str(item.get("summary") or "")
+    source_url = str(item.get("source_url") or item.get("official_page") or "").lower()
+    text = f"{title} {summary}"
+    score = 0
+    if "《" in text and "》" in text:
+        score += 100
+    cjk_count = len(re.findall(r"[\u4e00-\u9fff]", text))
+    score += min(cjk_count, 40)
+    if "congress.gov" in source_url:
+        score += 10
+    if str(item.get("bill_number") or "").strip():
+        score += 5
+    return score
 
 
 def _effective_legislation_date(row: Legislation) -> date | None:

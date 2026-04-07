@@ -61,6 +61,18 @@ class AIAssistService:
         result = _responses_text(self.settings.openai_api_key or "", self.settings.openai_model, system_prompt, user_prompt, 120)
         return result.strip() if result else None
 
+    def translate_legislation_title(self, title: str) -> str | None:
+        if not self.enabled or not title.strip():
+            return None
+        system_prompt = (
+            "You translate U.S. bill titles into Traditional Chinese (Taiwan usage). "
+            "Return only the translated title. "
+            "Do not include explanations, notes, markdown, or bilingual output."
+        )
+        user_prompt = f"English bill title: {title}\nTask: Translate into Traditional Chinese title only."
+        result = _responses_text(self.settings.openai_api_key or "", self.settings.openai_model, system_prompt, user_prompt, 120)
+        return result.strip() if result else None
+
 
 @lru_cache(maxsize=512)
 def _responses_text(
