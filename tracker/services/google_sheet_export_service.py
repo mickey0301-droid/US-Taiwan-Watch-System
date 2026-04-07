@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -423,7 +423,7 @@ class GoogleSheetExportService:
         additional_topics_value = " | ".join(str(tag).strip() for tag in additional_topics if str(tag).strip())
 
         seed_source = item.parser_identity or source_type
-        date_value = item.introduced_date or item.last_action_date
+        date_value = self._effective_legislation_date(item, raw_payload)
         session_label = ""
         session_year = ""
         if isinstance(raw_payload, dict):
@@ -460,6 +460,31 @@ class GoogleSheetExportService:
             notes,
             item.updated_at.isoformat() if item.updated_at else "",
         ]
+
+    def _effective_legislation_date(self, item: Legislation, raw_payload: dict[str, Any]) -> date | None:
+        if item.introduced_date:
+            return item.introduced_date
+        introduced_from_payload = self._parse_date(raw_payload.get("introduced_on_congress"))
+        if introduced_from_payload:
+            return introduced_from_payload
+        if item.last_action_date:
+            return item.last_action_date
+        for key in ("introduced_date", "latest_action_date", "update_date", "update_date_including_text"):
+            parsed = self._parse_date(raw_payload.get(key))
+            if parsed:
+                return parsed
+        return None
+
+    def _parse_date(self, value: Any) -> date | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        for parser in (date.fromisoformat, lambda raw: datetime.fromisoformat(raw).date()):
+            try:
+                return parser(text)
+            except ValueError:
+                continue
+        return None
 
     def _flatten_social_values(self, value: Any) -> str:
         if value in (None, ""):
