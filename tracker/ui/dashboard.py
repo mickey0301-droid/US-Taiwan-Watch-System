@@ -361,13 +361,25 @@ def _bucket_recent_legislation_db(rows: list[Legislation]) -> dict[str, list[dic
             category = "state_legislation"
         if not category or len(buckets[category]) >= 3:
             continue
+        sponsor_people = [item.person for item in row.sponsors if item.person and str(item.role or "").lower() == "sponsor"]
+        if not sponsor_people:
+            sponsor_people = [item.person for item in row.sponsors if item.person]
+        sponsor = sponsor_people[0] if sponsor_people else None
         buckets[category].append(
             {
                 "title": row.title,
                 "bill_number": row.bill_number,
+                "level": row.level,
+                "chamber": row.chamber,
                 "jurisdiction_name": row.jurisdiction_name,
+                "introduced_date": row.introduced_date,
                 "date": row.last_action_date or row.introduced_date,
                 "source_url": row.source_url,
+                "sponsor": (
+                    {"person_id": sponsor.id, "display_name": sponsor.full_name}
+                    if sponsor and sponsor.full_name
+                    else None
+                ),
             }
         )
     return buckets
@@ -446,15 +458,22 @@ def _bucket_recent_legislation_sheet(rows: list[dict[str, object]]) -> dict[str,
             {
                 "title": str(item.get("title") or ""),
                 "bill_number": str(item.get("bill_number") or ""),
+                "level": level or "",
+                "chamber": str(item.get("chamber") or ""),
                 "jurisdiction_name": str(item.get("jurisdiction") or item.get("jurisdiction_name") or ""),
+                "introduced_date": item.get("date_date"),
                 "date": item.get("date_date"),
                 "source_url": str(item.get("source_url") or ""),
+                "sponsor": _first_sheet_sponsor(item),
             }
         )
     return buckets
 
 
 def _render_legislation_column(column, title: str, entries: list[dict[str, object]], lang: str) -> None:
+    chamber_label = "所屬議院" if lang == "zh-TW" else "Chamber"
+    sponsor_label = "提案議員" if lang == "zh-TW" else "Sponsor"
+    introduced_label = "提案時間" if lang == "zh-TW" else "Introduced"
     date_label = "日期" if lang == "zh-TW" else "Date"
     empty_label = "目前無資料" if lang == "zh-TW" else "No records yet"
     with column:
@@ -474,9 +493,54 @@ def _render_legislation_column(column, title: str, entries: list[dict[str, objec
                 bill_number = str(item.get("bill_number") or "").strip()
                 display_title = f"{bill_number} {headline}".strip() if bill_number else str(headline)
                 st.markdown(f"**{index}. {display_title}**")
+                chamber_text = _format_legislation_chamber(
+                    level=str(item.get("level") or ""),
+                    chamber=str(item.get("chamber") or ""),
+                    jurisdiction_name=str(item.get("jurisdiction_name") or ""),
+                    lang=lang,
+                )
+                st.markdown(f"`{chamber_label}`：{chamber_text}")
+                sponsor = item.get("sponsor")
+                st.markdown(f"`{sponsor_label}`：")
+                if isinstance(sponsor, dict) and sponsor.get("display_name"):
+                    render_person_links([sponsor], lang, key_prefix=f"leg-sponsor-{title}-{index}")
+                else:
+                    st.caption("未提供" if lang == "zh-TW" else "Not available")
+                st.markdown(f"`{introduced_label}`：{_format_event_time(item.get('introduced_date'), lang)}")
                 st.caption(f"{date_label}: {_format_event_time(item.get('date'), lang)}")
                 if item.get("source_url"):
                     st.markdown(f"[link]({item['source_url']})")
+
+
+def _first_sheet_sponsor(item: dict[str, object]) -> dict[str, object] | None:
+    sponsor_ids = list(item.get("sponsor_ids_list") or [])
+    sponsor_names = list(item.get("sponsors_en_list") or [])
+    sponsor_names_zh = list(item.get("sponsors_zh_list") or [])
+    if not sponsor_names:
+        return None
+    name = str(sponsor_names[0] or "").strip()
+    if not name:
+        return None
+    zh_name = str(sponsor_names_zh[0] or "").strip() if sponsor_names_zh else ""
+    display_name = f"{zh_name} {name}".strip() if zh_name else name
+    person_id = sponsor_ids[0] if sponsor_ids else None
+    return {"person_id": person_id, "display_name": display_name}
+
+
+def _format_legislation_chamber(level: str, chamber: str, jurisdiction_name: str, lang: str) -> str:
+    normalized_level = str(level or "").strip().lower()
+    normalized_chamber = str(chamber or "").strip().lower()
+    jurisdiction = str(jurisdiction_name or "").strip()
+
+    chamber_name_zh = "參議院" if normalized_chamber == "senate" else "眾議院" if normalized_chamber == "house" else "議會"
+    chamber_name_en = "Senate" if normalized_chamber == "senate" else "House" if normalized_chamber == "house" else "Legislature"
+    if normalized_level == "federal":
+        return f"聯邦{chamber_name_zh}" if lang == "zh-TW" else f"U.S. {chamber_name_en}"
+    if normalized_level == "state":
+        if lang == "zh-TW":
+            return f"{jurisdiction or '州'}{chamber_name_zh}"
+        return f"{jurisdiction or 'State'} {chamber_name_en}"
+    return chamber_name_zh if lang == "zh-TW" else chamber_name_en
 
 
 def _render_event_column(
