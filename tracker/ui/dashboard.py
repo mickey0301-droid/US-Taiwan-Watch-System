@@ -756,7 +756,7 @@ def _render_legislation_column(column, title: str, entries: list[dict[str, objec
                     summary=str(item.get("summary") or ""),
                     lang=lang,
                 )
-                if bill_number:
+                if _should_prefix_bill_number(bill_number):
                     display_title = f"{bill_number} {display_title}".strip()
                 st.markdown(f"**{index}. {display_title}**")
                 chamber_text = _format_legislation_chamber(
@@ -785,6 +785,21 @@ def _render_legislation_column(column, title: str, entries: list[dict[str, objec
                 st.markdown(f"`{introduced_label}`：{_format_event_time(item.get('introduced_date'), lang)}")
                 if item.get("source_url"):
                     st.markdown(f"[link]({item['source_url']})")
+
+
+def _should_prefix_bill_number(bill_number: str) -> bool:
+    text = str(bill_number or "").strip()
+    if not text:
+        return False
+    # Prefix only for real bill identifiers; skip descriptive titles such as
+    # "Blue Skies for Taiwan Act of 2026" stored in bill_number field.
+    normalized = re.sub(r"[^a-z0-9]", "", text.lower())
+    return bool(
+        re.match(
+            r"^(hr|hres|hjres|hconres|s|sres|sjres|sconres|hb|sb|ab|ac|ajr|scr|hcr|sr|jr)\d+$",
+            normalized,
+        )
+    )
 
 
 def _first_sheet_sponsor(item: dict[str, object], person_lookup: dict[str, int], lang: str) -> dict[str, object] | None:
@@ -1032,6 +1047,14 @@ def _rule_based_translate_legislation_title(english_title: str) -> str:
         (
             r"^a bill to require the comptroller general of the united states to submit a report on the manner in which delays in arms deliveries to japan, taiwan, and the philippines affect the ability of the department of defense to build and sustain a strong denial defense in the first island chain\.?$",
             "要求美國政府問責署提交報告，評估對日本、台灣與菲律賓軍售延遲如何影響國防部在第一島鏈建立並維持強力拒止防衛能力法案",
+        ),
+        (
+            r"^iowa general assembly friendly taiwan resolution\.?$",
+            "支持台灣國際參與及美台稅務協議友好決議",
+        ),
+        (
+            r"^indiana general assembly friendly taiwan resolution\.?$",
+            "支持台灣及美台稅務協議友好決議",
         ),
     ]
     for pattern, translated in specific_rules:

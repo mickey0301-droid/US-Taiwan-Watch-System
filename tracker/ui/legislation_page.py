@@ -147,7 +147,7 @@ def _render_db_legislation_card(selected: Legislation, service: LegislationServi
             summary=str(selected.summary or ""),
             lang=lang,
         )
-        if selected.bill_number:
+        if dashboard._should_prefix_bill_number(str(selected.bill_number or "")):
             title = f"{selected.bill_number} {title}".strip()
         st.markdown(f"**{index}. {title}**")
         st.markdown(f"`{chamber_label}`：{chamber_text}")
@@ -249,7 +249,7 @@ def _render_sheet_legislation_card(selected: dict[str, object], sponsors: list[d
             lang=lang,
         )
         bill_number = str(selected.get("bill_number") or "").strip()
-        if bill_number:
+        if dashboard._should_prefix_bill_number(bill_number):
             title = f"{bill_number} {title}".strip()
         st.markdown(f"**{index}. {title}**")
         st.markdown(f"`{chamber_label}`：{chamber_text}")
