@@ -7,7 +7,7 @@ import re
 import streamlit as st
 from sqlalchemy import func, select
 
-from tracker.config import use_google_sheet_primary_mode
+from tracker.config import get_settings, use_google_sheet_primary_mode
 from tracker.db import session_scope
 from tracker.models import (
     Alias,
@@ -44,6 +44,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
             },
             lang,
         )
+        _render_data_source_status(lang)
         st.warning(
             "Google Sheet primary mode is enabled, but no sheet data could be loaded."
             if lang != "zh-TW"
@@ -137,6 +138,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
         if _render_google_sheet_fallback(lang, labels):
             return
         _render_metrics(dashboard_counts, lang)
+        _render_data_source_status(lang)
         st.warning(
             "The current app instance is connected to an empty database, and Google Sheet fallback is not available."
             if lang != "zh-TW"
@@ -151,6 +153,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
         return
 
     _render_metrics(dashboard_counts, lang)
+    _render_data_source_status(lang)
     _render_overview_sections(
         recent_legislation_by_category=recent_legislation_by_category,
         recent_events_by_category=recent_events_by_category,
@@ -167,6 +170,7 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
         return False
 
     _render_metrics(_collect_dashboard_counts_sheet(people, legislation), lang)
+    _render_data_source_status(lang, people=people, events=events, legislation=legislation)
     st.info(
         "Google Sheet fallback mode is active. The cloud app is showing exported data."
         if lang != "zh-TW"
@@ -194,6 +198,56 @@ def render_google_sheet_fallback_diagnostic(lang: str) -> None:
         f"Google Sheet fallback error: {error_message}"
         if lang != "zh-TW"
         else f"Google Sheet fallback 錯誤：{error_message}"
+    )
+
+
+def _render_data_source_status(
+    lang: str,
+    people: list[dict[str, object]] | None = None,
+    events: list[dict[str, object]] | None = None,
+    legislation: list[dict[str, object]] | None = None,
+) -> None:
+    settings = get_settings()
+    db_url = str(settings.database_url or "")
+    db_sync_time = None
+    try:
+        with session_scope() as session:
+            db_sync_time = session.scalar(
+                select(func.max(SyncRun.ended_at)).where(SyncRun.status == "success")
+            )
+    except Exception:
+        db_sync_time = None
+
+    sheet_error = None
+    if people is None or events is None or legislation is None:
+        sheet = GoogleSheetReadService()
+        people = sheet.list_people()
+        events = sheet.list_events()
+        legislation = sheet.list_legislation()
+        sheet_error = sheet.get_last_error()
+
+    db_sync_text = db_sync_time.strftime("%Y-%m-%d %H:%M:%S") if db_sync_time else ("未提供" if lang == "zh-TW" else "N/A")
+    db_text = (
+        f"資料庫：{db_url}｜最後成功同步：{db_sync_text}"
+        if lang == "zh-TW"
+        else f"Database: {db_url} | Last successful sync: {db_sync_text}"
+    )
+    st.caption(db_text)
+
+    if sheet_error:
+        st.caption(
+            f"Google Sheet：不可用（{sheet_error}）"
+            if lang == "zh-TW"
+            else f"Google Sheet: unavailable ({sheet_error})"
+        )
+        return
+
+    st.caption(
+        (
+            f"Google Sheet：可用（People {len(people or [])} / Events {len(events or [])} / Legislation {len(legislation or [])}）"
+            if lang == "zh-TW"
+            else f"Google Sheet: available (People {len(people or [])} / Events {len(events or [])} / Legislation {len(legislation or [])})"
+        )
     )
 
 
