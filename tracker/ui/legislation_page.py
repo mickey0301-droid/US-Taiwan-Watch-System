@@ -61,84 +61,53 @@ def render(lang: str, labels: dict[str, str]) -> None:
             st.info("這個月份目前沒有立法資料。" if lang == "zh-TW" else "No legislation is available for this month.")
             return
 
-        for item in legislation_rows:
-            _render_db_legislation_card(item, service, people_by_id, lang)
+        for idx, item in enumerate(legislation_rows, start=1):
+            _render_db_legislation_card(item, service, people_by_id, lang, idx)
 
 
-def _render_db_legislation_card(selected: Legislation, service: LegislationService, people_by_id: dict[int, Person], lang: str) -> None:
-    time_label = "時間" if lang == "zh-TW" else "Time"
-    description_label = "法案摘要" if lang == "zh-TW" else "Summary"
-    sponsors_label = "提案人" if lang == "zh-TW" else "Sponsors"
-    sources_label = "來源" if lang == "zh-TW" else "Sources"
-    status_label = "進度" if lang == "zh-TW" else "Status"
-    official_link_label = "Congress.gov"
-    topic_label = "其他相關主題" if lang == "zh-TW" else "Additional topics"
-    latest_action_label = "最新動作" if lang == "zh-TW" else "Latest action"
-    committees_label = "委員會" if lang == "zh-TW" else "Committees"
-    cosponsors_label = "聯署人數" if lang == "zh-TW" else "Cosponsors"
-    text_link_label = "法案全文" if lang == "zh-TW" else "Bill text"
+def _render_db_legislation_card(selected: Legislation, service: LegislationService, people_by_id: dict[int, Person], lang: str, index: int) -> None:
+    chamber_label = "所屬議院" if lang == "zh-TW" else "Chamber"
+    sponsor_label = "提案議員" if lang == "zh-TW" else "Sponsor"
+    introduced_label = "提案時間" if lang == "zh-TW" else "Introduced"
+    date_label = "日期" if lang == "zh-TW" else "Date"
 
     sponsors = []
     for sponsor in service.list_sponsors(selected.id):
         person = people_by_id.get(sponsor.person_id)
         if person:
-            sponsors.append({"person_id": person.id, "display_name": person.full_name})
+            sponsors.append(person.full_name)
 
-    sources = sorted(
-        service.list_sources(selected.id),
-        key=lambda source: (
-            source_priority_key(source.source_type, source.source_url),
-            -(source.collected_at.timestamp() if source.collected_at else 0),
-            source.id,
-        ),
-    )
     raw_payload = selected.raw_payload or {}
     official_link = raw_payload.get("congress_gov_url") or congress_bill_url(
         raw_payload.get("congress"),
         selected.bill_number,
-    )
-    additional_topics = sorted((raw_payload.get("additional_topics") or {}).keys())
-    latest_action = raw_payload.get("latest_action_text")
-    committees = raw_payload.get("committee_assignments") or []
-    if not isinstance(committees, list):
-        committees = [str(committees)]
-    cosponsor_count = raw_payload.get("cosponsor_count")
-    text_page_url = raw_payload.get("text_page_url")
+    ) or selected.source_url
+
+    chamber = str(selected.chamber or "").strip().lower()
+    level = str(selected.level or "").strip().lower()
+    jurisdiction = str(selected.jurisdiction_name or "").strip()
+    chamber_name_zh = "參議院" if chamber == "senate" else "眾議院" if chamber == "house" else "議會"
+    chamber_name_en = "Senate" if chamber == "senate" else "House" if chamber == "house" else "Legislature"
+    if level == "federal":
+        chamber_text = f"聯邦{chamber_name_zh}" if lang == "zh-TW" else f"U.S. {chamber_name_en}"
+    elif level == "state":
+        chamber_text = f"{jurisdiction}{chamber_name_zh}" if lang == "zh-TW" else f"{jurisdiction} {chamber_name_en}"
+    else:
+        chamber_text = chamber_name_zh if lang == "zh-TW" else chamber_name_en
+
+    sponsor_text = "、".join(sponsors[:3]) if (lang == "zh-TW" and sponsors) else (", ".join(sponsors[:3]) if sponsors else ("未提供" if lang == "zh-TW" else "Not available"))
 
     with st.container(border=True):
-        heading = selected.title
+        title = str(selected.title or "").strip()
         if selected.bill_number:
-            heading = f"{selected.bill_number} | {heading}"
-        st.markdown(f"**{heading}**")
-        st.markdown(f"`{time_label}`：{_format_date(selected.introduced_date or selected.last_action_date)}")
-        st.markdown(f"`{description_label}`：{selected.summary or selected.title}")
-        st.markdown(f"`{status_label}`：{selected.status_text or ('未知' if lang == 'zh-TW' else 'Unknown')}")
+            title = f"{selected.bill_number} {title}".strip()
+        st.markdown(f"**{index}. {title}**")
+        st.markdown(f"`{chamber_label}`：{chamber_text}")
+        st.markdown(f"`{sponsor_label}`：{sponsor_text}")
+        st.markdown(f"`{introduced_label}`：{_format_date(selected.introduced_date)}")
+        st.caption(f"{date_label}: {_format_date(selected.introduced_date or selected.last_action_date)}")
         if official_link:
-            st.markdown(f"`{official_link_label}`：[Congress.gov]({official_link})")
-        if text_page_url:
-            st.markdown(f"`{text_link_label}`：[{text_link_label}]({text_page_url})")
-        if latest_action:
-            st.markdown(f"`{latest_action_label}`：{latest_action}")
-        if committees:
-            st.markdown(f"`{committees_label}`：{' | '.join(item for item in committees if item)}")
-        if cosponsor_count not in (None, ""):
-            st.markdown(f"`{cosponsors_label}`：{cosponsor_count}")
-        if additional_topics:
-            st.markdown(f"`{topic_label}`：{', '.join(additional_topics)}")
-
-        st.markdown(f"`{sponsors_label}`：")
-        if sponsors:
-            render_person_links(sponsors, lang, key_prefix=f"legislation-{selected.id}")
-        else:
-            st.write("目前未附提案人。" if lang == "zh-TW" else "No sponsors attached yet.")
-
-        if sources:
-            formatted = " | ".join(
-                f"[{source_bucket_label(source.source_type, source.source_url, lang)}]({source.source_url})"
-                for source in sources[:5]
-            )
-            st.markdown(f"`{sources_label}`：{formatted}")
-
+            st.markdown(f"[link]({official_link})")
 
 def _render_google_sheet_fallback(lang: str) -> bool:
     rows = GoogleSheetReadService().list_legislation()
@@ -184,42 +153,49 @@ def _render_google_sheet_fallback(lang: str) -> bool:
     if not filtered_rows:
         return True
 
-    for selected in filtered_rows:
+    for idx, selected in enumerate(filtered_rows, start=1):
         sponsors = _sheet_sponsors(selected)
-        _render_sheet_legislation_card(selected, sponsors, lang)
+        _render_sheet_legislation_card(selected, sponsors, lang, idx)
     return True
 
 
-def _render_sheet_legislation_card(selected: dict[str, object], sponsors: list[dict[str, object]], lang: str) -> None:
-    time_label = "時間" if lang == "zh-TW" else "Time"
-    description_label = "法案摘要" if lang == "zh-TW" else "Summary"
-    sponsors_label = "提案人" if lang == "zh-TW" else "Sponsors"
-    status_label = "進度" if lang == "zh-TW" else "Status"
-    latest_action_label = "最新動作" if lang == "zh-TW" else "Latest action"
-    committees_label = "委員會" if lang == "zh-TW" else "Committees"
-    cosponsors_label = "聯署人數" if lang == "zh-TW" else "Cosponsors"
+def _render_sheet_legislation_card(selected: dict[str, object], sponsors: list[dict[str, object]], lang: str, index: int) -> None:
+    chamber_label = "所屬議院" if lang == "zh-TW" else "Chamber"
+    sponsor_label = "提案議員" if lang == "zh-TW" else "Sponsor"
+    introduced_label = "提案時間" if lang == "zh-TW" else "Introduced"
+    date_label = "日期" if lang == "zh-TW" else "Date"
+
+    level = str(selected.get("level") or "").strip().lower()
+    chamber = str(selected.get("chamber") or "").strip().lower()
+    jurisdiction = str(selected.get("jurisdiction_name") or selected.get("jurisdiction") or "").strip()
+    if not level:
+        level = "federal" if jurisdiction.lower() in {"united states", "us", "u.s."} else "state"
+
+    chamber_name_zh = "參議院" if chamber == "senate" else "眾議院" if chamber == "house" else "議會"
+    chamber_name_en = "Senate" if chamber == "senate" else "House" if chamber == "house" else "Legislature"
+    if level == "federal":
+        chamber_text = f"聯邦{chamber_name_zh}" if lang == "zh-TW" else f"U.S. {chamber_name_en}"
+    elif level == "state":
+        chamber_text = f"{jurisdiction}{chamber_name_zh}" if lang == "zh-TW" else f"{jurisdiction} {chamber_name_en}"
+    else:
+        chamber_text = chamber_name_zh if lang == "zh-TW" else chamber_name_en
+
+    names=[str(item.get("display_name") or "").strip() for item in sponsors if str(item.get("display_name") or "").strip()]
+    sponsor_text = "、".join(names[:3]) if (lang == "zh-TW" and names) else (", ".join(names[:3]) if names else ("未提供" if lang == "zh-TW" else "Not available"))
 
     with st.container(border=True):
-        heading = selected.get("title") or ""
-        if selected.get("bill_number"):
-            heading = f"{selected['bill_number']} | {heading}"
-        st.markdown(f"**{heading}**")
-        st.markdown(f"`{time_label}`：{selected['date_date'].strftime('%Y-%m-%d') if selected.get('date_date') else 'N/A'}")
-        st.markdown(f"`{description_label}`：{selected.get('summary') or selected.get('title') or ''}")
-        st.markdown(f"`{status_label}`：{selected.get('status') or ('未知' if lang == 'zh-TW' else 'Unknown')}")
-        if selected.get("official_page"):
-            st.markdown(f"`Congress.gov`：[Congress.gov]({selected['official_page']})")
-        if selected.get("official_text_page"):
-            st.markdown(f"`Bill text`：[Bill text]({selected['official_text_page']})")
-        if selected.get("latest_action"):
-            st.markdown(f"`{latest_action_label}`：{selected['latest_action']}")
-        if selected.get("committees_list"):
-            st.markdown(f"`{committees_label}`：{' | '.join(selected['committees_list'])}")
-        if selected.get("cosponsor_count_int") is not None:
-            st.markdown(f"`{cosponsors_label}`：{selected['cosponsor_count_int']}")
-        st.markdown(f"`{sponsors_label}`：")
-        render_person_links(sponsors, lang, key_prefix=f"sheet-legislation-{selected.get('legislation_id')}")
-
+        title = str(selected.get("title") or "").strip()
+        bill_number = str(selected.get("bill_number") or "").strip()
+        if bill_number:
+            title = f"{bill_number} {title}".strip()
+        st.markdown(f"**{index}. {title}**")
+        st.markdown(f"`{chamber_label}`：{chamber_text}")
+        st.markdown(f"`{sponsor_label}`：{sponsor_text}")
+        st.markdown(f"`{introduced_label}`：{_format_date(selected.get('date_date'))}")
+        st.caption(f"{date_label}: {_format_date(selected.get('date_date'))}")
+        source_url = str(selected.get("source_url") or selected.get("official_page") or "").strip()
+        if source_url:
+            st.markdown(f"[link]({source_url})")
 
 def _sheet_sponsors(selected: dict[str, object]) -> list[dict[str, object]]:
     sponsor_ids = list(selected.get("sponsor_ids_list") or [])
