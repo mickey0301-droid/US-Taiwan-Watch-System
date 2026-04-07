@@ -37,7 +37,6 @@ def render(lang: str, labels: dict[str, str]) -> None:
             st.info("目前還沒有立法資料。" if lang == "zh-TW" else "No legislation is available yet.")
             return
 
-        scope_label = "法案範圍" if lang == "zh-TW" else "Scope"
         year_label = "年份" if lang == "zh-TW" else "Year"
         month_label = "月份" if lang == "zh-TW" else "Month"
         bill_label = "法案" if lang == "zh-TW" else "Legislation"
@@ -53,20 +52,16 @@ def render(lang: str, labels: dict[str, str]) -> None:
         cosponsors_label = "聯署人數" if lang == "zh-TW" else "Cosponsors"
         text_link_label = "法案全文" if lang == "zh-TW" else "Bill text"
 
-        scopes = _scope_options(lang)
-        selected_scope = st.selectbox(scope_label, list(scopes.keys()), format_func=lambda key: scopes[key])
-
-        scoped_rows = [row for row in all_rows if _match_scope(row, selected_scope)]
-        years = _list_years(scoped_rows)
+        years = _list_years(all_rows)
         if not years:
             st.info("目前沒有符合條件的法案。" if lang == "zh-TW" else "No legislation matches this filter.")
             return
 
         selected_year = st.selectbox(year_label, years)
-        months = _list_months(scoped_rows, selected_year)
+        months = _list_months(all_rows, selected_year)
         selected_month = st.selectbox(month_label, months, format_func=lambda value: f"{value:02d}")
 
-        legislation_rows = _rows_for_year_month(scoped_rows, selected_year, selected_month)
+        legislation_rows = _rows_for_year_month(all_rows, selected_year, selected_month)
         if not legislation_rows:
             st.info("這個月份目前沒有立法資料。" if lang == "zh-TW" else "No legislation is available for this month.")
             return
@@ -164,7 +159,6 @@ def _render_google_sheet_fallback(lang: str) -> bool:
         if lang != "zh-TW"
         else "目前使用 Google Sheet fallback 模式，雲端版先顯示已匯出的立法資料。"
     )
-    scope_label = "法案範圍" if lang == "zh-TW" else "Scope"
     year_label = "年份" if lang == "zh-TW" else "Year"
     month_label = "月份" if lang == "zh-TW" else "Month"
     bill_label = "法案" if lang == "zh-TW" else "Legislation"
@@ -176,20 +170,13 @@ def _render_google_sheet_fallback(lang: str) -> bool:
     committees_label = "委員會" if lang == "zh-TW" else "Committees"
     cosponsors_label = "聯署人數" if lang == "zh-TW" else "Cosponsors"
 
-    scopes = {"all": "全部法案" if lang == "zh-TW" else "All legislation"}
-    for row in rows:
-        scope = str(row.get("scope") or "").strip()
-        if scope and scope not in scopes:
-            scopes[scope] = scope
-    selected_scope = st.selectbox(scope_label, list(scopes.keys()), format_func=lambda key: scopes[key], key="sheet-legislation-scope")
-    scoped_rows = [row for row in rows if selected_scope == "all" or str(row.get("scope") or "").strip() == selected_scope]
-    years = sorted({row.get("date_date").year for row in scoped_rows if row.get("date_date")}, reverse=True)
+    years = sorted({row.get("date_date").year for row in rows if row.get("date_date")}, reverse=True)
     if not years:
         return True
     selected_year = st.selectbox(year_label, years, key="sheet-legislation-year")
-    months = sorted({row.get("date_date").month for row in scoped_rows if row.get("date_date") and row["date_date"].year == selected_year}, reverse=True)
+    months = sorted({row.get("date_date").month for row in rows if row.get("date_date") and row["date_date"].year == selected_year}, reverse=True)
     selected_month = st.selectbox(month_label, months, format_func=lambda value: f"{value:02d}", key="sheet-legislation-month")
-    filtered_rows = [row for row in scoped_rows if row.get("date_date") and row["date_date"].year == selected_year and row["date_date"].month == selected_month]
+    filtered_rows = [row for row in rows if row.get("date_date") and row["date_date"].year == selected_year and row["date_date"].month == selected_month]
     if not filtered_rows:
         return True
     options = {
@@ -247,28 +234,6 @@ def _sheet_sponsors(selected: dict[str, object]) -> list[dict[str, object]]:
         sponsors.append({"person_id": person_id, "display_name": display_name})
     return sponsors
 
-
-def _scope_options(lang: str) -> dict[str, str]:
-    if lang == "zh-TW":
-        return {
-            "all": "全部法案",
-            "excel_history": "Excel 歷史法案",
-            "non_excel": "其他法案",
-        }
-    return {
-        "all": "All legislation",
-        "excel_history": "Excel history legislation",
-        "non_excel": "Other legislation",
-    }
-
-
-def _match_scope(row: Legislation, scope: str) -> bool:
-    is_excel = row.parser_identity == "congress_bills_excel_v1"
-    if scope == "excel_history":
-        return is_excel
-    if scope == "non_excel":
-        return not is_excel
-    return True
 
 
 def _list_years(rows: Iterable[Legislation]) -> list[int]:
