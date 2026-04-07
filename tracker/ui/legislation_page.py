@@ -219,7 +219,7 @@ def _render_sheet_legislation_card(selected: dict[str, object], sponsors: list[d
         lang=lang,
     )
 
-    sponsors = dashboard._dedupe_people_for_display(sponsors)
+    sponsors = _dedupe_people_for_display(sponsors)
     sponsor = sponsors[0] if sponsors else None
     sponsor_text = dashboard._format_people_inline([sponsor], lang) if sponsor else ("未提供" if lang == "zh-TW" else "Not available")
     cosponsor_text = _format_cosponsor_people(sponsors[1:], lang)
@@ -255,7 +255,7 @@ def _render_legislation_links(links: list[str]) -> None:
     st.markdown(rendered)
 
 def _format_cosponsor_people(people: list[dict[str, object]], lang: str) -> str:
-    deduped_people = dashboard._dedupe_people_for_display(people)
+    deduped_people = _dedupe_people_for_display(people)
     valid = [item for item in deduped_people if isinstance(item, dict) and str(item.get("display_name") or item.get("english_name") or "").strip()]
     if not valid:
         return "無" if lang == "zh-TW" else "None"
@@ -265,6 +265,36 @@ def _format_cosponsor_people(people: list[dict[str, object]], lang: str) -> str:
     if extra > 0:
         return f"{text} 等{extra}名" if lang == "zh-TW" else f"{text} and {extra} more"
     return text
+
+
+def _dedupe_people_for_display(people: list[dict[str, object]]) -> list[dict[str, object]]:
+    deduped: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for person in people:
+        if not isinstance(person, dict):
+            continue
+        person_id = person.get("person_id")
+        english_name = str(person.get("english_name") or "").strip()
+        chinese_name = str(person.get("chinese_name") or "").strip()
+        display_name = str(person.get("display_name") or "").strip()
+        key_parts = [
+            str(person_id) if person_id not in (None, "") else "",
+            _normalize_person_name_key(english_name),
+            _normalize_person_name_key(chinese_name),
+            _normalize_person_name_key(display_name),
+        ]
+        key = "|".join(part for part in key_parts if part)
+        if not key:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(person)
+    return deduped
+
+
+def _normalize_person_name_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", str(value or "").lower())
 
 def _sheet_sponsors(selected: dict[str, object], person_lookup: dict[str, int]) -> list[dict[str, object]]:
     sponsor_ids = list(selected.get("sponsor_ids_list") or [])
