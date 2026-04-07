@@ -329,7 +329,7 @@ def main() -> None:
 
     labels = _repair_nested_text(LABELS[language])
     if SIDEBAR_LOGO_PATH.exists():
-        st.sidebar.image(str(SIDEBAR_LOGO_PATH), use_container_width=True)
+        st.sidebar.image(str(SIDEBAR_LOGO_PATH), use_column_width=True)
     st.sidebar.markdown("## US Taiwan Watch")
     google_sheet_primary = use_google_sheet_primary_mode()
     query_page = st.query_params.get("page")
