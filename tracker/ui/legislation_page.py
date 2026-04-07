@@ -434,12 +434,16 @@ def _dedupe_db_legislation_rows(rows: list[Legislation]) -> list[Legislation]:
     for row in rows:
         key = str(row.bill_slug or "").strip().lower()
         if not key:
+            bill_number = re.sub(r"[^a-z0-9]", "", str(row.bill_number or "").strip().lower())
+            source_bill = _extract_bill_number_from_source_url(str(row.source_url or ""))
+            semantic_title = _semantic_legislation_title_key(str(row.title or ""))
+            effective = _effective_legislation_date(row)
             key = "|".join(
                 [
                     str(row.level or "").strip().lower(),
                     str(row.jurisdiction_name or "").strip().lower(),
-                    str(row.bill_number or "").strip().lower(),
-                    str(row.title or "").strip().lower(),
+                    bill_number or source_bill or semantic_title or str(row.title or "").strip().lower(),
+                    str(effective.year if effective else ""),
                 ]
             )
         source_links_by_key.setdefault(key, set()).update(_collect_db_source_links(row))
@@ -479,7 +483,7 @@ def _dedupe_sheet_legislation_rows(rows: list[dict[str, object]]) -> list[dict[s
         selected = dict(best_by_key[key])
         selected["_source_urls"] = _sort_source_links(source_links_by_key.get(key, set()))
         deduped.append(selected)
-    return deduped
+    return _merge_related_sheet_rows(deduped)
 
 
 def _sheet_legislation_identity_key(item: dict[str, object]) -> str:
@@ -488,6 +492,9 @@ def _sheet_legislation_identity_key(item: dict[str, object]) -> str:
     bill_number = str(item.get("bill_number") or "").strip().lower()
     # Normalize variants such as "H.R. 8177" / "HR 8177" / "hr8177".
     bill_number = re.sub(r"[^a-z0-9]", "", bill_number)
+    source_bill = _extract_bill_number_from_source_url(str(item.get("source_url") or item.get("official_page") or ""))
+    if source_bill and not bill_number:
+        bill_number = source_bill
     title = str(item.get("title") or "").strip().lower()
     date_value = item.get("date_date")
     year_text = str(getattr(date_value, "year", "") or "")
@@ -496,7 +503,8 @@ def _sheet_legislation_identity_key(item: dict[str, object]) -> str:
     title_bill = _extract_bill_number_from_title(str(item.get("title") or ""))
     if title_bill:
         return f"{jurisdiction}|{session_year}|{title_bill}"
-    return f"{jurisdiction}|{session_year}|{title}|{year_text}"
+    semantic_title = _semantic_legislation_title_key(str(item.get("title") or ""))
+    return f"{jurisdiction}|{session_year}|{semantic_title or title}|{year_text}"
 
 
 def _extract_bill_number_from_title(title: str) -> str:
@@ -506,6 +514,87 @@ def _extract_bill_number_from_title(title: str) -> str:
     normalized = re.sub(r"[^a-z0-9]", "", text)
     match = re.search(r"(hr|hres|hjres|hconres|s|sres|sjres|sconres)\d{1,6}", normalized)
     return match.group(0) if match else ""
+
+
+def _extract_bill_number_from_source_url(url: str) -> str:
+    text = str(url or "").strip().lower()
+    if not text:
+        return ""
+    match = re.search(
+        r"/bill/\d+(?:st|nd|rd|th)-congress/(house-bill|senate-bill|house-resolution|senate-resolution|house-joint-resolution|senate-joint-resolution|house-concurrent-resolution|senate-concurrent-resolution)/(\d+)",
+        text,
+    )
+    if not match:
+        return ""
+    kind = match.group(1)
+    number = match.group(2)
+    mapping = {
+        "house-bill": "hr",
+        "senate-bill": "s",
+        "house-resolution": "hres",
+        "senate-resolution": "sres",
+        "house-joint-resolution": "hjres",
+        "senate-joint-resolution": "sjres",
+        "house-concurrent-resolution": "hconres",
+        "senate-concurrent-resolution": "sconres",
+    }
+    prefix = mapping.get(kind, "")
+    return f"{prefix}{number}" if prefix else ""
+
+
+def _semantic_legislation_title_key(title: str) -> str:
+    text = str(title or "").lower()
+    if not text:
+        return ""
+    tokens = re.findall(r"[a-z0-9']+", text)
+    stop = {
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "to",
+        "of",
+        "for",
+        "in",
+        "on",
+        "with",
+        "from",
+        "by",
+        "this",
+        "that",
+        "bill",
+        "act",
+        "resolution",
+        "commending",
+        "commemorating",
+        "expressing",
+        "support",
+        "its",
+        "their",
+        "which",
+        "how",
+        "manner",
+        "report",
+        "require",
+        "requiring",
+        "submit",
+    }
+    normalized: list[str] = []
+    for token in tokens:
+        token = token.strip("'")
+        token = re.sub(r"[^a-z0-9]", "", token)
+        if not token or token in stop:
+            continue
+        if token.endswith("s") and len(token) > 4:
+            token = token[:-1]
+        if token.isdigit() and len(token) == 4:
+            # year noise (e.g. 1996) should not split same bill cards
+            continue
+        normalized.append(token)
+    if not normalized:
+        return ""
+    return "|".join(sorted(set(normalized)))
 
 
 def _sheet_row_quality_score(item: dict[str, object]) -> int:
@@ -523,6 +612,73 @@ def _sheet_row_quality_score(item: dict[str, object]) -> int:
     if str(item.get("bill_number") or "").strip():
         score += 5
     return score
+
+
+def _merge_related_sheet_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    merged: list[dict[str, object]] = []
+    for item in rows:
+        target_index = -1
+        for idx, existing in enumerate(merged):
+            if _is_probably_same_sheet_bill(existing, item):
+                target_index = idx
+                break
+        if target_index < 0:
+            merged.append(dict(item))
+            continue
+        current = merged[target_index]
+        keep = item if _sheet_row_quality_score(item) > _sheet_row_quality_score(current) else current
+        drop = current if keep is item else item
+        merged_item = dict(keep)
+        merged_links = set(_collect_sheet_source_links(keep)) | set(_collect_sheet_source_links(drop))
+        merged_item["_source_urls"] = _sort_source_links(merged_links)
+        merged[target_index] = merged_item
+    return merged
+
+
+def _is_probably_same_sheet_bill(a: dict[str, object], b: dict[str, object]) -> bool:
+    if str(a.get("jurisdiction") or a.get("jurisdiction_name") or "").strip().lower() != str(b.get("jurisdiction") or b.get("jurisdiction_name") or "").strip().lower():
+        return False
+    if str(a.get("session_year") or a.get("session") or "").strip().lower() != str(b.get("session_year") or b.get("session") or "").strip().lower():
+        return False
+
+    date_a = a.get("date_date")
+    date_b = b.get("date_date")
+    if date_a and date_b and date_a != date_b:
+        return False
+
+    bill_a = _extract_bill_number_from_title(str(a.get("bill_number") or "")) or _extract_bill_number_from_source_url(str(a.get("source_url") or a.get("official_page") or ""))
+    bill_b = _extract_bill_number_from_title(str(b.get("bill_number") or "")) or _extract_bill_number_from_source_url(str(b.get("source_url") or b.get("official_page") or ""))
+    if bill_a and bill_b:
+        return bill_a == bill_b
+
+    tokens_a = set((_semantic_legislation_title_key(str(a.get("title") or "")) or "").split("|"))
+    tokens_b = set((_semantic_legislation_title_key(str(b.get("title") or "")) or "").split("|"))
+    tokens_a = {t for t in tokens_a if t}
+    tokens_b = {t for t in tokens_b if t}
+    if not tokens_a or not tokens_b:
+        return False
+
+    overlap = len(tokens_a & tokens_b) / max(1, min(len(tokens_a), len(tokens_b)))
+    if overlap < 0.75:
+        return False
+
+    sponsor_a = _sheet_primary_sponsor_key(a)
+    sponsor_b = _sheet_primary_sponsor_key(b)
+    if sponsor_a and sponsor_b:
+        return sponsor_a == sponsor_b
+
+    # If semantic overlap is very high and dates match, treat as the same bill even when media rows omit bill id.
+    return overlap >= 0.9
+
+
+def _sheet_primary_sponsor_key(item: dict[str, object]) -> str:
+    ids = list(item.get("sponsor_ids_list") or [])
+    if ids:
+        return f"id:{ids[0]}"
+    names = list(item.get("sponsors_en_list") or [])
+    if names:
+        return re.sub(r"[^a-z0-9]", "", str(names[0]).lower())
+    return ""
 
 
 def _db_row_quality_score(row: Legislation) -> int:

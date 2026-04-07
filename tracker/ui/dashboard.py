@@ -899,6 +899,14 @@ def _format_legislation_title_with_description(title: str, summary: str, lang: s
     if not chinese_title:
         chinese_title = _clean_legislation_title_text(_translate_event_text(title_text, lang).strip(), fallback_title=title_text)
     chinese_title = _normalize_chinese_legislation_title(chinese_title, title_text, quoted_chinese)
+    if re.match(r"^[A-Za-z0-9]", chinese_title):
+        recentered = _extract_mixed_chinese_title_candidate(chinese_title)
+        if recentered:
+            chinese_title = recentered
+    if re.match(r"^[A-Za-z0-9]", chinese_title):
+        fallback_zh = _translate_english_legislation_title(english_title)
+        if fallback_zh:
+            chinese_title = fallback_zh
 
     # Keep title strictly in "中文標題（English title）" format.
     if english_title:
@@ -951,8 +959,10 @@ def _normalize_chinese_legislation_title(chinese_title: str, title_text: str, qu
         best = max(cjk_chunks, key=len).strip()
         best = re.sub(r"^年+", "", best)
         if len(best) >= 4:
+            if best in {"美國", "聯邦政府"}:
+                return _translate_english_legislation_title(_extract_english_legislation_title(title_text)) or "相關法案"
             return best
-        if len(best) >= 2 and best not in {"台灣", "中國"}:
+        if len(best) >= 2 and best not in {"台灣", "中國", "美國", "聯邦"}:
             return best
 
     english_title = _extract_english_legislation_title(title_text)
@@ -1018,6 +1028,10 @@ def _rule_based_translate_legislation_title(english_title: str) -> str:
         (
             r"^to enhance the security, resilience, and protection of critical undersea infrastructure vital to taiwan's national security, economic stability, and defense, particularly in countering gray zone tactics employed by the people's republic of china, and for other purposes\.?$",
             "強化攸關台灣國家安全、經濟穩定與防衛之關鍵海底基礎設施安全、韌性及防護法案",
+        ),
+        (
+            r"^a bill to require the comptroller general of the united states to submit a report on the manner in which delays in arms deliveries to japan, taiwan, and the philippines affect the ability of the department of defense to build and sustain a strong denial defense in the first island chain\.?$",
+            "要求美國政府問責署提交報告，評估對日本、台灣與菲律賓軍售延遲如何影響國防部在第一島鏈建立並維持強力拒止防衛能力法案",
         ),
     ]
     for pattern, translated in specific_rules:
