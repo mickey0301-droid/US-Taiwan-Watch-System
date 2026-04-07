@@ -9,6 +9,7 @@ from tracker.db import session_scope
 from tracker.models import Alias, Appointment, Jurisdiction, Legislation, LegislationSponsor, Office, Person, Statement, SyncRun, Tracker
 from tracker.services.ai_assist_service import AIAssistService
 from tracker.services.google_sheet_read_service import GoogleSheetReadService
+from tracker.services.manual_statement_ingest_service import ManualStatementIngestService
 from tracker.services.officials_service import OfficialsService
 from tracker.services.statements_service import StatementsService
 from tracker.services.x_candidate_confirmation_service import XCandidateConfirmationService
@@ -809,6 +810,47 @@ def _render_statement_cards(
                         st.write(f"[{display_label}] {source.source_url}")
 
 
+def _render_manual_event_ingest_form(person_id: int, labels: dict[str, str]) -> None:
+    st.markdown(f"**{labels['manual_event_ingest']}**")
+    flash_key = f"manual-event-ingest-flash-{person_id}"
+    flash = st.session_state.pop(flash_key, None)
+    if isinstance(flash, dict):
+        level = str(flash.get("level") or "")
+        message = str(flash.get("message") or "")
+        if message:
+            if level == "success":
+                st.success(message)
+            elif level == "info":
+                st.info(message)
+            else:
+                st.error(message)
+
+    with st.form(key=f"manual-event-ingest-form-{person_id}", clear_on_submit=True):
+        source_url = st.text_input(labels["manual_event_url"])
+        submitted = st.form_submit_button(labels["manual_event_submit"])
+
+    if not submitted:
+        return
+    if not source_url.strip():
+        st.error(labels["manual_event_url_required"])
+        return
+
+    try:
+        with st.spinner(labels["manual_event_ingesting"]):
+            with session_scope() as session:
+                ingest_service = ManualStatementIngestService(session)
+                statement, created = ingest_service.ingest_from_url(person_id=person_id, source_url=source_url.strip())
+        st.session_state[flash_key] = {
+            "level": "success" if created else "info",
+            "message": labels["manual_event_created"].format(title=statement.title)
+            if created
+            else labels["manual_event_updated"].format(title=statement.title),
+        }
+        st.rerun()
+    except Exception as exc:
+        st.error(f"{labels['manual_event_failed']}: {exc}")
+
+
 def render(lang: str, labels: dict[str, str]) -> None:
     st.header(labels["person_detail"])
 
@@ -1283,6 +1325,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     st.markdown(f"- [{_background_search_label(link_key, lang)}]({link_url})")
         if last_sync:
             st.caption(f"{labels['last_sync']}: {last_sync.started_at} | {last_sync.status} | {last_sync.error_message or 'OK'}")
+        _render_manual_event_ingest_form(person_id=int(person_id), labels=labels)
 
     st.subheader(labels["recent_taiwan_statements"])
     overview_tab_label = "最新綜覽" if lang == "zh-TW" else "Overview"
