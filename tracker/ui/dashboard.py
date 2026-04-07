@@ -58,7 +58,8 @@ def render(lang: str, labels: dict[str, str]) -> None:
         recent_statements = (
             session.execute(
                 select(Statement)
-                .where(Statement.relevance_score > 0)
+                # Dashboard should show latest Taiwan-related tracked events for all categories,
+                # including federal executive officials, even when relevance scoring is 0.
                 .order_by(Statement.date_published.desc().nullslast(), Statement.date_collected.desc(), Statement.id.desc())
                 .limit(300)
             )
