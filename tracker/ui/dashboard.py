@@ -437,6 +437,7 @@ def _bucket_recent_legislation_db(rows: list[Legislation], session, lang: str) -
                 "introduced_date": row.introduced_date,
                 "date": row.last_action_date or row.introduced_date,
                 "source_url": row.source_url,
+                "raw_payload": row.raw_payload or {},
                 "sponsor": (
                     {
                         "person_id": sponsor.id,
@@ -543,6 +544,7 @@ def _bucket_recent_legislation_sheet(rows: list[dict[str, object]], people: list
                 "introduced_date": item.get("date_date"),
                 "date": item.get("date_date"),
                 "source_url": str(item.get("source_url") or ""),
+                "raw_payload": item.get("raw_payload") if isinstance(item.get("raw_payload"), dict) else {},
                 "sponsor": _first_sheet_sponsor(item, person_lookup=person_lookup, lang=lang),
                 "cosponsors": _remaining_sheet_cosponsors(item, person_lookup=person_lookup, lang=lang),
             }
@@ -564,8 +566,13 @@ def _render_legislation_column(column, title: str, entries: list[dict[str, objec
         for index, item in enumerate(entries, start=1):
             with st.container(border=True):
                 bill_number = str(item.get("bill_number") or "").strip()
-                display_title = _format_legislation_title_with_description(
+                preferred_title = _select_preferred_legislation_title(
                     title=str(item.get("title") or ""),
+                    source_url=str(item.get("source_url") or ""),
+                    raw_payload=item.get("raw_payload") if isinstance(item.get("raw_payload"), dict) else {},
+                )
+                display_title = _format_legislation_title_with_description(
+                    title=preferred_title,
                     summary=str(item.get("summary") or ""),
                     lang=lang,
                 )
@@ -721,6 +728,37 @@ def _format_legislation_title_with_description(title: str, summary: str, lang: s
     if not summary_zh:
         return headline
     return f"{headline}：{summary_zh}"
+
+
+def _select_preferred_legislation_title(title: str, source_url: str, raw_payload: dict[str, object] | None) -> str:
+    title_text = str(title or "").strip()
+    if not title_text:
+        return ""
+    raw_payload = raw_payload or {}
+    candidates = [part.strip() for part in re.split(r"\s*[|｜]+\s*", title_text) if part.strip()]
+    if not candidates:
+        return title_text
+
+    congress_url = str(raw_payload.get("congress_gov_url") or "").strip().lower()
+    source_url_lower = str(source_url or "").strip().lower()
+    has_congress_source = "congress.gov" in source_url_lower or "congress.gov" in congress_url
+    if has_congress_source:
+        # If title was merged from multiple sources, prefer the official Congress style.
+        return _pick_official_title_candidate(candidates)
+    return candidates[0]
+
+
+def _pick_official_title_candidate(candidates: list[str]) -> str:
+    def score(text: str) -> tuple[int, int]:
+        lowered = text.lower()
+        english_chars = len(re.findall(r"[a-z]", lowered))
+        official_markers = 0
+        for marker in (" act", " resolution", "a bill", "to ", "supporting", "commending", "recognizing"):
+            if marker in lowered:
+                official_markers += 1
+        return (official_markers, english_chars)
+
+    return max(candidates, key=score)
 
 
 def _normalize_compare_text(text: str) -> str:

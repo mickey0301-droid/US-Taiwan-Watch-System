@@ -115,8 +115,13 @@ def _render_db_legislation_card(selected: Legislation, service: LegislationServi
     )
 
     with st.container(border=True):
-        title = dashboard._format_legislation_title_with_description(
+        preferred_title = dashboard._select_preferred_legislation_title(
             title=str(selected.title or ""),
+            source_url=str(official_link or selected.source_url or ""),
+            raw_payload=raw_payload if isinstance(raw_payload, dict) else {},
+        )
+        title = dashboard._format_legislation_title_with_description(
+            title=preferred_title,
             summary=str(selected.summary or ""),
             lang=lang,
         )
@@ -208,8 +213,13 @@ def _render_sheet_legislation_card(selected: dict[str, object], sponsors: list[d
     cosponsor_text = _format_cosponsor_people(sponsors[1:], lang)
 
     with st.container(border=True):
-        title = dashboard._format_legislation_title_with_description(
+        preferred_title = dashboard._select_preferred_legislation_title(
             title=str(selected.get("title") or ""),
+            source_url=str(selected.get("source_url") or selected.get("official_page") or ""),
+            raw_payload=selected.get("raw_payload") if isinstance(selected.get("raw_payload"), dict) else {},
+        )
+        title = dashboard._format_legislation_title_with_description(
+            title=preferred_title,
             summary=str(selected.get("summary") or ""),
             lang=lang,
         )
