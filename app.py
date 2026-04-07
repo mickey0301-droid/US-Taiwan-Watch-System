@@ -15,6 +15,7 @@ from tracker.ui import (
     person_page,
     review_page,
     settings_page,
+    state_territory_page,
     trackers_page,
 )
 
@@ -45,6 +46,7 @@ LABELS = {
         "person_detail": "人物頁面",
         "trackers": "追蹤器",
         "review_queue": "事件",
+        "state_territory": "州/海外領地",
         "legislation": "立法",
         "jobs_scheduler": "排程與工作",
         "notifications": "通知",
@@ -137,6 +139,7 @@ LABELS = {
         "person_detail": "Person Detail",
         "trackers": "Trackers",
         "review_queue": "Events",
+        "state_territory": "State / Territory",
         "legislation": "Legislation",
         "jobs_scheduler": "Jobs / Scheduler",
         "notifications": "Notifications",
@@ -228,6 +231,7 @@ LABELS = {
 PAGES = {
     "dashboard": dashboard.render,
     "person_detail": person_page.render,
+    "state_territory": state_territory_page.render,
     "review_queue": review_page.render,
     "legislation": legislation_page.render,
     "officials": officials_page.render,
@@ -242,6 +246,7 @@ SIDEBAR_LOGO_PATH = Path(__file__).resolve().parent / "tracker" / "ui" / "assets
 NAV_PAGE_ORDER = [
     "dashboard",
     "person_detail",
+    "state_territory",
     "review_queue",
     "legislation",
     "officials",
@@ -254,6 +259,7 @@ NAV_PAGE_ORDER = [
 GOOGLE_SHEET_PRIMARY_PAGES = [
     "dashboard",
     "person_detail",
+    "state_territory",
     "review_queue",
     "legislation",
     "officials",
