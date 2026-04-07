@@ -31,12 +31,18 @@ from tracker.jobs.seed_arizona_taiwan_legislation import run_seed_arizona_taiwan
 from tracker.jobs.seed_wikipedia_predecessors import run_seed_wikipedia_predecessors
 from tracker.jobs.seed_taiwan_2026_sample_events import run_seed_taiwan_2026_sample_events
 from tracker.jobs.sync_media import run_sync_media
-from tracker.jobs.sync_federal_department_wikipedia import run_sync_federal_department_wikipedia
+try:
+    from tracker.jobs.sync_federal_department_wikipedia import run_sync_federal_department_wikipedia
+except Exception:
+    run_sync_federal_department_wikipedia = None
 try:
     from tracker.jobs.sync_federal_house_wikipedia import run_sync_federal_house_wikipedia
 except Exception:  # optional job should not block app startup
     run_sync_federal_house_wikipedia = None
-from tracker.jobs.sync_federal_senators_wikipedia import run_sync_federal_senators_wikipedia
+try:
+    from tracker.jobs.sync_federal_senators_wikipedia import run_sync_federal_senators_wikipedia
+except Exception:
+    run_sync_federal_senators_wikipedia = None
 from tracker.jobs.sync_officials import run_sync_officials
 from tracker.jobs.sync_officials_wikipedia_only import run_sync_officials_wikipedia_only
 from tracker.jobs.sync_state_department_wikipedia import run_sync_state_department_wikipedia
@@ -57,8 +63,6 @@ JOB_REGISTRY = {
     "sync_congress_taiwan": run_sync_congress_taiwan,
     "sync_officials": run_sync_officials,
     "sync_officials_wikipedia_only": run_sync_officials_wikipedia_only,
-    "sync_federal_department_wikipedia": run_sync_federal_department_wikipedia,
-    "sync_federal_senators_wikipedia": run_sync_federal_senators_wikipedia,
     "sync_state_department_wikipedia": run_sync_state_department_wikipedia,
     "sync_state_executive_official_pages": run_sync_state_executive_official_pages,
     "sync_state_executives_wikipedia": run_sync_state_executives_wikipedia,
@@ -97,8 +101,12 @@ JOB_REGISTRY = {
     "cleanup_malformed_legislation_people": run_cleanup_malformed_legislation_people,
 }
 
+if run_sync_federal_department_wikipedia is not None:
+    JOB_REGISTRY["sync_federal_department_wikipedia"] = run_sync_federal_department_wikipedia
 if run_sync_federal_house_wikipedia is not None:
     JOB_REGISTRY["sync_federal_house_wikipedia"] = run_sync_federal_house_wikipedia
+if run_sync_federal_senators_wikipedia is not None:
+    JOB_REGISTRY["sync_federal_senators_wikipedia"] = run_sync_federal_senators_wikipedia
 
 
 def build_scheduler() -> BackgroundScheduler:
