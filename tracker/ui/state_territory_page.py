@@ -21,6 +21,15 @@ from tracker.services.statements_service import StatementsService
 from tracker.ui import dashboard
 
 
+def _is_valid_region_option(value: object) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if len(text) == 1 and text.isalpha():
+        return False
+    return True
+
+
 def render(lang: str, labels: dict[str, str]) -> None:
     title = "州/海外領地" if lang == "zh-TW" else "State / Territory"
     selector_label = "選擇州或海外領地" if lang == "zh-TW" else "Select state or territory"
@@ -191,7 +200,13 @@ def _render_google_sheet(lang: str, selector_label: str) -> bool:
     if not (people or events or legislation):
         return False
 
-    region_options = sorted({str(item.get("jurisdiction") or "").strip() for item in people if str(item.get("jurisdiction") or "").strip()})
+    region_options = sorted(
+        {
+            str(item.get("jurisdiction") or "").strip()
+            for item in people
+            if _is_valid_region_option(item.get("jurisdiction"))
+        }
+    )
     if not region_options:
         return False
     selected_region = st.selectbox(selector_label, region_options, key="state-territory-select-sheet")
@@ -344,7 +359,7 @@ def _list_regions_db(session) -> list[str]:
         .where(Jurisdiction.type.in_(["state", "territory", "district"]))
         .order_by(Jurisdiction.name.asc())
     ).all()
-    return sorted({str(row[0]).strip() for row in rows if row[0] and str(row[0]).strip()})
+    return sorted({str(row[0]).strip() for row in rows if _is_valid_region_option(row[0])})
 
 
 def _empty_event_buckets() -> dict[str, list[dict[str, object]]]:

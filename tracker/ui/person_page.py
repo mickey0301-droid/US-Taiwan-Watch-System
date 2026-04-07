@@ -142,9 +142,18 @@ def _categories_with_department_filter() -> set[str]:
     return {"federal_executive"}
 
 
+def _is_valid_state_option(value: object) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if len(text) == 1 and text.isalpha():
+        return False
+    return True
+
+
 def _get_state_options(session, category_key: str) -> list[str]:
     rows = session.execute(_get_base_people_query(category_key)).all()
-    return sorted({row[5] for row in rows if row[5]})
+    return sorted({str(row[5]).strip() for row in rows if _is_valid_state_option(row[5])})
 
 
 def _get_department_options(session, category_key: str) -> list[str]:
