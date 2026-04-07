@@ -764,36 +764,44 @@ def _render_event_column(
             st.caption(empty_label)
             return
         for index, event in enumerate(entries, start=1):
-            with st.container(border=True):
-                localized_title = _localize_event_text(
-                    title=str(event.get("title") or ""),
-                    description=str(event.get("description") or ""),
-                    lang=lang,
-                    is_title=True,
-                )
-                localized_description = _localize_event_text(
-                    title=str(event.get("title") or ""),
-                    description=str(event.get("description") or ""),
-                    lang=lang,
-                    is_title=False,
-                )
-                localized_description = _annotate_event_description_names(
-                    localized_description,
-                    list(event.get("participants") or []),
-                    lang,
-                )
-                st.markdown(f"**{index}. {localized_title}**")
-                st.markdown(f"`{time_label}`：{_format_event_time(event.get('event_time'), lang)}")
-                st.markdown(f"`{description_label}`：{localized_description}")
-                participants = list(event.get("participants") or [])
-                participants_text = _format_people_inline(participants, lang)
-                st.markdown(f"`{participants_label}`：{participants_text}")
-                sources = event.get("sources") or []
-                formatted_sources = _format_event_sources(sources, lang)
-                if formatted_sources:
-                    st.markdown(f"`{quoted_sources_label}`：{formatted_sources}")
-                elif event.get("representative_source_url"):
-                    st.markdown(f"`{quoted_sources_label}`：[link]({event['representative_source_url']})")
+            _render_event_card(index=index, event=event, lang=lang)
+
+
+def _render_event_card(index: int, event: dict[str, object], lang: str) -> None:
+    time_label = "時間" if lang == "zh-TW" else "Time"
+    description_label = "事件描述" if lang == "zh-TW" else "Description"
+    participants_label = "參與人" if lang == "zh-TW" else "Participants"
+    quoted_sources_label = "引述來源" if lang == "zh-TW" else "Quoted sources"
+    with st.container(border=True):
+        localized_title = _localize_event_text(
+            title=str(event.get("title") or ""),
+            description=str(event.get("description") or ""),
+            lang=lang,
+            is_title=True,
+        )
+        localized_description = _localize_event_text(
+            title=str(event.get("title") or ""),
+            description=str(event.get("description") or ""),
+            lang=lang,
+            is_title=False,
+        )
+        localized_description = _annotate_event_description_names(
+            localized_description,
+            list(event.get("participants") or []),
+            lang,
+        )
+        st.markdown(f"**{index}. {localized_title}**")
+        st.markdown(f"`{time_label}`：{_format_event_time(event.get('event_time'), lang)}")
+        st.markdown(f"`{description_label}`：{localized_description}")
+        participants = list(event.get("participants") or [])
+        participants_text = _format_people_inline(participants, lang)
+        st.markdown(f"`{participants_label}`：{participants_text}")
+        sources = event.get("sources") or []
+        formatted_sources = _format_event_sources(sources, lang)
+        if formatted_sources:
+            st.markdown(f"`{quoted_sources_label}`：{formatted_sources}")
+        elif event.get("representative_source_url"):
+            st.markdown(f"`{quoted_sources_label}`：[link]({event['representative_source_url']})")
 
 
 def _format_people_inline(people: list[dict[str, object]], lang: str) -> str:
