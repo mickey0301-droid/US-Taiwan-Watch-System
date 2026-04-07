@@ -896,6 +896,8 @@ def _extract_english_legislation_title(title_text: str) -> str:
     if not text:
         return ""
     text = re.sub(r"《[^》]{1,120}》", " ", text)
+    text = text.replace("台灣", "Taiwan").replace("臺灣", "Taiwan").replace("中國", "China")
+    text = re.sub(r"[\u4e00-\u9fff]+", " ", text)
     text = re.sub(r"[（(]\s*[\u4e00-\u9fff][^）)]{0,120}[）)]", " ", text)
     text = re.sub(r"\s+", " ", text).strip(" -:：")
     # If title became "A (A)" keep one copy.
@@ -919,13 +921,20 @@ def _normalize_chinese_legislation_title(chinese_title: str, title_text: str, qu
     if quoted_chinese:
         return quoted_chinese
 
+    mixed_candidate = _extract_mixed_chinese_title_candidate(title_text)
+    if mixed_candidate:
+        return mixed_candidate
+
     cleaned = str(chinese_title or "").strip()
     cleaned = re.sub(r"[A-Za-z][A-Za-z\s,'\.-]{8,}", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" ：:，,。.")
     cjk_chunks = re.findall(r"[\u4e00-\u9fff][\u4e00-\u9fff0-9]{1,}", cleaned)
     if cjk_chunks:
         best = max(cjk_chunks, key=len).strip()
-        if len(best) >= 2:
+        best = re.sub(r"^年+", "", best)
+        if len(best) >= 4:
+            return best
+        if len(best) >= 2 and best not in {"台灣", "中國"}:
             return best
 
     # Hard fallback for consistency in UI when translation is weak.
@@ -933,6 +942,20 @@ def _normalize_chinese_legislation_title(chinese_title: str, title_text: str, qu
     if "taiwan" in lowered or "台灣" in str(title_text or ""):
         return "台灣相關法案"
     return "相關法案"
+
+
+def _extract_mixed_chinese_title_candidate(title_text: str) -> str:
+    text = str(title_text or "").strip()
+    if not text:
+        return ""
+    candidates = re.findall(r"(?:\d{4}年)?[\u4e00-\u9fff]{2,}(?:[\u4e00-\u9fff0-9]{0,30})", text)
+    if not candidates:
+        return ""
+    best = max((c.strip() for c in candidates if c.strip()), key=len, default="")
+    best = re.sub(r"^年+", "", best)
+    if len(best) < 4:
+        return ""
+    return best
 
 
 def _select_preferred_legislation_title(title: str, source_url: str, raw_payload: dict[str, object] | None) -> str:
