@@ -23,7 +23,7 @@ from tracker.models import (
 from tracker.services.google_sheet_read_service import GoogleSheetReadService
 from tracker.services.statements_service import StatementsService
 from tracker.services.ai_assist_service import AIAssistService
-from tracker.ui.navigation import render_person_links
+from tracker.ui.navigation import person_detail_href
 from tracker.ui.source_labels import source_label
 
 
@@ -501,11 +501,11 @@ def _render_legislation_column(column, title: str, entries: list[dict[str, objec
                 )
                 st.markdown(f"`{chamber_label}`：{chamber_text}")
                 sponsor = item.get("sponsor")
-                st.markdown(f"`{sponsor_label}`：")
                 if isinstance(sponsor, dict) and sponsor.get("display_name"):
-                    render_person_links([sponsor], lang, key_prefix=f"leg-sponsor-{title}-{index}")
+                    sponsor_text = _format_people_inline([sponsor], lang)
                 else:
-                    st.caption("未提供" if lang == "zh-TW" else "Not available")
+                    sponsor_text = "未提供" if lang == "zh-TW" else "Not available"
+                st.markdown(f"`{sponsor_label}`：{sponsor_text}")
                 st.markdown(f"`{introduced_label}`：{_format_event_time(item.get('introduced_date'), lang)}")
                 st.caption(f"{date_label}: {_format_event_time(item.get('date'), lang)}")
                 if item.get("source_url"):
@@ -577,14 +577,33 @@ def _render_event_column(
                 st.markdown(f"**{index}. {localized_title}**")
                 st.markdown(f"`{time_label}`：{_format_event_time(event.get('event_time'), lang)}")
                 st.markdown(f"`{description_label}`：{localized_description}")
-                st.markdown(f"`{participants_label}`：")
-                render_person_links(list(event.get("participants") or []), lang, key_prefix=f"{key_prefix}-{index}")
+                participants = list(event.get("participants") or [])
+                participants_text = _format_people_inline(participants, lang)
+                st.markdown(f"`{participants_label}`：{participants_text}")
                 sources = event.get("sources") or []
                 formatted_sources = _format_event_sources(sources, lang)
                 if formatted_sources:
                     st.markdown(f"`{quoted_sources_label}`：{formatted_sources}")
                 elif event.get("representative_source_url"):
                     st.markdown(f"`{quoted_sources_label}`：[link]({event['representative_source_url']})")
+
+
+def _format_people_inline(people: list[dict[str, object]], lang: str) -> str:
+    if not people:
+        return "未提供" if lang == "zh-TW" else "Not available"
+    parts: list[str] = []
+    for person in people:
+        name = str(person.get("display_name") or "").strip()
+        if not name:
+            continue
+        person_id = person.get("person_id")
+        if person_id:
+            parts.append(f"[{name}]({person_detail_href(int(person_id))})")
+        else:
+            parts.append(name)
+    if not parts:
+        return "未提供" if lang == "zh-TW" else "Not available"
+    return "、".join(parts)
 
 
 def _is_test_event(title: str | None) -> bool:
