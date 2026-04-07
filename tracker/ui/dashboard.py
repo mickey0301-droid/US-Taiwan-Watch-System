@@ -412,8 +412,11 @@ def _bucket_recent_legislation_db(rows: list[Legislation], session, lang: str) -
             sponsor_people = [item.person for item in row.sponsors if item.person]
         sponsor = sponsor_people[0] if sponsor_people else None
         sponsor_name = None
+        sponsor_english_name = sponsor.full_name if sponsor and sponsor.full_name else ""
+        sponsor_chinese_name = ""
         if sponsor and sponsor.full_name:
             sponsor_name = chinese_alias_map.get(sponsor.id) if lang == "zh-TW" else None
+            sponsor_chinese_name = sponsor_name or ""
             if not sponsor_name:
                 sponsor_name = sponsor.full_name
         buckets[category].append(
@@ -428,7 +431,12 @@ def _bucket_recent_legislation_db(rows: list[Legislation], session, lang: str) -
                 "date": row.last_action_date or row.introduced_date,
                 "source_url": row.source_url,
                 "sponsor": (
-                    {"person_id": sponsor.id, "display_name": sponsor_name}
+                    {
+                        "person_id": sponsor.id,
+                        "display_name": sponsor_name,
+                        "english_name": sponsor_english_name,
+                        "chinese_name": sponsor_chinese_name,
+                    }
                     if sponsor and sponsor_name
                     else None
                 ),
@@ -577,7 +585,12 @@ def _first_sheet_sponsor(item: dict[str, object], lang: str) -> dict[str, object
     zh_name = str(sponsor_names_zh[0] or "").strip() if sponsor_names_zh else ""
     display_name = zh_name if (lang == "zh-TW" and zh_name) else name
     person_id = sponsor_ids[0] if sponsor_ids else None
-    return {"person_id": person_id, "display_name": display_name}
+    return {
+        "person_id": person_id,
+        "display_name": display_name,
+        "english_name": name,
+        "chinese_name": zh_name,
+    }
 
 
 def _format_legislation_chamber(level: str, chamber: str, jurisdiction_name: str, lang: str) -> str:
@@ -755,6 +768,11 @@ def _format_people_inline(people: list[dict[str, object]], lang: str) -> str:
     parts: list[str] = []
     for person in people:
         name = str(person.get("display_name") or "").strip()
+        if lang == "zh-TW":
+            english_name = str(person.get("english_name") or "").strip()
+            chinese_name = str(person.get("chinese_name") or "").strip()
+            if chinese_name and english_name:
+                name = f"{chinese_name}（{english_name}）"
         if not name:
             continue
         person_id = person.get("person_id")
