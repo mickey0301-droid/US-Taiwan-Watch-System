@@ -82,19 +82,23 @@ def discover_cna(
     end: date,
     limit: int = 80,
 ) -> list[EventHit]:
-    search_term = person_terms[0]
-    url = f"https://www.cna.com.tw/search/hysearchws.aspx?q={quote_plus(search_term)}"
-    resp = _safe_get(client, insecure_client, url=url)
-    soup = BeautifulSoup(resp.text, "html.parser")
-
     urls: list[str] = []
-    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
-        text = script.get_text(strip=True)
-        if "ItemList" not in text:
+    # Try all aliases instead of only the first term. CNA search relevance can
+    # differ significantly between English and Chinese keywords.
+    for search_term in list(dict.fromkeys([term.strip() for term in person_terms if term and term.strip()])):
+        url = f"https://www.cna.com.tw/search/hysearchws.aspx?q={quote_plus(search_term)}"
+        try:
+            resp = _safe_get(client, insecure_client, url=url)
+        except Exception:
             continue
-        for match in re.findall(r"https://www\.cna\.com\.tw/news/[a-z0-9]+/\d+\.aspx", text, flags=re.I):
-            if match not in urls:
-                urls.append(match)
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+            text = script.get_text(strip=True)
+            if "ItemList" not in text:
+                continue
+            for match in re.findall(r"https://www\.cna\.com\.tw/news/[a-z0-9]+/\d+\.aspx", text, flags=re.I):
+                if match not in urls:
+                    urls.append(match)
     hits: list[EventHit] = []
     for link in urls[:limit]:
         try:
@@ -112,12 +116,15 @@ def discover_cna(
             continue
 
         published = None
-        date_match = re.search(r"/news/[a-z0-9]+/(\d{8})\.aspx", link, flags=re.I)
+        date_match = re.search(r"/(\d{8})\.aspx(?:$|[?#])", link, flags=re.I)
         if date_match:
             try:
                 published = datetime.strptime(date_match.group(1), "%Y%m%d").date()
             except ValueError:
                 published = None
+        # CNA links should always include YYYYMMDD in URL; skip malformed links
+        if not published:
+            continue
         if not _in_range(published, start, end):
             continue
         hits.append(
