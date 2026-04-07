@@ -84,7 +84,22 @@ class GoogleSheetReadService:
         )
 
     def list_events_for_person(self, person_id: int) -> list[dict[str, Any]]:
-        return [item for item in self.list_events() if int(person_id) in item.get("participant_ids_list", [])]
+        target_person_id = int(person_id)
+        person = self.get_person(target_person_id)
+        name_keys = self._person_name_keys(person) if person else set()
+
+        matched: list[dict[str, Any]] = []
+        for item in self.list_events():
+            participant_ids = item.get("participant_ids_list", [])
+            if target_person_id in participant_ids:
+                matched.append(item)
+                continue
+            if not name_keys:
+                continue
+            participant_names = set(self._event_participant_name_keys(item))
+            if name_keys & participant_names:
+                matched.append(item)
+        return matched
 
     def list_legislation(self) -> list[dict[str, Any]]:
         rows = self._read_records("Legislation")
@@ -141,6 +156,38 @@ class GoogleSheetReadService:
     def _split_values(self, value: Any) -> list[str]:
         parts = [str(item).strip() for item in str(value or "").split("|")]
         return [item for item in parts if item]
+
+    def _person_name_keys(self, person: dict[str, Any]) -> set[str]:
+        keys: set[str] = set()
+
+        def _add(value: Any) -> None:
+            normalized = self._normalize_name_key(value)
+            if normalized:
+                keys.add(normalized)
+
+        _add(person.get("full_name"))
+        _add(person.get("display_name_en"))
+        _add(person.get("display_name_zh"))
+        given = str(person.get("given_name") or "").strip()
+        family = str(person.get("family_name") or "").strip()
+        if given and family:
+            _add(f"{given} {family}")
+            _add(f"{family} {given}")
+        return keys
+
+    def _event_participant_name_keys(self, event: dict[str, Any]) -> list[str]:
+        keys: list[str] = []
+        for value in list(event.get("participants_en_list") or []) + list(event.get("participants_zh_list") or []):
+            normalized = self._normalize_name_key(value)
+            if normalized:
+                keys.append(normalized)
+        return keys
+
+    def _normalize_name_key(self, value: Any) -> str:
+        text = str(value or "").strip().lower()
+        if not text:
+            return ""
+        return re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", text)
 
     def _parse_int(self, value: Any) -> int | None:
         text = str(value or "").strip()
