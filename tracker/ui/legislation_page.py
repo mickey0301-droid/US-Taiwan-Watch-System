@@ -457,6 +457,8 @@ def _sheet_legislation_identity_key(item: dict[str, object]) -> str:
     jurisdiction = str(item.get("jurisdiction") or item.get("jurisdiction_name") or "").strip().lower()
     session_year = str(item.get("session_year") or item.get("session") or "").strip().lower()
     bill_number = str(item.get("bill_number") or "").strip().lower()
+    # Normalize variants such as "H.R. 8177" / "HR 8177" / "hr8177".
+    bill_number = re.sub(r"[^a-z0-9]", "", bill_number)
     title = str(item.get("title") or "").strip().lower()
     date_value = item.get("date_date")
     year_text = str(getattr(date_value, "year", "") or "")

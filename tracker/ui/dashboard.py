@@ -869,32 +869,70 @@ def _format_legislation_title_with_description(title: str, summary: str, lang: s
     if lang != "zh-TW":
         return title_text
 
+    summary_text = str(summary or "").strip()
+    english_title = _extract_english_legislation_title(title_text)
+    quoted_chinese = _extract_quoted_chinese_title(title_text) or _extract_quoted_chinese_title(summary_text)
+
     chinese_title_raw = _localize_legislation_text(
         bill_number="",
         title=title_text,
-        summary=title_text,
+        summary=summary_text or title_text,
         latest_action="",
         lang=lang,
     ).strip()
     chinese_title = _clean_legislation_title_text(chinese_title_raw, fallback_title=title_text)
     if not chinese_title:
         chinese_title = _clean_legislation_title_text(_translate_event_text(title_text, lang).strip(), fallback_title=title_text)
-    cjk_chars = re.findall(r"[\u4e00-\u9fff]", chinese_title)
-    en_chars = re.findall(r"[A-Za-z]", chinese_title)
-    looks_weak_zh = len(cjk_chars) < 6 or len(en_chars) > len(cjk_chars) * 2
-    if looks_weak_zh:
-        summary_text = str(summary or "").strip()
-        summary_match = re.search(r"《([^》]{2,80})》", summary_text)
-        if summary_match:
-            chinese_title = summary_match.group(1).strip()
-
-    if _looks_like_english(title_text):
-        headline = f"{chinese_title}（{title_text}）"
-    else:
-        headline = chinese_title
+    chinese_title = _normalize_chinese_legislation_title(chinese_title, title_text, quoted_chinese)
 
     # Keep title strictly in "中文標題（English title）" format.
-    return headline
+    if english_title:
+        return f"{chinese_title}（{english_title}）"
+    return chinese_title
+
+
+def _extract_english_legislation_title(title_text: str) -> str:
+    text = str(title_text or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"《[^》]{1,120}》", " ", text)
+    text = re.sub(r"[（(]\s*[\u4e00-\u9fff][^）)]{0,120}[）)]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip(" -:：")
+    # If title became "A (A)" keep one copy.
+    dup = re.match(r"^(?P<t>.+?)\s*[（(]\s*(?P=t)\s*[）)]$", text, flags=re.IGNORECASE)
+    if dup:
+        text = dup.group("t").strip()
+    return text
+
+
+def _extract_quoted_chinese_title(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    match = re.search(r"《([^》]{2,120})》", raw)
+    if match:
+        return match.group(1).strip()
+    return ""
+
+
+def _normalize_chinese_legislation_title(chinese_title: str, title_text: str, quoted_chinese: str) -> str:
+    if quoted_chinese:
+        return quoted_chinese
+
+    cleaned = str(chinese_title or "").strip()
+    cleaned = re.sub(r"[A-Za-z][A-Za-z\s,'\.-]{8,}", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ：:，,。.")
+    cjk_chunks = re.findall(r"[\u4e00-\u9fff][\u4e00-\u9fff0-9]{1,}", cleaned)
+    if cjk_chunks:
+        best = max(cjk_chunks, key=len).strip()
+        if len(best) >= 2:
+            return best
+
+    # Hard fallback for consistency in UI when translation is weak.
+    lowered = str(title_text or "").lower()
+    if "taiwan" in lowered or "台灣" in str(title_text or ""):
+        return "台灣相關法案"
+    return "相關法案"
 
 
 def _select_preferred_legislation_title(title: str, source_url: str, raw_payload: dict[str, object] | None) -> str:
