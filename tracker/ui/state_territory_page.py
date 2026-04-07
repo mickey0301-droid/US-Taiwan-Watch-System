@@ -221,7 +221,7 @@ def _render_google_sheet(lang: str, selector_label: str) -> bool:
             "title": str(item.get("title") or ""),
             "description": str(item.get("summary") or item.get("title") or ""),
             "event_time": item.get("event_date_date"),
-            "participants": dashboard._participants_from_sheet(item, lang=lang),
+            "participants": dashboard._participants_from_sheet(item, lang=lang, people_by_id=people_by_id),
             "sources": item.get("source_urls") or [],
             "representative_source_url": None,
         }
@@ -408,4 +408,3 @@ def _render_sections(
         lang,
         "state-territory-state-legislators",
     )
-

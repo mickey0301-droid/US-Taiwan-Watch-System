@@ -232,7 +232,7 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
         return True
 
     for selected in filtered_events:
-        participants = _sheet_participants(selected)
+        participants = _sheet_participants(selected, people_by_id=people_by_id)
         event_payload = {
             "title": str(selected.get("title") or ""),
             "description": str(selected.get("summary") or selected.get("title") or ""),
@@ -266,7 +266,10 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
     return True
 
 
-def _sheet_participants(event: dict[str, object]) -> list[dict[str, object]]:
+def _sheet_participants(
+    event: dict[str, object],
+    people_by_id: dict[int, dict[str, object]] | None = None,
+) -> list[dict[str, object]]:
     participant_ids = list(event.get("participant_ids_list") or [])
     participants_en = list(event.get("participants_en_list") or [])
     participants_zh = list(event.get("participants_zh_list") or [])
@@ -274,8 +277,22 @@ def _sheet_participants(event: dict[str, object]) -> list[dict[str, object]]:
     for index, name in enumerate(participants_en):
         person_id = participant_ids[index] if index < len(participant_ids) else None
         zh_name = participants_zh[index] if index < len(participants_zh) else ""
-        display_name = f"{zh_name} {name}".strip() if zh_name else str(name)
-        participants.append({"person_id": person_id, "display_name": display_name})
+        english_name = str(name or "").strip()
+        if person_id and people_by_id:
+            person = people_by_id.get(int(person_id))
+            if person:
+                canonical_en = dashboard._sheet_person_english_name(person)
+                if canonical_en:
+                    english_name = canonical_en
+        display_name = zh_name if zh_name else english_name
+        participants.append(
+            {
+                "person_id": person_id,
+                "display_name": display_name,
+                "english_name": english_name,
+                "chinese_name": zh_name,
+            }
+        )
     return participants
 
 

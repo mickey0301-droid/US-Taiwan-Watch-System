@@ -688,7 +688,7 @@ def _bucket_recent_events_sheet(
             "title": str(item.get("title") or ""),
             "description": str(item.get("summary") or item.get("title") or ""),
             "event_time": item.get("event_date_date"),
-            "participants": _participants_from_sheet(item, lang=lang),
+            "participants": _participants_from_sheet(item, lang=lang, people_by_id=people_by_id),
             "sources": item.get("source_urls") or [],
             "representative_source_url": None,
         }
@@ -1563,7 +1563,11 @@ def _format_event_sources(sources: list[object], lang: str) -> str:
     return " | ".join(formatted)
 
 
-def _participants_from_sheet(event: dict[str, object], lang: str) -> list[dict[str, object]]:
+def _participants_from_sheet(
+    event: dict[str, object],
+    lang: str,
+    people_by_id: dict[int, dict[str, object]] | None = None,
+) -> list[dict[str, object]]:
     participant_ids = list(event.get("participant_ids_list") or [])
     participants_en = list(event.get("participants_en_list") or [])
     participants_zh = list(event.get("participants_zh_list") or [])
@@ -1572,6 +1576,12 @@ def _participants_from_sheet(event: dict[str, object], lang: str) -> list[dict[s
         person_id = participant_ids[index] if index < len(participant_ids) else None
         zh_name = participants_zh[index] if index < len(participants_zh) else ""
         english_name = str(name or "").strip()
+        if person_id and people_by_id:
+            person = people_by_id.get(int(person_id))
+            if person:
+                canonical_en = _sheet_person_english_name(person)
+                if canonical_en:
+                    english_name = canonical_en
         display_name = zh_name if (lang == "zh-TW" and zh_name) else english_name
         participants.append(
             {
@@ -1582,6 +1592,14 @@ def _participants_from_sheet(event: dict[str, object], lang: str) -> list[dict[s
             }
         )
     return participants
+
+
+def _sheet_person_english_name(person: dict[str, object]) -> str:
+    for key in ("display_name_en", "full_name", "display_name"):
+        value = str(person.get(key) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _translate_event_text(text: str | None, lang: str) -> str:
