@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import desc, func, select
 
-from tracker.config import use_google_sheet_primary_mode
+from tracker.config import get_settings, use_google_sheet_primary_mode
 from tracker.db import session_scope
 from tracker.models import Alias, Appointment, Jurisdiction, Legislation, LegislationSponsor, Office, Person, Statement, SyncRun, Tracker
 from tracker.services.ai_assist_service import AIAssistService
@@ -720,11 +720,19 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 del st.query_params["page"]
             st.rerun()
 
-    if use_google_sheet_primary_mode():
+    settings = get_settings()
+    has_sheet_config = bool(
+        settings.google_sheet_id
+        and (settings.google_service_account_json or settings.google_service_account_file)
+    )
+    prefer_sheet_person_view = use_google_sheet_primary_mode() or has_sheet_config
+
+    if prefer_sheet_person_view:
         if _render_google_sheet_fallback_v2(lang, labels, pending_person_id):
             return
-        st.info(labels["no_people_loaded"])
-        return
+        if use_google_sheet_primary_mode():
+            st.info(labels["no_people_loaded"])
+            return
 
     with session_scope() as session:
         total_people = session.scalar(select(func.count()).select_from(Person)) or 0
