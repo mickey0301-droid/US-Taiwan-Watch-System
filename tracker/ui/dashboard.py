@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from tracker.config import use_google_sheet_primary_mode
 from tracker.db import session_scope
 from tracker.models import (
+    Alias,
     Appointment,
     Legislation,
     NotificationLog,
@@ -90,13 +91,16 @@ def render(lang: str, labels: dict[str, str]) -> None:
             if related_person_ids
             else {}
         )
+        chinese_alias_map = _build_chinese_alias_map(session, related_person_ids)
         person_category_map = _build_person_category_map(session, related_person_ids)
         recent_events_by_category = _bucket_recent_events_db(
             recent_statements=recent_statements,
             statement_participants_map=statement_participants_map,
             people_by_id=people_by_id,
+            chinese_alias_map=chinese_alias_map,
             person_category_map=person_category_map,
             statements_service=statements_service,
+            lang=lang,
         )
 
         legislation_rows = (
@@ -113,7 +117,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
             .scalars()
             .all()
         )
-        recent_legislation_by_category = _bucket_recent_legislation_db(legislation_rows)
+        recent_legislation_by_category = _bucket_recent_legislation_db(legislation_rows, session=session, lang=lang)
 
     if total_officials == 0 and total_statements == 0:
         if _render_google_sheet_fallback(lang, labels):
@@ -156,8 +160,8 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
     )
     people_by_id = {int(item.get("person_id") or 0): item for item in people if item.get("person_id")}
     people_category = {pid: _sheet_person_category(item) for pid, item in people_by_id.items()}
-    recent_events_by_category = _bucket_recent_events_sheet(events, people_by_id, people_category)
-    recent_legislation_by_category = _bucket_recent_legislation_sheet(legislation)
+    recent_events_by_category = _bucket_recent_events_sheet(events, people_by_id, people_category, lang=lang)
+    recent_legislation_by_category = _bucket_recent_legislation_sheet(legislation, lang=lang)
     _render_overview_sections(
         recent_legislation_by_category=recent_legislation_by_category,
         recent_events_by_category=recent_events_by_category,
@@ -300,12 +304,35 @@ def _build_person_category_map(session, person_ids: set[int]) -> dict[int, str]:
     return result
 
 
+def _build_chinese_alias_map(session, person_ids: set[int]) -> dict[int, str]:
+    if not person_ids:
+        return {}
+    rows = session.execute(
+        select(Alias.person_id, Alias.alias, Alias.id)
+        .where(
+            Alias.person_id.in_(person_ids),
+            Alias.alias_type == "chinese_name",
+            Alias.is_current.is_(True),
+        )
+        .order_by(Alias.id.asc())
+    ).all()
+    result: dict[int, str] = {}
+    for person_id, alias, _alias_id in rows:
+        alias_text = str(alias or "").strip()
+        if not alias_text or person_id in result:
+            continue
+        result[person_id] = alias_text
+    return result
+
+
 def _bucket_recent_events_db(
     recent_statements: list[Statement],
     statement_participants_map: dict[int, list[int]],
     people_by_id: dict[int, Person],
+    chinese_alias_map: dict[int, str],
     person_category_map: dict[int, str],
     statements_service: StatementsService,
+    lang: str,
 ) -> dict[str, list[dict[str, object]]]:
     buckets = _empty_event_buckets()
     seen_statement_ids = {key: set() for key in buckets.keys()}
@@ -331,7 +358,10 @@ def _bucket_recent_events_db(
                 continue
             if any(item["person_id"] == person_id for item in participants):
                 continue
-            participants.append({"person_id": person_id, "display_name": person.full_name})
+            display_name = chinese_alias_map.get(person_id) if lang == "zh-TW" else None
+            if not display_name:
+                display_name = person.full_name
+            participants.append({"person_id": person_id, "display_name": display_name})
         item = {
             "statement_id": statement.id,
             "title": statement.title,
@@ -351,8 +381,16 @@ def _bucket_recent_events_db(
     return buckets
 
 
-def _bucket_recent_legislation_db(rows: list[Legislation]) -> dict[str, list[dict[str, object]]]:
+def _bucket_recent_legislation_db(rows: list[Legislation], session, lang: str) -> dict[str, list[dict[str, object]]]:
     buckets = _empty_legislation_buckets()
+    sponsor_ids: set[int] = set()
+    for row in rows:
+        sponsor_people = [item.person for item in row.sponsors if item.person and str(item.role or "").lower() == "sponsor"]
+        if not sponsor_people:
+            sponsor_people = [item.person for item in row.sponsors if item.person]
+        if sponsor_people:
+            sponsor_ids.add(sponsor_people[0].id)
+    chinese_alias_map = _build_chinese_alias_map(session, sponsor_ids) if lang == "zh-TW" else {}
     for row in rows:
         category = None
         if (row.level or "").lower() == "federal":
@@ -365,6 +403,11 @@ def _bucket_recent_legislation_db(rows: list[Legislation]) -> dict[str, list[dic
         if not sponsor_people:
             sponsor_people = [item.person for item in row.sponsors if item.person]
         sponsor = sponsor_people[0] if sponsor_people else None
+        sponsor_name = None
+        if sponsor and sponsor.full_name:
+            sponsor_name = chinese_alias_map.get(sponsor.id) if lang == "zh-TW" else None
+            if not sponsor_name:
+                sponsor_name = sponsor.full_name
         buckets[category].append(
             {
                 "title": row.title,
@@ -376,8 +419,8 @@ def _bucket_recent_legislation_db(rows: list[Legislation]) -> dict[str, list[dic
                 "date": row.last_action_date or row.introduced_date,
                 "source_url": row.source_url,
                 "sponsor": (
-                    {"person_id": sponsor.id, "display_name": sponsor.full_name}
-                    if sponsor and sponsor.full_name
+                    {"person_id": sponsor.id, "display_name": sponsor_name}
+                    if sponsor and sponsor_name
                     else None
                 ),
             }
@@ -403,6 +446,7 @@ def _bucket_recent_events_sheet(
     events: list[dict[str, object]],
     people_by_id: dict[int, dict[str, object]],
     people_category: dict[int, str | None],
+    lang: str,
 ) -> dict[str, list[dict[str, object]]]:
     buckets = _empty_event_buckets()
     seen_event_ids = {key: set() for key in buckets.keys()}
@@ -426,7 +470,7 @@ def _bucket_recent_events_sheet(
             "title": str(item.get("title") or ""),
             "description": str(item.get("summary") or item.get("title") or ""),
             "event_time": item.get("event_date_date"),
-            "participants": _participants_from_sheet(item),
+            "participants": _participants_from_sheet(item, lang=lang),
             "sources": item.get("source_urls") or [],
             "representative_source_url": None,
         }
@@ -440,7 +484,7 @@ def _bucket_recent_events_sheet(
     return buckets
 
 
-def _bucket_recent_legislation_sheet(rows: list[dict[str, object]]) -> dict[str, list[dict[str, object]]]:
+def _bucket_recent_legislation_sheet(rows: list[dict[str, object]], lang: str) -> dict[str, list[dict[str, object]]]:
     buckets = _empty_legislation_buckets()
     for item in rows:
         level = str(item.get("level") or "").strip().lower()
@@ -464,7 +508,7 @@ def _bucket_recent_legislation_sheet(rows: list[dict[str, object]]) -> dict[str,
                 "introduced_date": item.get("date_date"),
                 "date": item.get("date_date"),
                 "source_url": str(item.get("source_url") or ""),
-                "sponsor": _first_sheet_sponsor(item),
+                "sponsor": _first_sheet_sponsor(item, lang=lang),
             }
         )
     return buckets
@@ -512,7 +556,7 @@ def _render_legislation_column(column, title: str, entries: list[dict[str, objec
                     st.markdown(f"[link]({item['source_url']})")
 
 
-def _first_sheet_sponsor(item: dict[str, object]) -> dict[str, object] | None:
+def _first_sheet_sponsor(item: dict[str, object], lang: str) -> dict[str, object] | None:
     sponsor_ids = list(item.get("sponsor_ids_list") or [])
     sponsor_names = list(item.get("sponsors_en_list") or [])
     sponsor_names_zh = list(item.get("sponsors_zh_list") or [])
@@ -522,7 +566,7 @@ def _first_sheet_sponsor(item: dict[str, object]) -> dict[str, object] | None:
     if not name:
         return None
     zh_name = str(sponsor_names_zh[0] or "").strip() if sponsor_names_zh else ""
-    display_name = f"{zh_name} {name}".strip() if zh_name else name
+    display_name = zh_name if (lang == "zh-TW" and zh_name) else name
     person_id = sponsor_ids[0] if sponsor_ids else None
     return {"person_id": person_id, "display_name": display_name}
 
@@ -731,7 +775,7 @@ def _format_event_sources(sources: list[object], lang: str) -> str:
     return " | ".join(formatted)
 
 
-def _participants_from_sheet(event: dict[str, object]) -> list[dict[str, object]]:
+def _participants_from_sheet(event: dict[str, object], lang: str) -> list[dict[str, object]]:
     participant_ids = list(event.get("participant_ids_list") or [])
     participants_en = list(event.get("participants_en_list") or [])
     participants_zh = list(event.get("participants_zh_list") or [])
@@ -739,7 +783,7 @@ def _participants_from_sheet(event: dict[str, object]) -> list[dict[str, object]
     for index, name in enumerate(participants_en):
         person_id = participant_ids[index] if index < len(participant_ids) else None
         zh_name = participants_zh[index] if index < len(participants_zh) else ""
-        display_name = f"{zh_name} {name}".strip() if zh_name else str(name)
+        display_name = zh_name if (lang == "zh-TW" and zh_name) else str(name)
         participants.append({"person_id": person_id, "display_name": display_name})
     return participants
 
