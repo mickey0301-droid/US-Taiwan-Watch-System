@@ -419,6 +419,7 @@ def _bucket_recent_legislation_db(rows: list[Legislation], session, lang: str) -
         buckets[category].append(
             {
                 "title": row.title,
+                "summary": row.summary or "",
                 "bill_number": row.bill_number,
                 "level": row.level,
                 "chamber": row.chamber,
@@ -509,6 +510,7 @@ def _bucket_recent_legislation_sheet(rows: list[dict[str, object]], lang: str) -
         buckets[category].append(
             {
                 "title": str(item.get("title") or ""),
+                "summary": str(item.get("summary") or ""),
                 "bill_number": str(item.get("bill_number") or ""),
                 "level": level or "",
                 "chamber": str(item.get("chamber") or ""),
@@ -535,15 +537,14 @@ def _render_legislation_column(column, title: str, entries: list[dict[str, objec
             return
         for index, item in enumerate(entries, start=1):
             with st.container(border=True):
-                headline = _localize_legislation_text(
-                    bill_number=str(item.get("bill_number") or ""),
+                bill_number = str(item.get("bill_number") or "").strip()
+                display_title = _format_legislation_title_with_description(
                     title=str(item.get("title") or ""),
-                    summary=str(item.get("summary") or item.get("title") or ""),
-                    latest_action=_format_event_time(item.get("date"), lang),
+                    summary=str(item.get("summary") or ""),
                     lang=lang,
                 )
-                bill_number = str(item.get("bill_number") or "").strip()
-                display_title = f"{bill_number} {headline}".strip() if bill_number else str(headline)
+                if bill_number:
+                    display_title = f"{bill_number} {display_title}".strip()
                 st.markdown(f"**{index}. {display_title}**")
                 chamber_text = _format_legislation_chamber(
                     level=str(item.get("level") or ""),
@@ -590,9 +591,112 @@ def _format_legislation_chamber(level: str, chamber: str, jurisdiction_name: str
         return f"聯邦{chamber_name_zh}" if lang == "zh-TW" else f"U.S. {chamber_name_en}"
     if normalized_level == "state":
         if lang == "zh-TW":
-            return f"{jurisdiction or '州'}{chamber_name_zh}"
+            state_zh = _translate_us_state_name_zh(jurisdiction)
+            return f"{state_zh or '州'}{chamber_name_zh}"
         return f"{jurisdiction or 'State'} {chamber_name_en}"
     return chamber_name_zh if lang == "zh-TW" else chamber_name_en
+
+
+def _format_legislation_title_with_description(title: str, summary: str, lang: str) -> str:
+    title_text = str(title or "").strip()
+    if not title_text:
+        return ""
+    if lang != "zh-TW":
+        return title_text
+
+    chinese_title = _localize_legislation_text(
+        bill_number="",
+        title=title_text,
+        summary=title_text,
+        latest_action="",
+        lang=lang,
+    ).strip()
+    if not chinese_title:
+        chinese_title = _translate_event_text(title_text, lang).strip()
+
+    if _looks_like_english(title_text):
+        headline = f"{chinese_title}（{title_text}）"
+    else:
+        headline = chinese_title
+
+    summary_text = str(summary or "").strip()
+    if not summary_text or _normalize_compare_text(summary_text) == _normalize_compare_text(title_text):
+        return headline
+    summary_zh = _localize_event_text(title=title_text, description=summary_text, lang=lang, is_title=False).strip()
+    if not summary_zh:
+        return headline
+    return f"{headline}：{summary_zh}"
+
+
+def _normalize_compare_text(text: str) -> str:
+    normalized = str(text or "").strip().lower()
+    normalized = re.sub(r"[\s\.\,\-\–\—\:\;\'\"\(\)\[\]\{\}]+", "", normalized)
+    return normalized
+
+
+def _translate_us_state_name_zh(state_name: str) -> str:
+    mapping = {
+        "Alabama": "阿拉巴馬州",
+        "Alaska": "阿拉斯加州",
+        "Arizona": "亞利桑那州",
+        "Arkansas": "阿肯色州",
+        "California": "加州",
+        "Colorado": "科羅拉多州",
+        "Connecticut": "康乃狄克州",
+        "Delaware": "德拉瓦州",
+        "District of Columbia": "哥倫比亞特區",
+        "Florida": "佛羅里達州",
+        "Georgia": "喬治亞州",
+        "Hawaii": "夏威夷州",
+        "Idaho": "愛達荷州",
+        "Illinois": "伊利諾州",
+        "Indiana": "印第安納州",
+        "Iowa": "愛荷華州",
+        "Kansas": "堪薩斯州",
+        "Kentucky": "肯塔基州",
+        "Louisiana": "路易斯安那州",
+        "Maine": "緬因州",
+        "Maryland": "馬里蘭州",
+        "Massachusetts": "麻薩諸塞州",
+        "Michigan": "密西根州",
+        "Minnesota": "明尼蘇達州",
+        "Mississippi": "密西西比州",
+        "Missouri": "密蘇里州",
+        "Montana": "蒙大拿州",
+        "Nebraska": "內布拉斯加州",
+        "Nevada": "內華達州",
+        "New Hampshire": "新罕布夏州",
+        "New Jersey": "新澤西州",
+        "New Mexico": "新墨西哥州",
+        "New York": "紐約州",
+        "North Carolina": "北卡羅來納州",
+        "North Dakota": "北達科他州",
+        "Ohio": "俄亥俄州",
+        "Oklahoma": "奧克拉荷馬州",
+        "Oregon": "俄勒岡州",
+        "Pennsylvania": "賓夕法尼亞州",
+        "Rhode Island": "羅德島州",
+        "South Carolina": "南卡羅來納州",
+        "South Dakota": "南達科他州",
+        "Tennessee": "田納西州",
+        "Texas": "德州",
+        "Utah": "猶他州",
+        "Vermont": "佛蒙特州",
+        "Virginia": "維吉尼亞州",
+        "Washington": "華盛頓州",
+        "West Virginia": "西維吉尼亞州",
+        "Wisconsin": "威斯康辛州",
+        "Wyoming": "懷俄明州",
+        "Guam": "關島",
+        "Puerto Rico": "波多黎各",
+        "U.S. Virgin Islands": "美屬維京群島",
+        "American Samoa": "美屬薩摩亞",
+        "Northern Mariana Islands": "北馬里亞納群島",
+    }
+    raw = str(state_name or "").strip()
+    if not raw:
+        return ""
+    return mapping.get(raw, raw)
 
 
 def _render_event_column(
