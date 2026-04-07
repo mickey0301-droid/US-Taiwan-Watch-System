@@ -7,7 +7,7 @@ import re
 import streamlit as st
 from sqlalchemy import func, select
 
-from tracker.config import get_settings, use_google_sheet_primary_mode
+from tracker.config import use_google_sheet_primary_mode
 from tracker.db import session_scope
 from tracker.models import (
     Alias,
@@ -33,18 +33,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
     if use_google_sheet_primary_mode():
         if _render_google_sheet_fallback(lang, labels):
             return
-        _render_metrics(
-            {
-                "federal_officials": 0,
-                "congress_members": 0,
-                "state_officials": 0,
-                "state_legislators": 0,
-                "federal_legislation": 0,
-                "state_legislation": 0,
-            },
-            lang,
-        )
-        _render_data_source_status(lang)
+        _render_metrics(labels, 0, 0, 0, 0, 0)
         st.warning(
             "Google Sheet primary mode is enabled, but no sheet data could be loaded."
             if lang != "zh-TW"
@@ -52,22 +41,21 @@ def render(lang: str, labels: dict[str, str]) -> None:
         )
         render_google_sheet_fallback_diagnostic(lang)
         return
-    dashboard_counts = {
-        "federal_officials": 0,
-        "congress_members": 0,
-        "state_officials": 0,
-        "state_legislators": 0,
-        "federal_legislation": 0,
-        "state_legislation": 0,
-    }
+    total_officials = 0
+    total_trackers = 0
     total_statements = 0
+    total_sync_runs = 0
+    total_alerts = 0
     recent_events_by_category: dict[str, list[dict[str, object]]] = _empty_event_buckets()
     recent_legislation_by_category: dict[str, list[dict[str, object]]] = _empty_legislation_buckets()
 
     with session_scope() as session:
         statements_service = StatementsService(session)
-        dashboard_counts = _collect_dashboard_counts_db(session)
+        total_officials = session.scalar(select(func.count()).select_from(Person)) or 0
+        total_trackers = session.scalar(select(func.count()).select_from(Tracker)) or 0
         total_statements = session.scalar(select(func.count()).select_from(Statement)) or 0
+        total_sync_runs = session.scalar(select(func.count()).select_from(SyncRun)) or 0
+        total_alerts = session.scalar(select(func.count()).select_from(NotificationLog)) or 0
         recent_statements = (
             session.execute(
                 select(Statement)
@@ -131,14 +119,10 @@ def render(lang: str, labels: dict[str, str]) -> None:
         )
         recent_legislation_by_category = _bucket_recent_legislation_db(legislation_rows, session=session, lang=lang)
 
-    # Cloud DB can lag behind sheet exports; prefer fresher sheet counts when available.
-    dashboard_counts = _prefer_sheet_counts_if_newer(dashboard_counts)
-
-    if sum(dashboard_counts.values()) == 0 and total_statements == 0:
+    if total_officials == 0 and total_statements == 0:
         if _render_google_sheet_fallback(lang, labels):
             return
-        _render_metrics(dashboard_counts, lang)
-        _render_data_source_status(lang)
+        _render_metrics(labels, total_officials, total_trackers, total_statements, total_sync_runs, total_alerts)
         st.warning(
             "The current app instance is connected to an empty database, and Google Sheet fallback is not available."
             if lang != "zh-TW"
@@ -152,8 +136,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
         render_google_sheet_fallback_diagnostic(lang)
         return
 
-    _render_metrics(dashboard_counts, lang)
-    _render_data_source_status(lang)
+    _render_metrics(labels, total_officials, total_trackers, total_statements, total_sync_runs, total_alerts)
     _render_overview_sections(
         recent_legislation_by_category=recent_legislation_by_category,
         recent_events_by_category=recent_events_by_category,
@@ -169,8 +152,7 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
     if not (people or events or legislation):
         return False
 
-    _render_metrics(_collect_dashboard_counts_sheet(people, legislation), lang)
-    _render_data_source_status(lang, people=people, events=events, legislation=legislation)
+    _render_metrics(labels, len(people), 0, len(events), len(legislation), 0)
     st.info(
         "Google Sheet fallback mode is active. The cloud app is showing exported data."
         if lang != "zh-TW"
@@ -179,7 +161,7 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
     people_by_id = {int(item.get("person_id") or 0): item for item in people if item.get("person_id")}
     people_category = {pid: _sheet_person_category(item) for pid, item in people_by_id.items()}
     recent_events_by_category = _bucket_recent_events_sheet(events, people_by_id, people_category, lang=lang)
-    recent_legislation_by_category = _bucket_recent_legislation_sheet(legislation, people=people, lang=lang)
+    recent_legislation_by_category = _bucket_recent_legislation_sheet(legislation, lang=lang)
     _render_overview_sections(
         recent_legislation_by_category=recent_legislation_by_category,
         recent_events_by_category=recent_events_by_category,
@@ -201,182 +183,20 @@ def render_google_sheet_fallback_diagnostic(lang: str) -> None:
     )
 
 
-def _render_data_source_status(
-    lang: str,
-    people: list[dict[str, object]] | None = None,
-    events: list[dict[str, object]] | None = None,
-    legislation: list[dict[str, object]] | None = None,
+def _render_metrics(
+    labels: dict[str, str],
+    total_officials: int,
+    total_trackers: int,
+    total_statements: int,
+    total_sync_runs: int,
+    total_alerts: int,
 ) -> None:
-    settings = get_settings()
-    db_url = str(settings.database_url or "")
-    db_sync_time = None
-    try:
-        with session_scope() as session:
-            db_sync_time = session.scalar(
-                select(func.max(SyncRun.ended_at)).where(SyncRun.status == "success")
-            )
-    except Exception:
-        db_sync_time = None
-
-    sheet_error = None
-    if people is None or events is None or legislation is None:
-        sheet = GoogleSheetReadService()
-        people = sheet.list_people()
-        events = sheet.list_events()
-        legislation = sheet.list_legislation()
-        sheet_error = sheet.get_last_error()
-
-    db_sync_text = db_sync_time.strftime("%Y-%m-%d %H:%M:%S") if db_sync_time else ("未提供" if lang == "zh-TW" else "N/A")
-    db_text = (
-        f"資料庫：{db_url}｜最後成功同步：{db_sync_text}"
-        if lang == "zh-TW"
-        else f"Database: {db_url} | Last successful sync: {db_sync_text}"
-    )
-    st.caption(db_text)
-
-    if sheet_error:
-        st.caption(
-            f"Google Sheet：不可用（{sheet_error}）"
-            if lang == "zh-TW"
-            else f"Google Sheet: unavailable ({sheet_error})"
-        )
-        return
-
-    st.caption(
-        (
-            f"Google Sheet：可用（People {len(people or [])} / Events {len(events or [])} / Legislation {len(legislation or [])}）"
-            if lang == "zh-TW"
-            else f"Google Sheet: available (People {len(people or [])} / Events {len(events or [])} / Legislation {len(legislation or [])})"
-        )
-    )
-
-
-def _render_metrics(counts: dict[str, int], lang: str) -> None:
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("聯邦官員" if lang == "zh-TW" else "Federal Officials", counts.get("federal_officials", 0))
-    col2.metric("國會議員" if lang == "zh-TW" else "Members of Congress", counts.get("congress_members", 0))
-    col3.metric("州政府官員" if lang == "zh-TW" else "State Officials", counts.get("state_officials", 0))
-    col4.metric("州議員" if lang == "zh-TW" else "State Legislators", counts.get("state_legislators", 0))
-    row2_col1, row2_col2 = st.columns(2)
-    row2_col1.metric("國會法案" if lang == "zh-TW" else "Congressional Bills", counts.get("federal_legislation", 0))
-    row2_col2.metric("州議會法案" if lang == "zh-TW" else "State Legislature Bills", counts.get("state_legislation", 0))
-
-
-def _collect_dashboard_counts_db(session) -> dict[str, int]:
-    def person_count(level: str, branch: str) -> int:
-        return (
-            session.scalar(
-                select(func.count(func.distinct(Appointment.person_id)))
-                .join(Office, Office.id == Appointment.office_id)
-                .where(
-                    Appointment.is_current.is_(True),
-                    Office.level == level,
-                    Office.branch == branch,
-                )
-            )
-            or 0
-        )
-
-    federal_legislation = (
-        session.scalar(select(func.count()).select_from(Legislation).where(Legislation.level == "federal", Legislation.is_taiwan_related.is_(True)))
-        or 0
-    )
-    state_legislation = (
-        session.scalar(select(func.count()).select_from(Legislation).where(Legislation.level == "state", Legislation.is_taiwan_related.is_(True)))
-        or 0
-    )
-    return {
-        "federal_officials": person_count("federal", "executive"),
-        "congress_members": person_count("federal", "legislative"),
-        "state_officials": person_count("state", "executive"),
-        "state_legislators": person_count("state", "legislative"),
-        "federal_legislation": federal_legislation,
-        "state_legislation": state_legislation,
-    }
-
-
-def _collect_dashboard_counts_sheet(people: list[dict[str, object]], legislation: list[dict[str, object]]) -> dict[str, int]:
-    federal_officials = 0
-    congress_members = 0
-    state_officials = 0
-    state_legislators = 0
-    for person in people:
-        level = str(person.get("level") or "").strip().lower()
-        branch = str(person.get("branch") or "").strip().lower()
-        if level == "federal" and branch == "executive":
-            federal_officials += 1
-        elif level == "federal" and branch == "legislative":
-            congress_members += 1
-        elif level == "state" and branch == "executive":
-            state_officials += 1
-        elif level == "state" and branch == "legislative":
-            state_legislators += 1
-    federal_keys: set[str] = set()
-    state_keys: set[str] = set()
-    for item in legislation:
-        category = _infer_sheet_legislation_category(item)
-        if category == "federal":
-            federal_keys.add(_sheet_legislation_identity_key(item, "federal"))
-        else:
-            state_keys.add(_sheet_legislation_identity_key(item, "state"))
-    federal_legislation = len(federal_keys)
-    state_legislation = len(state_keys)
-    return {
-        "federal_officials": federal_officials,
-        "congress_members": congress_members,
-        "state_officials": state_officials,
-        "state_legislators": state_legislators,
-        "federal_legislation": federal_legislation,
-        "state_legislation": state_legislation,
-    }
-
-
-def _infer_sheet_legislation_category(item: dict[str, object]) -> str:
-    level = str(item.get("level") or "").strip().lower()
-    if level in {"federal", "state"}:
-        return level
-    jurisdiction = str(item.get("jurisdiction") or item.get("jurisdiction_name") or "").strip().lower()
-    if jurisdiction in {"united states", "us", "u.s."}:
-        return "federal"
-    session_year = str(item.get("session_year") or item.get("session") or "").strip()
-    if session_year.isdigit() and int(session_year) >= 100:
-        return "federal"
-    bill_number = str(item.get("bill_number") or "").strip().lower()
-    federal_prefixes = ("hr ", "hres", "hjres", "hconres", "s ", "sres", "sjres", "sconres")
-    if bill_number.startswith(federal_prefixes):
-        return "federal"
-    return "state"
-
-
-def _sheet_legislation_identity_key(item: dict[str, object], category: str) -> str:
-    bill_number = str(item.get("bill_number") or "").strip().lower()
-    bill_number = re.sub(r"[^a-z0-9]", "", bill_number)
-    title = str(item.get("title") or "").strip().lower()
-    date_value = item.get("date_date")
-    year_text = str(getattr(date_value, "year", "") or "")
-    title_bill = _extract_bill_number_from_title_for_sheet(title)
-    if category == "federal":
-        session_year = str(item.get("session_year") or item.get("session") or "").strip()
-        if bill_number:
-            return f"fed|{session_year}|{bill_number}"
-        if title_bill:
-            return f"fed|{session_year}|{title_bill}"
-        return f"fed|{session_year}|{title}"
-    jurisdiction = str(item.get("jurisdiction") or item.get("jurisdiction_name") or "").strip().lower()
-    if bill_number:
-        return f"state|{jurisdiction}|{bill_number}|{year_text}"
-    if title_bill:
-        return f"state|{jurisdiction}|{title_bill}|{year_text}"
-    return f"state|{jurisdiction}|{title}|{year_text}"
-
-
-def _extract_bill_number_from_title_for_sheet(title: str) -> str:
-    text = str(title or "").strip().lower()
-    if not text:
-        return ""
-    normalized = re.sub(r"[^a-z0-9]", "", text)
-    match = re.search(r"(hr|hres|hjres|hconres|s|sres|sjres|sconres)\d{1,6}", normalized)
-    return match.group(0) if match else ""
+    col1.metric(labels["total_officials"], total_officials)
+    col2.metric(labels["total_trackers"], total_trackers)
+    col3.metric(labels["recent_statements"], total_statements)
+    col4.metric(labels["recent_sync_runs"], total_sync_runs)
+    st.caption(f"{labels['recent_alerts']}: {total_alerts}")
 
 
 def _render_overview_sections(
@@ -386,21 +206,6 @@ def _render_overview_sections(
 ) -> None:
     legislation_title = "法案" if lang == "zh-TW" else "Legislation"
     events_title = "事件" if lang == "zh-TW" else "Events"
-    st.subheader(legislation_title)
-    legislation_columns = st.columns(2)
-    _render_legislation_column(
-        legislation_columns[0],
-        "國會立法" if lang == "zh-TW" else "Congressional Legislation",
-        recent_legislation_by_category.get("federal_legislation", []),
-        lang,
-    )
-    _render_legislation_column(
-        legislation_columns[1],
-        "州議會立法" if lang == "zh-TW" else "State Legislature Legislation",
-        recent_legislation_by_category.get("state_legislation", []),
-        lang,
-    )
-
     st.subheader(events_title)
     event_row_1 = st.columns(2)
     _render_event_column(
@@ -431,6 +236,21 @@ def _render_overview_sections(
         recent_events_by_category.get("state_legislators", []),
         lang,
         "state-legislators",
+    )
+
+    st.subheader(legislation_title)
+    legislation_columns = st.columns(2)
+    _render_legislation_column(
+        legislation_columns[0],
+        "國會立法" if lang == "zh-TW" else "Congressional Legislation",
+        recent_legislation_by_category.get("federal_legislation", []),
+        lang,
+    )
+    _render_legislation_column(
+        legislation_columns[1],
+        "州議會立法" if lang == "zh-TW" else "State Legislature Legislation",
+        recent_legislation_by_category.get("state_legislation", []),
+        lang,
     )
 
 
@@ -571,9 +391,6 @@ def _bucket_recent_events_db(
 
 def _bucket_recent_legislation_db(rows: list[Legislation], session, lang: str) -> dict[str, list[dict[str, object]]]:
     buckets = _empty_legislation_buckets()
-    from tracker.ui import legislation_page as legislation_page_ui
-
-    rows = legislation_page_ui._dedupe_db_legislation_rows(rows)
     sponsor_ids: set[int] = set()
     for row in rows:
         sponsor_people = [item.person for item in row.sponsors if item.person and str(item.role or "").lower() == "sponsor"]
@@ -590,17 +407,10 @@ def _bucket_recent_legislation_db(rows: list[Legislation], session, lang: str) -
             category = "state_legislation"
         if not category or len(buckets[category]) >= 3:
             continue
-        sponsor_rel = next((item for item in row.sponsors if item.person and str(item.role or "").lower() == "sponsor"), None)
-        if sponsor_rel is None:
-            sponsor_rel = next((item for item in row.sponsors if item.person), None)
-        sponsor = sponsor_rel.person if sponsor_rel else None
-
-        cosponsor_people = [
-            item.person
-            for item in row.sponsors
-            if item.person and str(item.role or "").lower() == "cosponsor"
-        ]
-
+        sponsor_people = [item.person for item in row.sponsors if item.person and str(item.role or "").lower() == "sponsor"]
+        if not sponsor_people:
+            sponsor_people = [item.person for item in row.sponsors if item.person]
+        sponsor = sponsor_people[0] if sponsor_people else None
         sponsor_name = None
         sponsor_english_name = sponsor.full_name if sponsor and sponsor.full_name else ""
         sponsor_chinese_name = ""
@@ -620,8 +430,6 @@ def _bucket_recent_legislation_db(rows: list[Legislation], session, lang: str) -
                 "introduced_date": row.introduced_date,
                 "date": row.last_action_date or row.introduced_date,
                 "source_url": row.source_url,
-                "source_urls": legislation_page_ui._collect_db_source_links(row),
-                "raw_payload": row.raw_payload or {},
                 "sponsor": (
                     {
                         "person_id": sponsor.id,
@@ -632,15 +440,6 @@ def _bucket_recent_legislation_db(rows: list[Legislation], session, lang: str) -
                     if sponsor and sponsor_name
                     else None
                 ),
-                "cosponsors": [
-                    {
-                        "person_id": person.id,
-                        "display_name": (chinese_alias_map.get(person.id) if lang == "zh-TW" else person.full_name) or person.full_name,
-                        "english_name": person.full_name,
-                        "chinese_name": chinese_alias_map.get(person.id, "") if lang == "zh-TW" else "",
-                    }
-                    for person in cosponsor_people
-                ],
             }
         )
     return buckets
@@ -688,7 +487,7 @@ def _bucket_recent_events_sheet(
             "title": str(item.get("title") or ""),
             "description": str(item.get("summary") or item.get("title") or ""),
             "event_time": item.get("event_date_date"),
-            "participants": _participants_from_sheet(item, lang=lang, people_by_id=people_by_id),
+            "participants": _participants_from_sheet(item, lang=lang),
             "sources": item.get("source_urls") or [],
             "representative_source_url": None,
         }
@@ -702,12 +501,8 @@ def _bucket_recent_events_sheet(
     return buckets
 
 
-def _bucket_recent_legislation_sheet(rows: list[dict[str, object]], people: list[dict[str, object]], lang: str) -> dict[str, list[dict[str, object]]]:
+def _bucket_recent_legislation_sheet(rows: list[dict[str, object]], lang: str) -> dict[str, list[dict[str, object]]]:
     buckets = _empty_legislation_buckets()
-    from tracker.ui import legislation_page as legislation_page_ui
-
-    rows = legislation_page_ui._dedupe_sheet_legislation_rows(rows)
-    person_lookup = _build_sheet_person_lookup(people)
     for item in rows:
         level = str(item.get("level") or "").strip().lower()
         category = None
@@ -731,10 +526,7 @@ def _bucket_recent_legislation_sheet(rows: list[dict[str, object]], people: list
                 "introduced_date": item.get("date_date"),
                 "date": item.get("date_date"),
                 "source_url": str(item.get("source_url") or ""),
-                "source_urls": legislation_page_ui._collect_sheet_source_links(item),
-                "raw_payload": item.get("raw_payload") if isinstance(item.get("raw_payload"), dict) else {},
-                "sponsor": _first_sheet_sponsor(item, person_lookup=person_lookup, lang=lang),
-                "cosponsors": _remaining_sheet_cosponsors(item, person_lookup=person_lookup, lang=lang),
+                "sponsor": _first_sheet_sponsor(item, lang=lang),
             }
         )
     return buckets
@@ -743,8 +535,8 @@ def _bucket_recent_legislation_sheet(rows: list[dict[str, object]], people: list
 def _render_legislation_column(column, title: str, entries: list[dict[str, object]], lang: str) -> None:
     chamber_label = "所屬議院" if lang == "zh-TW" else "Chamber"
     sponsor_label = "提案議員" if lang == "zh-TW" else "Sponsor"
-    cosponsor_label = "共同提案議員" if lang == "zh-TW" else "Cosponsor"
     introduced_label = "提案時間" if lang == "zh-TW" else "Introduced"
+    date_label = "日期" if lang == "zh-TW" else "Date"
     empty_label = "目前無資料" if lang == "zh-TW" else "No records yet"
     with column:
         st.markdown(f"**{title}**")
@@ -754,17 +546,12 @@ def _render_legislation_column(column, title: str, entries: list[dict[str, objec
         for index, item in enumerate(entries, start=1):
             with st.container(border=True):
                 bill_number = str(item.get("bill_number") or "").strip()
-                preferred_title = _select_preferred_legislation_title(
-                    title=str(item.get("title") or ""),
-                    source_url=str(item.get("source_url") or ""),
-                    raw_payload=item.get("raw_payload") if isinstance(item.get("raw_payload"), dict) else {},
-                )
                 display_title = _format_legislation_title_with_description(
-                    title=preferred_title,
+                    title=str(item.get("title") or ""),
                     summary=str(item.get("summary") or ""),
                     lang=lang,
                 )
-                if _should_prefix_bill_number(bill_number):
+                if bill_number:
                     display_title = f"{bill_number} {display_title}".strip()
                 st.markdown(f"**{index}. {display_title}**")
                 chamber_text = _format_legislation_chamber(
@@ -780,40 +567,13 @@ def _render_legislation_column(column, title: str, entries: list[dict[str, objec
                 else:
                     sponsor_text = "未提供" if lang == "zh-TW" else "Not available"
                 st.markdown(f"`{sponsor_label}`：{sponsor_text}")
-                cosponsors = item.get("cosponsors") if isinstance(item.get("cosponsors"), list) else []
-                cosponsors = _dedupe_people_for_display(cosponsors)
-                if not cosponsors:
-                    cosponsor_text = "無" if lang == "zh-TW" else "None"
-                else:
-                    cosponsor_text = _format_people_inline(cosponsors[:3], lang)
-                if len(cosponsors) > 3:
-                    extra = len(cosponsors) - 3
-                    cosponsor_text = f"{cosponsor_text} 等{extra}名" if lang == "zh-TW" else f"{cosponsor_text} and {extra} more"
-                st.markdown(f"`{cosponsor_label}`：{cosponsor_text}")
                 st.markdown(f"`{introduced_label}`：{_format_event_time(item.get('introduced_date'), lang)}")
-                source_urls = [str(link or "").strip() for link in (item.get("source_urls") or []) if str(link or "").strip()]
-                if not source_urls and item.get("source_url"):
-                    source_urls = [str(item["source_url"]).strip()]
-                if source_urls:
-                    st.markdown(" | ".join(f"[link]({link})" for link in source_urls[:6]))
+                st.caption(f"{date_label}: {_format_event_time(item.get('date'), lang)}")
+                if item.get("source_url"):
+                    st.markdown(f"[link]({item['source_url']})")
 
 
-def _should_prefix_bill_number(bill_number: str) -> bool:
-    text = str(bill_number or "").strip()
-    if not text:
-        return False
-    # Prefix only for real bill identifiers; skip descriptive titles such as
-    # "Blue Skies for Taiwan Act of 2026" stored in bill_number field.
-    normalized = re.sub(r"[^a-z0-9]", "", text.lower())
-    return bool(
-        re.match(
-            r"^(hr|hres|hjres|hconres|s|sres|sjres|sconres|hb|sb|ab|ac|ajr|scr|hcr|sr|jr)\d+$",
-            normalized,
-        )
-    )
-
-
-def _first_sheet_sponsor(item: dict[str, object], person_lookup: dict[str, int], lang: str) -> dict[str, object] | None:
+def _first_sheet_sponsor(item: dict[str, object], lang: str) -> dict[str, object] | None:
     sponsor_ids = list(item.get("sponsor_ids_list") or [])
     sponsor_names = list(item.get("sponsors_en_list") or [])
     sponsor_names_zh = list(item.get("sponsors_zh_list") or [])
@@ -825,65 +585,12 @@ def _first_sheet_sponsor(item: dict[str, object], person_lookup: dict[str, int],
     zh_name = str(sponsor_names_zh[0] or "").strip() if sponsor_names_zh else ""
     display_name = zh_name if (lang == "zh-TW" and zh_name) else name
     person_id = sponsor_ids[0] if sponsor_ids else None
-    if person_id is None:
-        person_id = _resolve_sheet_person_id(name, zh_name, person_lookup)
     return {
         "person_id": person_id,
         "display_name": display_name,
         "english_name": name,
         "chinese_name": zh_name,
     }
-
-
-def _remaining_sheet_cosponsors(item: dict[str, object], person_lookup: dict[str, int], lang: str) -> list[dict[str, object]]:
-    sponsor_ids = list(item.get("sponsor_ids_list") or [])
-    sponsor_names = list(item.get("sponsors_en_list") or [])
-    sponsor_names_zh = list(item.get("sponsors_zh_list") or [])
-    results: list[dict[str, object]] = []
-    for i in range(1, len(sponsor_names)):
-        name = str(sponsor_names[i] or "").strip()
-        if not name:
-            continue
-        zh_name = str(sponsor_names_zh[i] or "").strip() if i < len(sponsor_names_zh) else ""
-        display_name = zh_name if (lang == "zh-TW" and zh_name) else name
-        person_id = sponsor_ids[i] if i < len(sponsor_ids) else None
-        if person_id is None:
-            person_id = _resolve_sheet_person_id(name, zh_name, person_lookup)
-        results.append({
-            "person_id": person_id,
-            "display_name": display_name,
-            "english_name": name,
-            "chinese_name": zh_name,
-        })
-    return results
-
-
-def _build_sheet_person_lookup(people: list[dict[str, object]]) -> dict[str, int]:
-    lookup: dict[str, int] = {}
-    for item in people:
-        person_id = item.get("person_id")
-        if not person_id:
-            continue
-        for raw_name in (item.get("display_name_en"), item.get("full_name"), item.get("display_name_zh")):
-            key = _normalize_sheet_person_name(raw_name)
-            if key and key not in lookup:
-                lookup[key] = int(person_id)
-    return lookup
-
-
-def _resolve_sheet_person_id(english_name: str, chinese_name: str, person_lookup: dict[str, int]) -> int | None:
-    for raw_name in (english_name, chinese_name):
-        key = _normalize_sheet_person_name(raw_name)
-        if key and key in person_lookup:
-            return person_lookup[key]
-    return None
-
-
-def _normalize_sheet_person_name(value: object) -> str:
-    text = str(value or "").strip().lower()
-    if not text:
-        return ""
-    return re.sub(r"[\s\.\,\-\(\)\'\"]+", "", text)
 
 
 def _format_legislation_chamber(level: str, chamber: str, jurisdiction_name: str, lang: str) -> str:
@@ -910,240 +617,30 @@ def _format_legislation_title_with_description(title: str, summary: str, lang: s
     if lang != "zh-TW":
         return title_text
 
-    summary_text = str(summary or "").strip()
-    english_title = _extract_english_legislation_title(title_text)
-    quoted_chinese = _extract_quoted_chinese_title(title_text) or _extract_quoted_chinese_title(summary_text)
-
     chinese_title_raw = _localize_legislation_text(
         bill_number="",
         title=title_text,
-        summary=summary_text or title_text,
+        summary=title_text,
         latest_action="",
         lang=lang,
     ).strip()
     chinese_title = _clean_legislation_title_text(chinese_title_raw, fallback_title=title_text)
     if not chinese_title:
         chinese_title = _clean_legislation_title_text(_translate_event_text(title_text, lang).strip(), fallback_title=title_text)
-    chinese_title = _normalize_chinese_legislation_title(chinese_title, title_text, quoted_chinese)
-    if re.match(r"^[A-Za-z0-9]", chinese_title):
-        recentered = _extract_mixed_chinese_title_candidate(chinese_title)
-        if recentered:
-            chinese_title = recentered
-    if re.match(r"^[A-Za-z0-9]", chinese_title):
-        fallback_zh = _translate_english_legislation_title(english_title)
-        if fallback_zh:
-            chinese_title = fallback_zh
 
-    # Keep title strictly in "中文標題（English title）" format.
-    if english_title:
-        return f"{chinese_title}（{english_title}）"
-    return chinese_title
+    if _looks_like_english(title_text):
+        headline = f"{chinese_title}（{title_text}）"
+    else:
+        headline = chinese_title
 
-
-def _extract_english_legislation_title(title_text: str) -> str:
-    text = str(title_text or "").strip()
-    if not text:
-        return ""
-    text = re.sub(r"《[^》]{1,120}》", " ", text)
-    text = re.sub(r"[台臺]灣\s*'s", "Taiwan's", text)
-    text = re.sub(r"中國\s*'s", "China's", text)
-    text = re.sub(r"[\u4e00-\u9fff]+", " ", text)
-    text = re.sub(r"[（(]\s*[\u4e00-\u9fff][^）)]{0,120}[）)]", " ", text)
-    text = re.sub(r"\s+", " ", text).strip(" -:：")
-    text = re.sub(r"^(?:H\.?\s*R\.?|S\.?)\s*\d+\s*", "", text, flags=re.IGNORECASE).strip()
-    text = re.sub(r"\(\s*([A-Za-z][^)]{6,})\s*\)\s*$", r" (\1)", text).strip()
-    # If title became "A (A)" keep one copy.
-    dup = re.match(r"^(?P<t>.+?)\s*[（(]\s*(?P=t)\s*[）)]$", text, flags=re.IGNORECASE)
-    if dup:
-        text = dup.group("t").strip()
-    return text
-
-
-def _extract_quoted_chinese_title(text: str) -> str:
-    raw = str(text or "").strip()
-    if not raw:
-        return ""
-    match = re.search(r"《([^》]{2,120})》", raw)
-    if match:
-        return match.group(1).strip()
-    return ""
-
-
-def _normalize_chinese_legislation_title(chinese_title: str, title_text: str, quoted_chinese: str) -> str:
-    if quoted_chinese:
-        return quoted_chinese
-
-    mixed_candidate = _extract_mixed_chinese_title_candidate(title_text)
-    if mixed_candidate:
-        return mixed_candidate
-
-    cleaned = str(chinese_title or "").strip()
-    cleaned = re.sub(r"[A-Za-z][A-Za-z\s,'\.-]{8,}", " ", cleaned)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ：:，,。.")
-    cjk_chunks = re.findall(r"[\u4e00-\u9fff][\u4e00-\u9fff0-9]{1,}", cleaned)
-    if cjk_chunks:
-        best = max(cjk_chunks, key=len).strip()
-        best = re.sub(r"^年+", "", best)
-        if len(best) >= 4:
-            if best in {"美國", "聯邦政府"}:
-                return _translate_english_legislation_title(_extract_english_legislation_title(title_text)) or "相關法案"
-            return best
-        if len(best) >= 2 and best not in {"台灣", "中國", "美國", "聯邦"}:
-            return best
-
-    english_title = _extract_english_legislation_title(title_text)
-    translated_from_english = _translate_english_legislation_title(english_title)
-    if translated_from_english:
-        return translated_from_english
-
-    return "相關法案"
-
-
-def _extract_mixed_chinese_title_candidate(title_text: str) -> str:
-    text = str(title_text or "").strip()
-    if not text:
-        return ""
-    candidates = re.findall(r"(?:\d{4}年)?[\u4e00-\u9fff]{2,}(?:[\u4e00-\u9fff0-9]{0,30})", text)
-    if not candidates:
-        return ""
-    best = max((c.strip() for c in candidates if c.strip()), key=len, default="")
-    best = re.sub(r"^年+", "", best)
-    if len(best) < 4:
-        return ""
-    return best
-
-
-@lru_cache(maxsize=256)
-def _translate_english_legislation_title(english_title: str) -> str:
-    source = str(english_title or "").strip()
-    if not source:
-        return ""
-
-    ai_output = _ai_translate_legislation_title(source)
-    if ai_output:
-        cleaned = _clean_legislation_title_text(ai_output, fallback_title=source)
-        if len(re.findall(r"[\u4e00-\u9fff]", cleaned)) >= 4:
-            return cleaned
-
-    return _rule_based_translate_legislation_title(source)
-
-
-@lru_cache(maxsize=256)
-def _ai_translate_legislation_title(english_title: str) -> str | None:
-    if not _looks_like_english(english_title):
-        return None
-    service = AIAssistService()
-    if not service.enabled:
-        return None
-    try:
-        result = service.translate_legislation_title(english_title)
-    except Exception:
-        return None
-    return result.strip() if result else None
-
-
-def _rule_based_translate_legislation_title(english_title: str) -> str:
-    text = str(english_title or "").strip()
-    if not text:
-        return ""
-    normalized = re.sub(r"\s+", " ", text)
-    lowered = normalized.lower()
-    lowered_no_bill = re.sub(r"^(?:h\.?r\.?|s\.?)\s*\d+\s*", "", lowered).strip()
-
-    specific_rules = [
-        (
-            r"^to enhance the security, resilience, and protection of critical undersea infrastructure vital to taiwan's national security, economic stability, and defense, particularly in countering gray zone tactics employed by the people's republic of china, and for other purposes\.?$",
-            "強化攸關台灣國家安全、經濟穩定與防衛之關鍵海底基礎設施安全、韌性及防護法案",
-        ),
-        (
-            r"^a bill to require the comptroller general of the united states to submit a report on the manner in which delays in arms deliveries to japan, taiwan, and the philippines affect the ability of the department of defense to build and sustain a strong denial defense in the first island chain\.?$",
-            "要求美國政府問責署提交報告，評估對日本、台灣與菲律賓軍售延遲如何影響國防部在第一島鏈建立並維持強力拒止防衛能力法案",
-        ),
-        (
-            r"^iowa general assembly friendly taiwan resolution\.?$",
-            "支持台灣國際參與及美台稅務協議友好決議",
-        ),
-        (
-            r"^indiana general assembly friendly taiwan resolution\.?$",
-            "支持台灣及美台稅務協議友好決議",
-        ),
-    ]
-    for pattern, translated in specific_rules:
-        if re.fullmatch(pattern, lowered_no_bill):
-            return translated
-
-    replacements = [
-        ("and for other purposes", ""),
-        ("to enhance", "強化"),
-        ("to support", "支持"),
-        ("to improve", "提升"),
-        ("to promote", "促進"),
-        ("security", "安全"),
-        ("resilience", "韌性"),
-        ("protection", "防護"),
-        ("critical undersea infrastructure", "關鍵海底基礎設施"),
-        ("taiwan's", "台灣"),
-        ("taiwan", "台灣"),
-        ("national security", "國家安全"),
-        ("economic stability", "經濟穩定"),
-        ("defense", "防衛"),
-        ("people's republic of china", "中華人民共和國"),
-        ("gray zone tactics", "灰色地帶戰術"),
-        ("act of", "法案"),
-        ("act", "法案"),
-        ("resolution", "決議案"),
-    ]
-    translated = lowered_no_bill
-    for source, target in replacements:
-        translated = translated.replace(source, target)
-    translated = re.sub(r"\s+", " ", translated).strip(" ,.;:")
-    translated = re.sub(r"^[a-z0-9\-\.\s]+", "", translated).strip()
-    translated = re.sub(r"[A-Za-z][A-Za-z\s,'\.-]{2,}", " ", translated)
-    translated = re.sub(r"\s+", " ", translated).strip(" ,.;:")
-    if len(re.findall(r"[\u4e00-\u9fff]", translated)) < 4:
-        if "taiwan" in lowered:
-            return "台灣相關法案中文譯名待補"
-        return "法案中文譯名待補"
-    if not re.search(r"(法案|決議案)$", translated):
-        translated = f"{translated}法案"
-    return translated
-
-
-def _select_preferred_legislation_title(title: str, source_url: str, raw_payload: dict[str, object] | None) -> str:
-    title_text = str(title or "").strip()
-    if not title_text:
-        return ""
-    raw_payload = raw_payload or {}
-    candidates = [part.strip() for part in re.split(r"\s*[|｜]+\s*", title_text) if part.strip()]
-    if not candidates:
-        return title_text
-
-    # If any candidate already contains a Chinese legislation title, prefer it.
-    chinese_candidates = [candidate for candidate in candidates if _extract_quoted_chinese_title(candidate) or len(re.findall(r"[\u4e00-\u9fff]", candidate)) >= 4]
-    if chinese_candidates:
-        quoted = [candidate for candidate in chinese_candidates if _extract_quoted_chinese_title(candidate)]
-        return quoted[0] if quoted else chinese_candidates[0]
-
-    congress_url = str(raw_payload.get("congress_gov_url") or "").strip().lower()
-    source_url_lower = str(source_url or "").strip().lower()
-    has_congress_source = "congress.gov" in source_url_lower or "congress.gov" in congress_url
-    if has_congress_source:
-        # If title was merged from multiple sources, prefer the official Congress style.
-        return _pick_official_title_candidate(candidates)
-    return candidates[0]
-
-
-def _pick_official_title_candidate(candidates: list[str]) -> str:
-    def score(text: str) -> tuple[int, int]:
-        lowered = text.lower()
-        english_chars = len(re.findall(r"[a-z]", lowered))
-        official_markers = 0
-        for marker in (" act", " resolution", "a bill", "to ", "supporting", "commending", "recognizing"):
-            if marker in lowered:
-                official_markers += 1
-        return (official_markers, english_chars)
-
-    return max(candidates, key=score)
+    summary_text = str(summary or "").strip()
+    if not summary_text or _normalize_compare_text(summary_text) == _normalize_compare_text(title_text):
+        return headline
+    summary_zh_raw = _localize_event_text(title=title_text, description=summary_text, lang=lang, is_title=False).strip()
+    summary_zh = _clean_legislation_summary_text(summary_zh_raw, title_text=title_text, chinese_title=chinese_title)
+    if not summary_zh:
+        return headline
+    return f"{headline}：{summary_zh}"
 
 
 def _normalize_compare_text(text: str) -> str:
@@ -1157,16 +654,12 @@ def _clean_legislation_title_text(text: str, fallback_title: str) -> str:
     if not cleaned:
         return ""
     cleaned = re.split(r"[：:]", cleaned, maxsplit=1)[0].strip()
-    # Drop accidental summary fragment in title translation.
-    cleaned = re.split(r"(?:旨在|此法案|本法案|法案旨在)", cleaned, maxsplit=1)[0].strip()
     fallback_norm = _normalize_compare_text(fallback_title)
     candidates = re.findall(r"（([^）]+)）", cleaned)
     for candidate in candidates:
         if _normalize_compare_text(candidate) == fallback_norm:
             cleaned = cleaned.replace(f"（{candidate}）", "").strip()
-    cleaned = re.sub(r"\s*\([A-Za-z][^)]{6,}\)\s*$", "", cleaned).strip()
-    # Keep normal word boundaries (especially for English title text).
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = re.sub(r"\s+", "", cleaned)
     return cleaned.strip("。．.")
 
 
@@ -1181,14 +674,6 @@ def _clean_legislation_summary_text(text: str, title_text: str, chinese_title: s
         cleaned = cleaned.replace(part, "").strip()
     cleaned = re.sub(r"^[：:，,\-–—\s]+", "", cleaned)
     cleaned = re.sub(r"\(\s*\)", "", cleaned).strip()
-    # Drop duplicated leading title phrase in summary, e.g. "《...》旨在..."
-    cleaned = re.sub(r"^《[^》]{2,80}》\s*(旨在|在|係|是)\s*", "", cleaned)
-    # Also drop leading duplicated quoted title even without "旨在".
-    cleaned = re.sub(r"^《[^》]{2,120}》\s*", "", cleaned)
-    cleaned = re.sub(r"^《》\s*", "", cleaned)
-    # Remove embedded parenthetical English title duplication in summary body.
-    cleaned = re.sub(r"[（(]\s*[A-Za-z][A-Za-z\s,'\.-]{10,}[）)]", "", cleaned).strip()
-    cleaned = re.sub(r"[（(]\s*[）)]", "", cleaned).strip()
     if _normalize_compare_text(cleaned) in {"", _normalize_compare_text(title_text), _normalize_compare_text(chinese_title)}:
         return ""
     if len(cleaned) > 60:
@@ -1268,6 +753,10 @@ def _render_event_column(
     lang: str,
     key_prefix: str,
 ) -> None:
+    time_label = "時間" if lang == "zh-TW" else "Time"
+    description_label = "事件描述" if lang == "zh-TW" else "Description"
+    participants_label = "參與人" if lang == "zh-TW" else "Participants"
+    quoted_sources_label = "引述來源" if lang == "zh-TW" else "Quoted sources"
     empty_label = "目前無資料" if lang == "zh-TW" else "No records yet"
     with column:
         st.markdown(f"**{title}**")
@@ -1275,86 +764,39 @@ def _render_event_column(
             st.caption(empty_label)
             return
         for index, event in enumerate(entries, start=1):
-            _render_event_card(index=index, event=event, lang=lang)
-
-
-def _render_event_card(index: int, event: dict[str, object], lang: str) -> None:
-    time_label = "時間" if lang == "zh-TW" else "Time"
-    description_label = "事件描述" if lang == "zh-TW" else "Description"
-    participants_label = "參與人" if lang == "zh-TW" else "Participants"
-    quoted_sources_label = "引述來源" if lang == "zh-TW" else "Quoted sources"
-
-    with st.container(border=True):
-        localized_title = _localize_event_text(
-            title=str(event.get("title") or ""),
-            description=str(event.get("description") or ""),
-            lang=lang,
-            is_title=True,
-        )
-        localized_description = _localize_event_text(
-            title=str(event.get("title") or ""),
-            description=str(event.get("description") or ""),
-            lang=lang,
-            is_title=False,
-        )
-        localized_description = _annotate_event_description_names(
-            localized_description,
-            list(event.get("participants") or []),
-            lang,
-        )
-        st.markdown(f"**{index}. {localized_title}**")
-        st.markdown(f"`{time_label}`：{_format_event_time(event.get('event_time'), lang)}")
-        st.markdown(f"`{description_label}`：{localized_description}")
-        participants = _normalize_participant_order_from_context(
-            list(event.get("participants") or []),
-            title=str(event.get("title") or ""),
-            description=str(event.get("description") or ""),
-            lang=lang,
-        )
-        participants_text = _format_people_inline(participants, lang)
-        st.markdown(f"`{participants_label}`：{participants_text}")
-        sources = event.get("sources") or []
-        formatted_sources = _format_event_sources(sources, lang)
-        if formatted_sources:
-            st.markdown(f"`{quoted_sources_label}`：{formatted_sources}")
-        elif event.get("representative_source_url"):
-            st.markdown(f"`{quoted_sources_label}`：[link]({event['representative_source_url']})")
-
-
-def _normalize_participant_order_from_context(
-    participants: list[dict[str, object]],
-    title: str,
-    description: str,
-    lang: str,
-) -> list[dict[str, object]]:
-    if lang != "zh-TW":
-        return participants
-    context = f"{title} {description}"
-    fixed: list[dict[str, object]] = []
-    for person in participants:
-        if not isinstance(person, dict):
-            continue
-        current = dict(person)
-        english_name = str(current.get("english_name") or current.get("display_name") or "").strip()
-        chinese_name = str(current.get("chinese_name") or "").strip()
-        # Only adjust plain two-token English names without Chinese alias.
-        if chinese_name or not re.fullmatch(r"[A-Z][a-zA-Z\-']+\s+[A-Z][a-zA-Z\-']+", english_name):
-            fixed.append(current)
-            continue
-        first, last = english_name.split(" ", 1)
-        swapped = f"{last} {first}"
-        has_current = english_name in context
-        has_swapped = swapped in context
-        if not has_current and has_swapped:
-            current["english_name"] = swapped
-            # In zh-TW mode with no Chinese alias, display_name follows english_name.
-            current["display_name"] = swapped
-        fixed.append(current)
-    return fixed
+            with st.container(border=True):
+                localized_title = _localize_event_text(
+                    title=str(event.get("title") or ""),
+                    description=str(event.get("description") or ""),
+                    lang=lang,
+                    is_title=True,
+                )
+                localized_description = _localize_event_text(
+                    title=str(event.get("title") or ""),
+                    description=str(event.get("description") or ""),
+                    lang=lang,
+                    is_title=False,
+                )
+                localized_description = _annotate_event_description_names(
+                    localized_description,
+                    list(event.get("participants") or []),
+                    lang,
+                )
+                st.markdown(f"**{index}. {localized_title}**")
+                st.markdown(f"`{time_label}`：{_format_event_time(event.get('event_time'), lang)}")
+                st.markdown(f"`{description_label}`：{localized_description}")
+                participants = list(event.get("participants") or [])
+                participants_text = _format_people_inline(participants, lang)
+                st.markdown(f"`{participants_label}`：{participants_text}")
+                sources = event.get("sources") or []
+                formatted_sources = _format_event_sources(sources, lang)
+                if formatted_sources:
+                    st.markdown(f"`{quoted_sources_label}`：{formatted_sources}")
+                elif event.get("representative_source_url"):
+                    st.markdown(f"`{quoted_sources_label}`：[link]({event['representative_source_url']})")
 
 
 def _format_people_inline(people: list[dict[str, object]], lang: str) -> str:
-    people = _dedupe_people_for_display(people)
     if not people:
         return "未提供" if lang == "zh-TW" else "Not available"
     parts: list[str] = []
@@ -1365,7 +807,6 @@ def _format_people_inline(people: list[dict[str, object]], lang: str) -> str:
             chinese_name = str(person.get("chinese_name") or "").strip()
             if chinese_name and english_name:
                 name = f"{chinese_name}（{english_name}）"
-        name = _normalize_person_display_name(name)
         if not name:
             continue
         person_id = person.get("person_id")
@@ -1376,84 +817,6 @@ def _format_people_inline(people: list[dict[str, object]], lang: str) -> str:
     if not parts:
         return "未提供" if lang == "zh-TW" else "Not available"
     return "、".join(parts)
-
-
-def _dedupe_people_for_display(people: list[dict[str, object]]) -> list[dict[str, object]]:
-    deduped: list[dict[str, object]] = []
-    seen: set[str] = set()
-    for person in people:
-        if not isinstance(person, dict):
-            continue
-        key = _person_display_dedupe_key(person)
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        deduped.append(person)
-    return deduped
-
-
-def _person_display_dedupe_key(person: dict[str, object]) -> str:
-    person_id = person.get("person_id")
-    if person_id:
-        try:
-            return f"id:{int(person_id)}"
-        except Exception:
-            pass
-    english_name = str(person.get("english_name") or "").strip()
-    chinese_name = str(person.get("chinese_name") or "").strip()
-    display_name = str(person.get("display_name") or "").strip()
-    if english_name:
-        return f"en:{_normalize_person_similarity_key(english_name)}"
-    if chinese_name:
-        return f"zh:{_normalize_person_name_key(chinese_name)}"
-    if display_name:
-        return f"display:{_normalize_person_similarity_key(display_name)}"
-    return ""
-
-
-def _normalize_person_similarity_key(name: str) -> str:
-    raw = str(name or "").strip().lower()
-    if not raw:
-        return ""
-    words = re.findall(r"[a-z]+", raw)
-    if len(words) >= 2:
-        first_root = words[0][:3]
-        last = words[-1]
-        return f"{last}|{first_root}"
-    return _normalize_person_name_key(raw)
-
-
-def _normalize_person_name_key(value: object) -> str:
-    text = str(value or "").strip().lower()
-    if not text:
-        return ""
-    return re.sub(r"[\s\.\,\-\(\)\'\"_]+", "", text)
-
-
-def _normalize_person_display_name(name: str) -> str:
-    text = str(name or "").strip()
-    if not text:
-        return ""
-    # Remove accidental separators like "Maria Elvira . Salazar" while
-    # keeping initials such as "J. D. Vance".
-    text = re.sub(r"\b([A-Za-z]{2,})\s*\.\s*([A-Za-z]{2,})\b", r"\1 \2", text)
-    text = re.sub(r"\s{2,}", " ", text).strip()
-    return text
-
-
-def _prefer_sheet_counts_if_newer(current_counts: dict[str, int]) -> dict[str, int]:
-    try:
-        sheet = GoogleSheetReadService()
-        people = sheet.list_people()
-        legislation = sheet.list_legislation()
-    except Exception:
-        return current_counts
-
-    sheet_counts = _collect_dashboard_counts_sheet(people, legislation)
-    merged = dict(current_counts)
-    for key, value in sheet_counts.items():
-        merged[key] = max(int(merged.get(key, 0) or 0), int(value or 0))
-    return merged
 
 
 def _annotate_event_description_names(description: str, participants: list[dict[str, object]], lang: str) -> str:
@@ -1600,11 +963,7 @@ def _format_event_sources(sources: list[object], lang: str) -> str:
     return " | ".join(formatted)
 
 
-def _participants_from_sheet(
-    event: dict[str, object],
-    lang: str,
-    people_by_id: dict[int, dict[str, object]] | None = None,
-) -> list[dict[str, object]]:
+def _participants_from_sheet(event: dict[str, object], lang: str) -> list[dict[str, object]]:
     participant_ids = list(event.get("participant_ids_list") or [])
     participants_en = list(event.get("participants_en_list") or [])
     participants_zh = list(event.get("participants_zh_list") or [])
@@ -1613,12 +972,6 @@ def _participants_from_sheet(
         person_id = participant_ids[index] if index < len(participant_ids) else None
         zh_name = participants_zh[index] if index < len(participants_zh) else ""
         english_name = str(name or "").strip()
-        if person_id and people_by_id:
-            person = people_by_id.get(int(person_id))
-            if person:
-                canonical_en = _sheet_person_english_name(person)
-                if canonical_en:
-                    english_name = canonical_en
         display_name = zh_name if (lang == "zh-TW" and zh_name) else english_name
         participants.append(
             {
@@ -1629,14 +982,6 @@ def _participants_from_sheet(
             }
         )
     return participants
-
-
-def _sheet_person_english_name(person: dict[str, object]) -> str:
-    for key in ("display_name_en", "full_name", "display_name"):
-        value = str(person.get(key) or "").strip()
-        if value:
-            return value
-    return ""
 
 
 def _translate_event_text(text: str | None, lang: str) -> str:
