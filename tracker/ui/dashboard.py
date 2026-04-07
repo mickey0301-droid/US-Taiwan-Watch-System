@@ -1305,7 +1305,12 @@ def _render_event_card(index: int, event: dict[str, object], lang: str) -> None:
         st.markdown(f"**{index}. {localized_title}**")
         st.markdown(f"`{time_label}`：{_format_event_time(event.get('event_time'), lang)}")
         st.markdown(f"`{description_label}`：{localized_description}")
-        participants = list(event.get("participants") or [])
+        participants = _normalize_participant_order_from_context(
+            list(event.get("participants") or []),
+            title=str(event.get("title") or ""),
+            description=str(event.get("description") or ""),
+            lang=lang,
+        )
         participants_text = _format_people_inline(participants, lang)
         st.markdown(f"`{participants_label}`：{participants_text}")
         sources = event.get("sources") or []
@@ -1314,6 +1319,38 @@ def _render_event_card(index: int, event: dict[str, object], lang: str) -> None:
             st.markdown(f"`{quoted_sources_label}`：{formatted_sources}")
         elif event.get("representative_source_url"):
             st.markdown(f"`{quoted_sources_label}`：[link]({event['representative_source_url']})")
+
+
+def _normalize_participant_order_from_context(
+    participants: list[dict[str, object]],
+    title: str,
+    description: str,
+    lang: str,
+) -> list[dict[str, object]]:
+    if lang != "zh-TW":
+        return participants
+    context = f"{title} {description}"
+    fixed: list[dict[str, object]] = []
+    for person in participants:
+        if not isinstance(person, dict):
+            continue
+        current = dict(person)
+        english_name = str(current.get("english_name") or current.get("display_name") or "").strip()
+        chinese_name = str(current.get("chinese_name") or "").strip()
+        # Only adjust plain two-token English names without Chinese alias.
+        if chinese_name or not re.fullmatch(r"[A-Z][a-zA-Z\-']+\s+[A-Z][a-zA-Z\-']+", english_name):
+            fixed.append(current)
+            continue
+        first, last = english_name.split(" ", 1)
+        swapped = f"{last} {first}"
+        has_current = english_name in context
+        has_swapped = swapped in context
+        if not has_current and has_swapped:
+            current["english_name"] = swapped
+            # In zh-TW mode with no Chinese alias, display_name follows english_name.
+            current["display_name"] = swapped
+        fixed.append(current)
+    return fixed
 
 
 def _format_people_inline(people: list[dict[str, object]], lang: str) -> str:

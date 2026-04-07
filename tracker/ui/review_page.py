@@ -128,20 +128,6 @@ def render(lang: str, labels: dict[str, str]) -> None:
             st.write(f"{labels['attached_sources']}: {service.get_source_count(selected.id)}")
             st.write(f"{labels['keywords']}: {', '.join((selected.matched_keywords or {}).get('hits', [])) or labels['unknown']}")
 
-            col1, col2, col3 = st.columns(3)
-            if col1.button(labels["confirm_related"], key=f"confirm-{selected.id}"):
-                service.update_review_status(selected.id, "confirmed")
-                st.success(labels["confirm_related"])
-                st.rerun()
-            if col2.button(labels["needs_review"], key=f"needs-{selected.id}"):
-                service.update_review_status(selected.id, "needs_review")
-                st.success(labels["needs_review"])
-                st.rerun()
-            if col3.button(labels["dismiss"], key=f"dismiss-{selected.id}"):
-                service.update_review_status(selected.id, "dismissed")
-                st.success(labels["dismiss"])
-                st.rerun()
-
         rows = [
             {
                 "event_time": item.date_published or item.date_collected,
