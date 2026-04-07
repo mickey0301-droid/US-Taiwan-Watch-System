@@ -407,10 +407,17 @@ def _bucket_recent_legislation_db(rows: list[Legislation], session, lang: str) -
             category = "state_legislation"
         if not category or len(buckets[category]) >= 3:
             continue
-        sponsor_people = [item.person for item in row.sponsors if item.person and str(item.role or "").lower() == "sponsor"]
-        if not sponsor_people:
-            sponsor_people = [item.person for item in row.sponsors if item.person]
-        sponsor = sponsor_people[0] if sponsor_people else None
+        sponsor_rel = next((item for item in row.sponsors if item.person and str(item.role or "").lower() == "sponsor"), None)
+        if sponsor_rel is None:
+            sponsor_rel = next((item for item in row.sponsors if item.person), None)
+        sponsor = sponsor_rel.person if sponsor_rel else None
+
+        cosponsor_people = [
+            item.person
+            for item in row.sponsors
+            if item.person and str(item.role or "").lower() == "cosponsor"
+        ]
+
         sponsor_name = None
         sponsor_english_name = sponsor.full_name if sponsor and sponsor.full_name else ""
         sponsor_chinese_name = ""
@@ -440,6 +447,15 @@ def _bucket_recent_legislation_db(rows: list[Legislation], session, lang: str) -
                     if sponsor and sponsor_name
                     else None
                 ),
+                "cosponsors": [
+                    {
+                        "person_id": person.id,
+                        "display_name": (chinese_alias_map.get(person.id) if lang == "zh-TW" else person.full_name) or person.full_name,
+                        "english_name": person.full_name,
+                        "chinese_name": chinese_alias_map.get(person.id, "") if lang == "zh-TW" else "",
+                    }
+                    for person in cosponsor_people
+                ],
             }
         )
     return buckets
@@ -527,6 +543,7 @@ def _bucket_recent_legislation_sheet(rows: list[dict[str, object]], lang: str) -
                 "date": item.get("date_date"),
                 "source_url": str(item.get("source_url") or ""),
                 "sponsor": _first_sheet_sponsor(item, lang=lang),
+                "cosponsors": _remaining_sheet_cosponsors(item, lang=lang),
             }
         )
     return buckets
@@ -535,8 +552,8 @@ def _bucket_recent_legislation_sheet(rows: list[dict[str, object]], lang: str) -
 def _render_legislation_column(column, title: str, entries: list[dict[str, object]], lang: str) -> None:
     chamber_label = "所屬議院" if lang == "zh-TW" else "Chamber"
     sponsor_label = "提案議員" if lang == "zh-TW" else "Sponsor"
+    cosponsor_label = "共同提案議員" if lang == "zh-TW" else "Cosponsor"
     introduced_label = "提案時間" if lang == "zh-TW" else "Introduced"
-    date_label = "日期" if lang == "zh-TW" else "Date"
     empty_label = "目前無資料" if lang == "zh-TW" else "No records yet"
     with column:
         st.markdown(f"**{title}**")
@@ -567,8 +584,13 @@ def _render_legislation_column(column, title: str, entries: list[dict[str, objec
                 else:
                     sponsor_text = "未提供" if lang == "zh-TW" else "Not available"
                 st.markdown(f"`{sponsor_label}`：{sponsor_text}")
+                cosponsors = item.get("cosponsors") if isinstance(item.get("cosponsors"), list) else []
+                cosponsor_text = _format_people_inline(cosponsors[:3], lang)
+                if len(cosponsors) > 3:
+                    extra = len(cosponsors) - 3
+                    cosponsor_text = f"{cosponsor_text} 等{extra}名" if lang == "zh-TW" else f"{cosponsor_text} and {extra} more"
+                st.markdown(f"`{cosponsor_label}`：{cosponsor_text}")
                 st.markdown(f"`{introduced_label}`：{_format_event_time(item.get('introduced_date'), lang)}")
-                st.caption(f"{date_label}: {_format_event_time(item.get('date'), lang)}")
                 if item.get("source_url"):
                     st.markdown(f"[link]({item['source_url']})")
 
@@ -591,6 +613,27 @@ def _first_sheet_sponsor(item: dict[str, object], lang: str) -> dict[str, object
         "english_name": name,
         "chinese_name": zh_name,
     }
+
+
+def _remaining_sheet_cosponsors(item: dict[str, object], lang: str) -> list[dict[str, object]]:
+    sponsor_ids = list(item.get("sponsor_ids_list") or [])
+    sponsor_names = list(item.get("sponsors_en_list") or [])
+    sponsor_names_zh = list(item.get("sponsors_zh_list") or [])
+    results: list[dict[str, object]] = []
+    for i in range(1, len(sponsor_names)):
+        name = str(sponsor_names[i] or "").strip()
+        if not name:
+            continue
+        zh_name = str(sponsor_names_zh[i] or "").strip() if i < len(sponsor_names_zh) else ""
+        display_name = zh_name if (lang == "zh-TW" and zh_name) else name
+        person_id = sponsor_ids[i] if i < len(sponsor_ids) else None
+        results.append({
+            "person_id": person_id,
+            "display_name": display_name,
+            "english_name": name,
+            "chinese_name": zh_name,
+        })
+    return results
 
 
 def _format_legislation_chamber(level: str, chamber: str, jurisdiction_name: str, lang: str) -> str:

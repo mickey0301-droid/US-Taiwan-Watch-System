@@ -10,6 +10,7 @@ from tracker.models import Legislation, Person
 from tracker.services.google_sheet_read_service import GoogleSheetReadService
 from tracker.services.legislation_service import LegislationService
 from tracker.ui.navigation import render_person_links
+from tracker.ui import dashboard
 from tracker.utils.congress_bills import congress_bill_url
 from tracker.utils.source_types import source_bucket_label, source_priority_key
 
@@ -70,28 +71,33 @@ def _render_db_legislation_card(selected: Legislation, service: LegislationServi
     sponsor_label = "提案議員" if lang == "zh-TW" else "Sponsor"
     cosponsor_label = "共同提案議員" if lang == "zh-TW" else "Cosponsor"
     introduced_label = "提案時間" if lang == "zh-TW" else "Introduced"
-    date_label = "日期" if lang == "zh-TW" else "Date"
 
     sponsor_records = service.list_sponsors(selected.id)
-    sponsor_name = ""
-    cosponsor_names: list[str] = []
+    sponsor_person: dict[str, object] | None = None
+    cosponsor_people: list[dict[str, object]] = []
     for sponsor in sponsor_records:
         person = people_by_id.get(sponsor.person_id)
         if not person:
             continue
         role = str(getattr(sponsor, "role", "") or "").lower()
-        name = person.full_name
-        if role == "sponsor" and not sponsor_name:
-            sponsor_name = name
+        chinese_name = _current_chinese_alias(person)
+        person_payload = {
+            "person_id": person.id,
+            "display_name": chinese_name or person.full_name,
+            "english_name": person.full_name,
+            "chinese_name": chinese_name,
+        }
+        if role == "sponsor" and not sponsor_person:
+            sponsor_person = person_payload
         elif role == "cosponsor":
-            cosponsor_names.append(name)
-        elif not sponsor_name:
-            sponsor_name = name
+            cosponsor_people.append(person_payload)
+        elif not sponsor_person:
+            sponsor_person = person_payload
         else:
-            cosponsor_names.append(name)
+            cosponsor_people.append(person_payload)
 
-    sponsor_text = sponsor_name or ("未提供" if lang == "zh-TW" else "Not available")
-    cosponsor_text = _format_cosponsor_names(cosponsor_names, lang)
+    sponsor_text = dashboard._format_people_inline([sponsor_person], lang) if sponsor_person else ("未提供" if lang == "zh-TW" else "Not available")
+    cosponsor_text = _format_cosponsor_people(cosponsor_people, lang)
 
     raw_payload = selected.raw_payload or {}
     official_link = raw_payload.get("congress_gov_url") or congress_bill_url(
@@ -99,20 +105,19 @@ def _render_db_legislation_card(selected: Legislation, service: LegislationServi
         selected.bill_number,
     ) or selected.source_url
 
-    chamber = str(selected.chamber or "").strip().lower()
-    level = str(selected.level or "").strip().lower()
-    jurisdiction = str(selected.jurisdiction_name or "").strip()
-    chamber_name_zh = "參議院" if chamber == "senate" else "眾議院" if chamber == "house" else "議會"
-    chamber_name_en = "Senate" if chamber == "senate" else "House" if chamber == "house" else "Legislature"
-    if level == "federal":
-        chamber_text = f"聯邦{chamber_name_zh}" if lang == "zh-TW" else f"U.S. {chamber_name_en}"
-    elif level == "state":
-        chamber_text = f"{jurisdiction}{chamber_name_zh}" if lang == "zh-TW" else f"{jurisdiction} {chamber_name_en}"
-    else:
-        chamber_text = chamber_name_zh if lang == "zh-TW" else chamber_name_en
+    chamber_text = dashboard._format_legislation_chamber(
+        level=str(selected.level or ""),
+        chamber=str(selected.chamber or ""),
+        jurisdiction_name=str(selected.jurisdiction_name or ""),
+        lang=lang,
+    )
 
     with st.container(border=True):
-        title = str(selected.title or "").strip()
+        title = dashboard._format_legislation_title_with_description(
+            title=str(selected.title or ""),
+            summary=str(selected.summary or ""),
+            lang=lang,
+        )
         if selected.bill_number:
             title = f"{selected.bill_number} {title}".strip()
         st.markdown(f"**{index}. {title}**")
@@ -120,7 +125,6 @@ def _render_db_legislation_card(selected: Legislation, service: LegislationServi
         st.markdown(f"`{sponsor_label}`：{sponsor_text}")
         st.markdown(f"`{cosponsor_label}`：{cosponsor_text}")
         st.markdown(f"`{introduced_label}`：{_format_date(selected.introduced_date)}")
-        st.caption(f"{date_label}: {_format_date(selected.introduced_date or selected.last_action_date)}")
         if official_link:
             st.markdown(f"[link]({official_link})")
 
@@ -179,7 +183,6 @@ def _render_sheet_legislation_card(selected: dict[str, object], sponsors: list[d
     sponsor_label = "提案議員" if lang == "zh-TW" else "Sponsor"
     cosponsor_label = "共同提案議員" if lang == "zh-TW" else "Cosponsor"
     introduced_label = "提案時間" if lang == "zh-TW" else "Introduced"
-    date_label = "日期" if lang == "zh-TW" else "Date"
 
     level = str(selected.get("level") or "").strip().lower()
     chamber = str(selected.get("chamber") or "").strip().lower()
@@ -187,21 +190,23 @@ def _render_sheet_legislation_card(selected: dict[str, object], sponsors: list[d
     if not level:
         level = "federal" if jurisdiction.lower() in {"united states", "us", "u.s."} else "state"
 
-    chamber_name_zh = "參議院" if chamber == "senate" else "眾議院" if chamber == "house" else "議會"
-    chamber_name_en = "Senate" if chamber == "senate" else "House" if chamber == "house" else "Legislature"
-    if level == "federal":
-        chamber_text = f"聯邦{chamber_name_zh}" if lang == "zh-TW" else f"U.S. {chamber_name_en}"
-    elif level == "state":
-        chamber_text = f"{jurisdiction}{chamber_name_zh}" if lang == "zh-TW" else f"{jurisdiction} {chamber_name_en}"
-    else:
-        chamber_text = chamber_name_zh if lang == "zh-TW" else chamber_name_en
+    chamber_text = dashboard._format_legislation_chamber(
+        level=level,
+        chamber=chamber,
+        jurisdiction_name=jurisdiction,
+        lang=lang,
+    )
 
-    names = [str(item.get("display_name") or "").strip() for item in sponsors if str(item.get("display_name") or "").strip()]
-    sponsor_text = names[0] if names else ("未提供" if lang == "zh-TW" else "Not available")
-    cosponsor_text = _format_cosponsor_names(names[1:], lang)
+    sponsor = sponsors[0] if sponsors else None
+    sponsor_text = dashboard._format_people_inline([sponsor], lang) if sponsor else ("未提供" if lang == "zh-TW" else "Not available")
+    cosponsor_text = _format_cosponsor_people(sponsors[1:], lang)
 
     with st.container(border=True):
-        title = str(selected.get("title") or "").strip()
+        title = dashboard._format_legislation_title_with_description(
+            title=str(selected.get("title") or ""),
+            summary=str(selected.get("summary") or ""),
+            lang=lang,
+        )
         bill_number = str(selected.get("bill_number") or "").strip()
         if bill_number:
             title = f"{bill_number} {title}".strip()
@@ -210,28 +215,20 @@ def _render_sheet_legislation_card(selected: dict[str, object], sponsors: list[d
         st.markdown(f"`{sponsor_label}`：{sponsor_text}")
         st.markdown(f"`{cosponsor_label}`：{cosponsor_text}")
         st.markdown(f"`{introduced_label}`：{_format_date(selected.get('date_date'))}")
-        st.caption(f"{date_label}: {_format_date(selected.get('date_date'))}")
         source_url = str(selected.get("source_url") or selected.get("official_page") or "").strip()
         if source_url:
             st.markdown(f"[link]({source_url})")
 
-
-def _format_cosponsor_names(names: list[str], lang: str) -> str:
-    clean = [str(name or "").strip() for name in names if str(name or "").strip()]
-    if not clean:
+def _format_cosponsor_people(people: list[dict[str, object]], lang: str) -> str:
+    valid = [item for item in people if isinstance(item, dict) and str(item.get("display_name") or item.get("english_name") or "").strip()]
+    if not valid:
         return "未提供" if lang == "zh-TW" else "Not available"
-    shown = clean[:3]
-    if lang == "zh-TW":
-        base = "、".join(shown)
-        extra = len(clean) - len(shown)
-        if extra > 0:
-            return f"{base} 等{extra}名"
-        return base
-    base = ", ".join(shown)
-    extra = len(clean) - len(shown)
+    shown = valid[:3]
+    text = dashboard._format_people_inline(shown, lang)
+    extra = len(valid) - len(shown)
     if extra > 0:
-        return f"{base} and {extra} more"
-    return base
+        return f"{text} 等{extra}名" if lang == "zh-TW" else f"{text} and {extra} more"
+    return text
 
 def _sheet_sponsors(selected: dict[str, object]) -> list[dict[str, object]]:
     sponsor_ids = list(selected.get("sponsor_ids_list") or [])
@@ -240,10 +237,30 @@ def _sheet_sponsors(selected: dict[str, object]) -> list[dict[str, object]]:
     sponsors: list[dict[str, object]] = []
     for index, name in enumerate(sponsor_names):
         person_id = sponsor_ids[index] if index < len(sponsor_ids) else None
-        zh_name = sponsor_names_zh[index] if index < len(sponsor_names_zh) else ""
-        display_name = f"{zh_name} {name}".strip() if zh_name else str(name)
-        sponsors.append({"person_id": person_id, "display_name": display_name})
+        en_name = str(name or "").strip()
+        zh_name = str(sponsor_names_zh[index] or "").strip() if index < len(sponsor_names_zh) else ""
+        if not en_name and not zh_name:
+            continue
+        sponsors.append(
+            {
+                "person_id": person_id,
+                "display_name": zh_name or en_name,
+                "english_name": en_name,
+                "chinese_name": zh_name,
+            }
+        )
     return sponsors
+
+
+def _current_chinese_alias(person: Person) -> str:
+    for alias in getattr(person, "aliases", []) or []:
+        if (
+            getattr(alias, "is_current", False)
+            and str(getattr(alias, "alias_type", "")) == "chinese_name"
+            and getattr(alias, "alias", None)
+        ):
+            return str(alias.alias).strip()
+    return ""
 
 
 def _type_options(lang: str) -> dict[str, str]:
