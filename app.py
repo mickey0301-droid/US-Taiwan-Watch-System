@@ -256,6 +256,43 @@ GOOGLE_SHEET_PRIMARY_PAGES = [
 ]
 
 
+def _render_sidebar_nav_cards(
+    page_options: list[str],
+    current_page: str,
+    labels: dict[str, object],
+) -> str:
+    st.sidebar.markdown(
+        """
+<style>
+section[data-testid="stSidebar"] div[data-testid="stButton"] > button {
+    min-height: 2.8rem;
+    border-radius: 0.6rem;
+    text-align: left;
+    font-weight: 600;
+}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+    selected_page = current_page
+    st.sidebar.markdown("**導覽 / Navigation**")
+    for page in page_options:
+        with st.sidebar.container(border=True):
+            is_current = page == selected_page
+            label = str(labels.get(page, page))
+            st.markdown(f"**{label}**")
+            if is_current:
+                st.caption("目前頁面")
+            if st.button(
+                "前往 / Open",
+                key=f"sidebar-nav-card-{page}",
+                use_container_width=True,
+                type="primary" if is_current else "secondary",
+            ):
+                selected_page = page
+    return selected_page
+
+
 def main() -> None:
     _install_streamlit_text_repair()
     settings = get_settings()
@@ -300,13 +337,8 @@ def main() -> None:
         current_page = "dashboard"
         st.session_state["sidebar_nav_radio"] = current_page
 
-    page_key = st.sidebar.radio(
-        "導覽 / Navigation",
-        page_options,
-        format_func=lambda key: labels[key],
-        index=page_options.index(current_page),
-        key="sidebar_nav_radio",
-    )
+    page_key = _render_sidebar_nav_cards(page_options, current_page, labels)
+    st.session_state["sidebar_nav_radio"] = page_key
     if google_sheet_primary:
         st.sidebar.caption("Google Sheet-first mode")
     if st.query_params.get("page") != page_key:
