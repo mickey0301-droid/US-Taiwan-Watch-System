@@ -1,6 +1,7 @@
 [server]
 headless = true
 enableXsrfProtection = true
+fileWatcherType = "none"
 
 [theme]
 base = "light"
