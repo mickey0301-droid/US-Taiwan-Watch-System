@@ -886,6 +886,7 @@ def _format_people_inline(people: list[dict[str, object]], lang: str) -> str:
             chinese_name = str(person.get("chinese_name") or "").strip()
             if chinese_name and english_name:
                 name = f"{chinese_name}（{english_name}）"
+        name = _normalize_person_display_name(name)
         if not name:
             continue
         person_id = person.get("person_id")
@@ -896,6 +897,17 @@ def _format_people_inline(people: list[dict[str, object]], lang: str) -> str:
     if not parts:
         return "未提供" if lang == "zh-TW" else "Not available"
     return "、".join(parts)
+
+
+def _normalize_person_display_name(name: str) -> str:
+    text = str(name or "").strip()
+    if not text:
+        return ""
+    # Remove accidental separators like "Maria Elvira . Salazar" while
+    # keeping initials such as "J. D. Vance".
+    text = re.sub(r"\b([A-Za-z]{2,})\s*\.\s*([A-Za-z]{2,})\b", r"\1 \2", text)
+    text = re.sub(r"\s{2,}", " ", text).strip()
+    return text
 
 
 def _annotate_event_description_names(description: str, participants: list[dict[str, object]], lang: str) -> str:
