@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from functools import lru_cache
+import re
 
 import streamlit as st
 from sqlalchemy import func, select
@@ -20,6 +22,7 @@ from tracker.models import (
 )
 from tracker.services.google_sheet_read_service import GoogleSheetReadService
 from tracker.services.statements_service import StatementsService
+from tracker.services.ai_assist_service import AIAssistService
 from tracker.ui.navigation import render_person_links
 from tracker.ui.source_labels import source_label
 
@@ -308,12 +311,16 @@ def _bucket_recent_events_db(
     for statement in recent_statements:
         if all(len(items) >= 3 for items in buckets.values()):
             break
+        if _is_test_event(statement.title):
+            continue
         participant_ids = statement_participants_map.get(statement.id) or ([statement.person_id] if statement.person_id else [])
         categories = {
             person_category_map.get(person_id)
             for person_id in participant_ids
             if person_id and person_category_map.get(person_id)
         }
+        if not categories:
+            categories = _infer_categories_from_statement(statement, participants=[people_by_id.get(pid) for pid in participant_ids if pid])
         if not categories:
             continue
         participants: list[dict[str, object]] = []
@@ -389,12 +396,16 @@ def _bucket_recent_events_sheet(
     for item in events:
         if all(len(entries) >= 3 for entries in buckets.values()):
             break
+        if _is_test_event(str(item.get("title") or "")):
+            continue
         participant_ids = list(item.get("participant_ids_list") or [])
         categories = {
             people_category.get(int(person_id))
             for person_id in participant_ids
             if people_category.get(int(person_id))
         }
+        if not categories:
+            categories = _infer_categories_from_sheet_event(item)
         if not categories:
             continue
         event_data = {
@@ -451,7 +462,13 @@ def _render_legislation_column(column, title: str, entries: list[dict[str, objec
             st.caption(empty_label)
             return
         for index, item in enumerate(entries, start=1):
-            headline = item.get("title") or ""
+            headline = _localize_legislation_text(
+                bill_number=str(item.get("bill_number") or ""),
+                title=str(item.get("title") or ""),
+                summary=str(item.get("summary") or item.get("title") or ""),
+                latest_action=_format_event_time(item.get("date"), lang),
+                lang=lang,
+            )
             bill_number = str(item.get("bill_number") or "").strip()
             display_title = f"{bill_number} {headline}".strip() if bill_number else str(headline)
             st.markdown(f"{index}. {display_title}")
@@ -479,9 +496,21 @@ def _render_event_column(
             return
         for index, event in enumerate(entries, start=1):
             with st.container(border=True):
-                st.markdown(f"**{index}. {_translate_event_text(str(event['title']), lang)}**")
+                localized_title = _localize_event_text(
+                    title=str(event.get("title") or ""),
+                    description=str(event.get("description") or ""),
+                    lang=lang,
+                    is_title=True,
+                )
+                localized_description = _localize_event_text(
+                    title=str(event.get("title") or ""),
+                    description=str(event.get("description") or ""),
+                    lang=lang,
+                    is_title=False,
+                )
+                st.markdown(f"**{index}. {localized_title}**")
                 st.markdown(f"`{time_label}`：{_format_event_time(event.get('event_time'), lang)}")
-                st.markdown(f"`{description_label}`：{_translate_event_text(str(event['description']), lang)}")
+                st.markdown(f"`{description_label}`：{localized_description}")
                 st.markdown(f"`{participants_label}`：")
                 render_person_links(list(event.get("participants") or []), lang, key_prefix=f"{key_prefix}-{index}")
                 sources = event.get("sources") or []
@@ -490,6 +519,119 @@ def _render_event_column(
                     st.markdown(f"`{quoted_sources_label}`：{formatted_sources}")
                 elif event.get("representative_source_url"):
                     st.markdown(f"`{quoted_sources_label}`：[link]({event['representative_source_url']})")
+
+
+def _is_test_event(title: str | None) -> bool:
+    lowered = str(title or "").strip().lower()
+    return "test shared" in lowered or lowered.startswith("test ")
+
+
+def _infer_categories_from_statement(statement: Statement, participants: list[Person | None]) -> set[str]:
+    categories: set[str] = set()
+    title = (statement.title or "").lower()
+    description = (statement.excerpt or "").lower()
+    combined = f"{title} {description}"
+    participant_names = " ".join((person.full_name or "").lower() for person in participants if person)
+
+    if any(keyword in combined or keyword in participant_names for keyword in ["president", "secretary", "white house", "trump", "rubio"]):
+        categories.add("federal_officials")
+    if any(keyword in combined or keyword in participant_names for keyword in ["sen.", "senator", "rep.", "representative", "congress"]):
+        categories.add("congress_members")
+    if any(keyword in combined for keyword in ["governor", "state department", "state executive"]):
+        categories.add("state_officials")
+    if any(keyword in combined for keyword in ["state senate", "state house", "state legislator"]):
+        categories.add("state_legislators")
+    return categories
+
+
+def _infer_categories_from_sheet_event(item: dict[str, object]) -> set[str]:
+    categories: set[str] = set()
+    title = str(item.get("title") or "").lower()
+    summary = str(item.get("summary") or "").lower()
+    combined = f"{title} {summary}"
+    if any(keyword in combined for keyword in ["president", "secretary", "white house", "trump", "rubio"]):
+        categories.add("federal_officials")
+    if any(keyword in combined for keyword in ["sen.", "senator", "rep.", "representative", "congress"]):
+        categories.add("congress_members")
+    if any(keyword in combined for keyword in ["governor", "state executive"]):
+        categories.add("state_officials")
+    if any(keyword in combined for keyword in ["state senate", "state house", "state legislator"]):
+        categories.add("state_legislators")
+    return categories
+
+
+def _localize_event_text(title: str, description: str, lang: str, is_title: bool) -> str:
+    if lang != "zh-TW":
+        return title if is_title else description
+    source = title if is_title else description
+    ai_output = _ai_translate_dashboard_text(source, title=title, description=description)
+    if ai_output:
+        return ai_output
+    return _translate_event_text(source, lang)
+
+
+def _localize_legislation_text(
+    bill_number: str,
+    title: str,
+    summary: str,
+    latest_action: str,
+    lang: str,
+) -> str:
+    if lang != "zh-TW":
+        return title
+    ai_output = _ai_summarize_legislation_for_dashboard(
+        bill_number=bill_number,
+        title=title,
+        summary=summary,
+        latest_action=latest_action,
+    )
+    if ai_output:
+        return ai_output
+    return _translate_event_text(title, lang)
+
+
+@lru_cache(maxsize=256)
+def _ai_translate_dashboard_text(source: str, title: str, description: str) -> str | None:
+    if not source or not _looks_like_english(source):
+        return None
+    service = AIAssistService()
+    if not service.enabled:
+        return None
+    try:
+        result = service.summarize_statement(title=title, summary=description)
+    except Exception:
+        return None
+    return result.strip() if result else None
+
+
+@lru_cache(maxsize=256)
+def _ai_summarize_legislation_for_dashboard(
+    bill_number: str,
+    title: str,
+    summary: str,
+    latest_action: str,
+) -> str | None:
+    if not _looks_like_english(title):
+        return None
+    service = AIAssistService()
+    if not service.enabled:
+        return None
+    try:
+        result = service.summarize_legislation(
+            bill_number=bill_number,
+            title=title,
+            summary=summary,
+            latest_action=latest_action,
+        )
+    except Exception:
+        return None
+    return result.strip() if result else None
+
+
+def _looks_like_english(text: str) -> bool:
+    ascii_letters = re.findall(r"[A-Za-z]", text)
+    cjk = re.findall(r"[\u4e00-\u9fff]", text)
+    return len(ascii_letters) >= 6 and len(cjk) == 0
 
 
 def _format_event_sources(sources: list[object], lang: str) -> str:
