@@ -728,7 +728,8 @@ def render(lang: str, labels: dict[str, str]) -> None:
 
     with session_scope() as session:
         total_people = session.scalar(select(func.count()).select_from(Person)) or 0
-    if total_people == 0 and _render_google_sheet_fallback_v2(lang, labels, pending_person_id):
+    if total_people == 0:
+        st.info(labels["no_people_loaded"])
         return
 
     selected_category = st.selectbox(

@@ -131,20 +131,17 @@ def render(lang: str, labels: dict[str, str]) -> None:
         recent_legislation_by_category = _bucket_recent_legislation_db(legislation_rows, session=session, lang=lang)
 
     if sum(dashboard_counts.values()) == 0 and total_statements == 0:
-        if _render_google_sheet_fallback(lang, labels):
-            return
         _render_metrics(dashboard_counts, lang)
         st.warning(
-            "The current app instance is connected to an empty database, and Google Sheet fallback is not available."
+            "The current app instance is connected to an empty database."
             if lang != "zh-TW"
-            else "目前這個 app 讀到的是空資料庫，而且 Google Sheet fallback 也還沒有成功接上，所以首頁會先顯示 0。"
+            else "目前這個 app 讀到的是空資料庫，所以首頁會先顯示 0。"
         )
         st.info(
-            "Check whether this is the cloud app, and confirm GOOGLE_SHEET_ID / GOOGLE_SERVICE_ACCOUNT_JSON are configured."
+            "Check whether this is the cloud app, and confirm TRACKER_DATABASE_URL points to the correct database."
             if lang != "zh-TW"
-            else "如果這是雲端版，請確認已設定 GOOGLE_SHEET_ID 與 GOOGLE_SERVICE_ACCOUNT_JSON；如果這是本機版，請確認目前 app 指向的是正確的 tracker.db。"
+            else "如果這是雲端版，請確認 TRACKER_DATABASE_URL 指向正確資料庫；如果這是本機版，請確認目前 app 指向的是正確的 tracker.db。"
         )
-        render_google_sheet_fallback_diagnostic(lang)
         return
 
     _render_metrics(dashboard_counts, lang)

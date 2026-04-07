@@ -153,18 +153,7 @@ def get_settings() -> AppSettings:
 @lru_cache(maxsize=1)
 def use_google_sheet_primary_mode() -> bool:
     settings = get_settings()
-    if settings.google_sheet_primary_mode:
-        return True
-    has_sheet_config = bool(
-        settings.google_sheet_id
-        and (settings.google_service_account_json or settings.google_service_account_file)
-    )
-    if not has_sheet_config:
-        return False
-    if settings.database_url.startswith("sqlite:///"):
-        sqlite_path = Path(settings.database_url.removeprefix("sqlite:///")).resolve()
-        return _sqlite_data_score(sqlite_path) <= 0
-    return False
+    return bool(settings.google_sheet_primary_mode)
 
 
 @lru_cache(maxsize=1)

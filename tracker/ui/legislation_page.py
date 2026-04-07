@@ -19,10 +19,6 @@ from tracker.utils.source_types import source_bucket_label, source_priority_key
 
 def render(lang: str, labels: dict[str, str]) -> None:
     st.header(labels["legislation"])
-    sheet_service = GoogleSheetReadService()
-    sheet_rows = sheet_service.list_legislation()
-    sheet_people = sheet_service.list_people()
-
     with session_scope() as session:
         service = LegislationService(session)
         people_by_id = {person.id: person for person in session.query(Person).all()}
@@ -32,16 +28,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
             Legislation.id.desc(),
         ).all()
 
-        source = _choose_legislation_source(sheet_rows, all_rows)
-        if source == "sheet":
-            if _render_sheet_legislation_rows(sheet_rows, sheet_people, lang):
-                return
-            if use_google_sheet_primary_mode():
-                st.info("No legislation is available yet." if lang != "zh-TW" else "目前沒有可顯示的法案資料。")
-                return
         if not all_rows:
-            if _render_sheet_legislation_rows(sheet_rows, sheet_people, lang):
-                return
             st.info("目前還沒有立法資料。" if lang == "zh-TW" else "No legislation is available yet.")
             return
 

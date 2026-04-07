@@ -219,7 +219,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     st.markdown(f"- [{social_display_name(platform)}]({url})")
         return
 
-    _render_google_sheet_fallback(lang, labels)
+    st.info(labels["person_not_found"])
 
 
 def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
