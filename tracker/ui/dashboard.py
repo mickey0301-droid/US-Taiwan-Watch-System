@@ -358,10 +358,18 @@ def _bucket_recent_events_db(
                 continue
             if any(item["person_id"] == person_id for item in participants):
                 continue
-            display_name = chinese_alias_map.get(person_id) if lang == "zh-TW" else None
+            chinese_name = chinese_alias_map.get(person_id) if lang == "zh-TW" else None
+            display_name = chinese_name
             if not display_name:
                 display_name = person.full_name
-            participants.append({"person_id": person_id, "display_name": display_name})
+            participants.append(
+                {
+                    "person_id": person_id,
+                    "display_name": display_name,
+                    "english_name": person.full_name,
+                    "chinese_name": chinese_name,
+                }
+            )
         item = {
             "statement_id": statement.id,
             "title": statement.title,
@@ -618,6 +626,11 @@ def _render_event_column(
                     lang=lang,
                     is_title=False,
                 )
+                localized_description = _annotate_event_description_names(
+                    localized_description,
+                    list(event.get("participants") or []),
+                    lang,
+                )
                 st.markdown(f"**{index}. {localized_title}**")
                 st.markdown(f"`{time_label}`：{_format_event_time(event.get('event_time'), lang)}")
                 st.markdown(f"`{description_label}`：{localized_description}")
@@ -648,6 +661,25 @@ def _format_people_inline(people: list[dict[str, object]], lang: str) -> str:
     if not parts:
         return "未提供" if lang == "zh-TW" else "Not available"
     return "、".join(parts)
+
+
+def _annotate_event_description_names(description: str, participants: list[dict[str, object]], lang: str) -> str:
+    if lang != "zh-TW" or not description:
+        return description
+    updated = description
+    for participant in participants:
+        english_name = str(participant.get("english_name") or "").strip()
+        chinese_name = str(participant.get("chinese_name") or "").strip()
+        if not english_name or not chinese_name:
+            continue
+        replacement = f"{chinese_name}（{english_name}）"
+        if replacement in updated:
+            continue
+        if len(english_name) < 4:
+            continue
+        pattern = re.compile(rf"(?<![A-Za-z]){re.escape(english_name)}(?![A-Za-z])", re.IGNORECASE)
+        updated = pattern.sub(replacement, updated)
+    return updated
 
 
 def _is_test_event(title: str | None) -> bool:
@@ -783,8 +815,16 @@ def _participants_from_sheet(event: dict[str, object], lang: str) -> list[dict[s
     for index, name in enumerate(participants_en):
         person_id = participant_ids[index] if index < len(participant_ids) else None
         zh_name = participants_zh[index] if index < len(participants_zh) else ""
-        display_name = zh_name if (lang == "zh-TW" and zh_name) else str(name)
-        participants.append({"person_id": person_id, "display_name": display_name})
+        english_name = str(name or "").strip()
+        display_name = zh_name if (lang == "zh-TW" and zh_name) else english_name
+        participants.append(
+            {
+                "person_id": person_id,
+                "display_name": display_name,
+                "english_name": english_name,
+                "chinese_name": zh_name or "",
+            }
+        )
     return participants
 
 
