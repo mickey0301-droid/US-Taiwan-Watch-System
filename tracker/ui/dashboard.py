@@ -7,7 +7,17 @@ from sqlalchemy import func, select
 
 from tracker.config import use_google_sheet_primary_mode
 from tracker.db import session_scope
-from tracker.models import NotificationLog, Person, Statement, SyncRun, Tracker
+from tracker.models import (
+    Appointment,
+    Legislation,
+    NotificationLog,
+    Office,
+    Person,
+    Statement,
+    StatementParticipant,
+    SyncRun,
+    Tracker,
+)
 from tracker.services.google_sheet_read_service import GoogleSheetReadService
 from tracker.services.statements_service import StatementsService
 from tracker.ui.navigation import render_person_links
@@ -32,7 +42,8 @@ def render(lang: str, labels: dict[str, str]) -> None:
     total_statements = 0
     total_sync_runs = 0
     total_alerts = 0
-    recent_events: list[dict[str, object]] = []
+    recent_events_by_category: dict[str, list[dict[str, object]]] = _empty_event_buckets()
+    recent_legislation_by_category: dict[str, list[dict[str, object]]] = _empty_legislation_buckets()
 
     with session_scope() as session:
         statements_service = StatementsService(session)
@@ -46,32 +57,59 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 select(Statement)
                 .where(Statement.relevance_score > 0)
                 .order_by(Statement.date_published.desc().nullslast(), Statement.date_collected.desc(), Statement.id.desc())
-                .limit(3)
+                .limit(300)
             )
             .scalars()
             .all()
         )
-        people_by_id = {person.id: person for person in session.execute(select(Person)).scalars().all()}
+        statement_ids = [item.id for item in recent_statements]
+        participant_rows = (
+            session.execute(select(StatementParticipant).where(StatementParticipant.statement_id.in_(statement_ids))).scalars().all()
+            if statement_ids
+            else []
+        )
+        statement_participants_map: dict[int, list[int]] = {}
+        for participant in participant_rows:
+            statement_participants_map.setdefault(participant.statement_id, []).append(participant.person_id)
+
+        related_person_ids: set[int] = set()
         for statement in recent_statements:
-            participants = []
-            for item in statements_service.list_participants_for_statement(statement.id):
-                person = people_by_id.get(item.person_id)
-                display_name = person.full_name if person and person.full_name else None
-                if person and display_name and not any(participant["person_id"] == person.id for participant in participants):
-                    participants.append({"person_id": person.id, "display_name": display_name})
-            if not participants:
-                person = people_by_id.get(statement.person_id) if statement.person_id else None
-                participants = [{"person_id": person.id, "display_name": person.full_name}] if person and person.full_name else []
-            recent_events.append(
-                {
-                    "title": statement.title,
-                    "description": statement.excerpt or statement.title or statement.source_url,
-                    "event_time": statement.date_published or statement.date_collected,
-                    "participants": participants,
-                    "sources": statements_service.list_sources_for_statement(statement.id),
-                    "representative_source_url": statement.source_url,
-                }
+            if statement.person_id:
+                related_person_ids.add(statement.person_id)
+            for person_id in statement_participants_map.get(statement.id, []):
+                related_person_ids.add(person_id)
+        people_by_id = (
+            {
+                person.id: person
+                for person in session.execute(select(Person).where(Person.id.in_(related_person_ids))).scalars().all()
+            }
+            if related_person_ids
+            else {}
+        )
+        person_category_map = _build_person_category_map(session, related_person_ids)
+        recent_events_by_category = _bucket_recent_events_db(
+            recent_statements=recent_statements,
+            statement_participants_map=statement_participants_map,
+            people_by_id=people_by_id,
+            person_category_map=person_category_map,
+            statements_service=statements_service,
+        )
+
+        legislation_rows = (
+            session.execute(
+                select(Legislation)
+                .where(Legislation.is_taiwan_related.is_(True))
+                .order_by(
+                    Legislation.last_action_date.desc().nullslast(),
+                    Legislation.introduced_date.desc().nullslast(),
+                    Legislation.id.desc(),
+                )
+                .limit(300)
             )
+            .scalars()
+            .all()
+        )
+        recent_legislation_by_category = _bucket_recent_legislation_db(legislation_rows)
 
     if total_officials == 0 and total_statements == 0:
         if _render_google_sheet_fallback(lang, labels):
@@ -91,7 +129,11 @@ def render(lang: str, labels: dict[str, str]) -> None:
         return
 
     _render_metrics(labels, total_officials, total_trackers, total_statements, total_sync_runs, total_alerts)
-    _render_events_section(recent_events, lang)
+    _render_overview_sections(
+        recent_legislation_by_category=recent_legislation_by_category,
+        recent_events_by_category=recent_events_by_category,
+        lang=lang,
+    )
 
 
 def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
@@ -108,18 +150,15 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
         if lang != "zh-TW"
         else "目前使用 Google Sheet fallback 模式，雲端版先顯示已匯出的資料。"
     )
-    recent_events = [
-        {
-            "title": str(item.get("title") or ""),
-            "description": str(item.get("summary") or item.get("title") or ""),
-            "event_time": item.get("event_date_date"),
-            "participants": _participants_from_sheet(item),
-            "sources": item.get("source_urls") or [],
-            "representative_source_url": None,
-        }
-        for item in events[:3]
-    ]
-    _render_events_section(recent_events, lang)
+    people_by_id = {int(item.get("person_id") or 0): item for item in people if item.get("person_id")}
+    people_category = {pid: _sheet_person_category(item) for pid, item in people_by_id.items()}
+    recent_events_by_category = _bucket_recent_events_sheet(events, people_by_id, people_category)
+    recent_legislation_by_category = _bucket_recent_legislation_sheet(legislation)
+    _render_overview_sections(
+        recent_legislation_by_category=recent_legislation_by_category,
+        recent_events_by_category=recent_events_by_category,
+        lang=lang,
+    )
     return True
 
 
@@ -152,38 +191,304 @@ def _render_metrics(
     st.caption(f"{labels['recent_alerts']}: {total_alerts}")
 
 
-def _render_events_section(recent_events: list[dict[str, object]], lang: str) -> None:
-    section_title = "最新三則事件" if lang == "zh-TW" else "Latest three events"
-    time_label = "時間" if lang == "zh-TW" else "Time"
-    description_label = "事件描述" if lang == "zh-TW" else "Description"
-    participants_label = "參與人" if lang == "zh-TW" else "Participants"
-    quoted_sources_label = "引述來源" if lang == "zh-TW" else "Quoted sources"
-    no_events_label = "目前還沒有可顯示的台灣相關事件。" if lang == "zh-TW" else "No Taiwan-related events are available yet."
+def _render_overview_sections(
+    recent_legislation_by_category: dict[str, list[dict[str, object]]],
+    recent_events_by_category: dict[str, list[dict[str, object]]],
+    lang: str,
+) -> None:
+    legislation_title = "法案" if lang == "zh-TW" else "Legislation"
+    events_title = "事件" if lang == "zh-TW" else "Events"
+    st.subheader(legislation_title)
+    legislation_columns = st.columns(2)
+    _render_legislation_column(
+        legislation_columns[0],
+        "國會立法" if lang == "zh-TW" else "Congressional Legislation",
+        recent_legislation_by_category.get("federal_legislation", []),
+        lang,
+    )
+    _render_legislation_column(
+        legislation_columns[1],
+        "州議會立法" if lang == "zh-TW" else "State Legislature Legislation",
+        recent_legislation_by_category.get("state_legislation", []),
+        lang,
+    )
 
-    st.subheader(section_title)
-    if not recent_events:
-        st.info(no_events_label)
-        return
-
-    for index, event in enumerate(recent_events, start=1):
-        with st.container(border=True):
-            st.markdown(f"**{index}. {_translate_event_text(str(event['title']), lang)}**")
-            st.markdown(f"`{time_label}`：{_format_event_time(event.get('event_time'), lang)}")
-            st.markdown(f"`{description_label}`：{_translate_event_text(str(event['description']), lang)}")
-            st.markdown(f"`{participants_label}`：")
-            render_person_links(list(event["participants"]), lang, key_prefix=f"dashboard-event-{index}")
-            sources = event.get("sources") or []
-            formatted_sources = _format_event_sources(sources, lang)
-            if formatted_sources:
-                st.markdown(f"`{quoted_sources_label}`：{formatted_sources}")
-            elif event.get("representative_source_url"):
-                st.markdown(f"`{quoted_sources_label}`：[link]({event['representative_source_url']})")
+    st.subheader(events_title)
+    event_columns = st.columns(4)
+    _render_event_column(
+        event_columns[0],
+        "聯邦官員" if lang == "zh-TW" else "Federal Officials",
+        recent_events_by_category.get("federal_officials", []),
+        lang,
+        "federal-officials",
+    )
+    _render_event_column(
+        event_columns[1],
+        "國會議員" if lang == "zh-TW" else "Members of Congress",
+        recent_events_by_category.get("congress_members", []),
+        lang,
+        "congress-members",
+    )
+    _render_event_column(
+        event_columns[2],
+        "州政府官員" if lang == "zh-TW" else "State Officials",
+        recent_events_by_category.get("state_officials", []),
+        lang,
+        "state-officials",
+    )
+    _render_event_column(
+        event_columns[3],
+        "州議員" if lang == "zh-TW" else "State Legislators",
+        recent_events_by_category.get("state_legislators", []),
+        lang,
+        "state-legislators",
+    )
 
 
 def _format_event_time(value: datetime | date | None, lang: str) -> str:
     if value is None:
         return "未提供" if lang == "zh-TW" else "Not available"
     return value.strftime("%Y-%m-%d")
+
+
+def _empty_event_buckets() -> dict[str, list[dict[str, object]]]:
+    return {
+        "federal_officials": [],
+        "congress_members": [],
+        "state_officials": [],
+        "state_legislators": [],
+    }
+
+
+def _empty_legislation_buckets() -> dict[str, list[dict[str, object]]]:
+    return {
+        "federal_legislation": [],
+        "state_legislation": [],
+    }
+
+
+def _build_person_category_map(session, person_ids: set[int]) -> dict[int, str]:
+    if not person_ids:
+        return {}
+    rows = session.execute(
+        select(Appointment.person_id, Office.level, Office.branch)
+        .join(Office, Office.id == Appointment.office_id)
+        .where(
+            Appointment.is_current.is_(True),
+            Appointment.person_id.in_(person_ids),
+        )
+    ).all()
+    by_person: dict[int, list[tuple[str | None, str | None]]] = {}
+    for person_id, level, branch in rows:
+        by_person.setdefault(person_id, []).append((level, branch))
+
+    result: dict[int, str] = {}
+    for person_id, offices in by_person.items():
+        if any(level == "federal" and branch == "executive" for level, branch in offices):
+            result[person_id] = "federal_officials"
+        elif any(level == "federal" and branch == "legislative" for level, branch in offices):
+            result[person_id] = "congress_members"
+        elif any(level == "state" and branch == "executive" for level, branch in offices):
+            result[person_id] = "state_officials"
+        elif any(level == "state" and branch == "legislative" for level, branch in offices):
+            result[person_id] = "state_legislators"
+    return result
+
+
+def _bucket_recent_events_db(
+    recent_statements: list[Statement],
+    statement_participants_map: dict[int, list[int]],
+    people_by_id: dict[int, Person],
+    person_category_map: dict[int, str],
+    statements_service: StatementsService,
+) -> dict[str, list[dict[str, object]]]:
+    buckets = _empty_event_buckets()
+    seen_statement_ids = {key: set() for key in buckets.keys()}
+    for statement in recent_statements:
+        if all(len(items) >= 3 for items in buckets.values()):
+            break
+        participant_ids = statement_participants_map.get(statement.id) or ([statement.person_id] if statement.person_id else [])
+        categories = {
+            person_category_map.get(person_id)
+            for person_id in participant_ids
+            if person_id and person_category_map.get(person_id)
+        }
+        if not categories:
+            continue
+        participants: list[dict[str, object]] = []
+        for person_id in participant_ids:
+            person = people_by_id.get(person_id)
+            if not person or not person.full_name:
+                continue
+            if any(item["person_id"] == person_id for item in participants):
+                continue
+            participants.append({"person_id": person_id, "display_name": person.full_name})
+        item = {
+            "statement_id": statement.id,
+            "title": statement.title,
+            "description": statement.excerpt or statement.title or statement.source_url,
+            "event_time": statement.date_published or statement.date_collected,
+            "participants": participants,
+            "sources": statements_service.list_sources_for_statement(statement.id),
+            "representative_source_url": statement.source_url,
+        }
+        for category in categories:
+            if len(buckets[category]) >= 3:
+                continue
+            if statement.id in seen_statement_ids[category]:
+                continue
+            seen_statement_ids[category].add(statement.id)
+            buckets[category].append(item)
+    return buckets
+
+
+def _bucket_recent_legislation_db(rows: list[Legislation]) -> dict[str, list[dict[str, object]]]:
+    buckets = _empty_legislation_buckets()
+    for row in rows:
+        category = None
+        if (row.level or "").lower() == "federal":
+            category = "federal_legislation"
+        elif (row.level or "").lower() == "state":
+            category = "state_legislation"
+        if not category or len(buckets[category]) >= 3:
+            continue
+        buckets[category].append(
+            {
+                "title": row.title,
+                "bill_number": row.bill_number,
+                "jurisdiction_name": row.jurisdiction_name,
+                "date": row.last_action_date or row.introduced_date,
+                "source_url": row.source_url,
+            }
+        )
+    return buckets
+
+
+def _sheet_person_category(person: dict[str, object]) -> str | None:
+    level = str(person.get("level") or "").strip().lower()
+    branch = str(person.get("branch") or "").strip().lower()
+    if level == "federal" and branch == "executive":
+        return "federal_officials"
+    if level == "federal" and branch == "legislative":
+        return "congress_members"
+    if level == "state" and branch == "executive":
+        return "state_officials"
+    if level == "state" and branch == "legislative":
+        return "state_legislators"
+    return None
+
+
+def _bucket_recent_events_sheet(
+    events: list[dict[str, object]],
+    people_by_id: dict[int, dict[str, object]],
+    people_category: dict[int, str | None],
+) -> dict[str, list[dict[str, object]]]:
+    buckets = _empty_event_buckets()
+    seen_event_ids = {key: set() for key in buckets.keys()}
+    for item in events:
+        if all(len(entries) >= 3 for entries in buckets.values()):
+            break
+        participant_ids = list(item.get("participant_ids_list") or [])
+        categories = {
+            people_category.get(int(person_id))
+            for person_id in participant_ids
+            if people_category.get(int(person_id))
+        }
+        if not categories:
+            continue
+        event_data = {
+            "event_id": item.get("event_id"),
+            "title": str(item.get("title") or ""),
+            "description": str(item.get("summary") or item.get("title") or ""),
+            "event_time": item.get("event_date_date"),
+            "participants": _participants_from_sheet(item),
+            "sources": item.get("source_urls") or [],
+            "representative_source_url": None,
+        }
+        for category in categories:
+            if not category or len(buckets[category]) >= 3:
+                continue
+            if event_data["event_id"] in seen_event_ids[category]:
+                continue
+            seen_event_ids[category].add(event_data["event_id"])
+            buckets[category].append(event_data)
+    return buckets
+
+
+def _bucket_recent_legislation_sheet(rows: list[dict[str, object]]) -> dict[str, list[dict[str, object]]]:
+    buckets = _empty_legislation_buckets()
+    for item in rows:
+        level = str(item.get("level") or "").strip().lower()
+        category = None
+        if level == "federal":
+            category = "federal_legislation"
+        elif level == "state":
+            category = "state_legislation"
+        if not category:
+            jurisdiction = str(item.get("jurisdiction") or item.get("jurisdiction_name") or "").strip().lower()
+            category = "federal_legislation" if jurisdiction in {"united states", "us", "u.s."} else "state_legislation"
+        if len(buckets[category]) >= 3:
+            continue
+        buckets[category].append(
+            {
+                "title": str(item.get("title") or ""),
+                "bill_number": str(item.get("bill_number") or ""),
+                "jurisdiction_name": str(item.get("jurisdiction") or item.get("jurisdiction_name") or ""),
+                "date": item.get("date_date"),
+                "source_url": str(item.get("source_url") or ""),
+            }
+        )
+    return buckets
+
+
+def _render_legislation_column(column, title: str, entries: list[dict[str, object]], lang: str) -> None:
+    date_label = "日期" if lang == "zh-TW" else "Date"
+    empty_label = "目前無資料" if lang == "zh-TW" else "No records yet"
+    with column:
+        st.markdown(f"**{title}**")
+        if not entries:
+            st.caption(empty_label)
+            return
+        for index, item in enumerate(entries, start=1):
+            headline = item.get("title") or ""
+            bill_number = str(item.get("bill_number") or "").strip()
+            display_title = f"{bill_number} {headline}".strip() if bill_number else str(headline)
+            st.markdown(f"{index}. {display_title}")
+            st.caption(f"{date_label}: {_format_event_time(item.get('date'), lang)}")
+            if item.get("source_url"):
+                st.markdown(f"[link]({item['source_url']})")
+
+
+def _render_event_column(
+    column,
+    title: str,
+    entries: list[dict[str, object]],
+    lang: str,
+    key_prefix: str,
+) -> None:
+    time_label = "時間" if lang == "zh-TW" else "Time"
+    description_label = "事件描述" if lang == "zh-TW" else "Description"
+    participants_label = "參與人" if lang == "zh-TW" else "Participants"
+    quoted_sources_label = "引述來源" if lang == "zh-TW" else "Quoted sources"
+    empty_label = "目前無資料" if lang == "zh-TW" else "No records yet"
+    with column:
+        st.markdown(f"**{title}**")
+        if not entries:
+            st.caption(empty_label)
+            return
+        for index, event in enumerate(entries, start=1):
+            with st.container(border=True):
+                st.markdown(f"**{index}. {_translate_event_text(str(event['title']), lang)}**")
+                st.markdown(f"`{time_label}`：{_format_event_time(event.get('event_time'), lang)}")
+                st.markdown(f"`{description_label}`：{_translate_event_text(str(event['description']), lang)}")
+                st.markdown(f"`{participants_label}`：")
+                render_person_links(list(event.get("participants") or []), lang, key_prefix=f"{key_prefix}-{index}")
+                sources = event.get("sources") or []
+                formatted_sources = _format_event_sources(sources, lang)
+                if formatted_sources:
+                    st.markdown(f"`{quoted_sources_label}`：{formatted_sources}")
+                elif event.get("representative_source_url"):
+                    st.markdown(f"`{quoted_sources_label}`：[link]({event['representative_source_url']})")
 
 
 def _format_event_sources(sources: list[object], lang: str) -> str:
