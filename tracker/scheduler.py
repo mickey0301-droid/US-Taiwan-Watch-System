@@ -5,6 +5,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from tracker.config import get_settings
 from tracker.jobs.backfill_portraits import run_backfill_portraits
 from tracker.jobs.bootstrap_current_taiwan_2026 import run_bootstrap_current_taiwan_2026
+from tracker.jobs.bootstrap_existing_people_taiwan_2025_2026 import run_bootstrap_existing_people_taiwan_2025_2026
 from tracker.jobs.bootstrap_taiwan_chinese_sources import run_bootstrap_taiwan_chinese_sources
 from tracker.jobs.cleanup import run_cleanup
 from tracker.jobs.cleanup_malformed_legislation_people import run_cleanup_malformed_legislation_people
@@ -31,7 +32,10 @@ from tracker.jobs.seed_wikipedia_predecessors import run_seed_wikipedia_predeces
 from tracker.jobs.seed_taiwan_2026_sample_events import run_seed_taiwan_2026_sample_events
 from tracker.jobs.sync_media import run_sync_media
 from tracker.jobs.sync_federal_department_wikipedia import run_sync_federal_department_wikipedia
+from tracker.jobs.sync_federal_house_wikipedia import run_sync_federal_house_wikipedia
+from tracker.jobs.sync_federal_senators_wikipedia import run_sync_federal_senators_wikipedia
 from tracker.jobs.sync_officials import run_sync_officials
+from tracker.jobs.sync_officials_wikipedia_only import run_sync_officials_wikipedia_only
 from tracker.jobs.sync_state_department_wikipedia import run_sync_state_department_wikipedia
 from tracker.jobs.sync_state_executive_official_pages import run_sync_state_executive_official_pages
 from tracker.jobs.sync_state_executives_wikipedia import run_sync_state_executives_wikipedia
@@ -40,14 +44,19 @@ from tracker.jobs.sync_state_representatives_wikipedia import run_sync_state_rep
 from tracker.jobs.sync_state_senators_wikipedia import run_sync_state_senators_wikipedia
 from tracker.jobs.sync_territory_officials_wikipedia import run_sync_territory_officials_wikipedia
 from tracker.jobs.sync_trackers import run_sync_trackers
+from tracker.jobs.sync_congress_taiwan import run_sync_congress_taiwan
 from tracker.logging_utils import get_logger
 
 
 logger = get_logger(__name__)
 
 JOB_REGISTRY = {
+    "sync_congress_taiwan": run_sync_congress_taiwan,
     "sync_officials": run_sync_officials,
+    "sync_officials_wikipedia_only": run_sync_officials_wikipedia_only,
     "sync_federal_department_wikipedia": run_sync_federal_department_wikipedia,
+    "sync_federal_house_wikipedia": run_sync_federal_house_wikipedia,
+    "sync_federal_senators_wikipedia": run_sync_federal_senators_wikipedia,
     "sync_state_department_wikipedia": run_sync_state_department_wikipedia,
     "sync_state_executive_official_pages": run_sync_state_executive_official_pages,
     "sync_state_executives_wikipedia": run_sync_state_executives_wikipedia,
@@ -78,6 +87,7 @@ JOB_REGISTRY = {
     "seed_taiwan_2026_sample_events": run_seed_taiwan_2026_sample_events,
     "backfill_portraits": run_backfill_portraits,
     "bootstrap_current_taiwan_2026": run_bootstrap_current_taiwan_2026,
+    "bootstrap_existing_people_taiwan_2025_2026": run_bootstrap_existing_people_taiwan_2025_2026,
     "bootstrap_taiwan_chinese_sources": run_bootstrap_taiwan_chinese_sources,
     "sync_trackers": run_sync_trackers,
     "sync_media": run_sync_media,
