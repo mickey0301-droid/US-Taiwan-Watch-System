@@ -586,7 +586,10 @@ def _render_legislation_column(column, title: str, entries: list[dict[str, objec
                     sponsor_text = "未提供" if lang == "zh-TW" else "Not available"
                 st.markdown(f"`{sponsor_label}`：{sponsor_text}")
                 cosponsors = item.get("cosponsors") if isinstance(item.get("cosponsors"), list) else []
-                cosponsor_text = _format_people_inline(cosponsors[:3], lang)
+                if not cosponsors:
+                    cosponsor_text = "無" if lang == "zh-TW" else "None"
+                else:
+                    cosponsor_text = _format_people_inline(cosponsors[:3], lang)
                 if len(cosponsors) > 3:
                     extra = len(cosponsors) - 3
                     cosponsor_text = f"{cosponsor_text} 等{extra}名" if lang == "zh-TW" else f"{cosponsor_text} and {extra} more"

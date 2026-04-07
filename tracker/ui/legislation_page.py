@@ -226,7 +226,7 @@ def _render_sheet_legislation_card(selected: dict[str, object], sponsors: list[d
 def _format_cosponsor_people(people: list[dict[str, object]], lang: str) -> str:
     valid = [item for item in people if isinstance(item, dict) and str(item.get("display_name") or item.get("english_name") or "").strip()]
     if not valid:
-        return "未提供" if lang == "zh-TW" else "Not available"
+        return "無" if lang == "zh-TW" else "None"
     shown = valid[:3]
     text = dashboard._format_people_inline(shown, lang)
     extra = len(valid) - len(shown)
