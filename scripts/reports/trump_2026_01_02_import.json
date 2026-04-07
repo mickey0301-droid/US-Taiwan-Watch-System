@@ -1,0 +1,14 @@
+{
+  "status": "success",
+  "person": "Donald Trump",
+  "person_id": 2253,
+  "year": 2026,
+  "months": [
+    1,
+    2
+  ],
+  "discovered": 14,
+  "created": 0,
+  "updated": 14,
+  "items": []
+}
