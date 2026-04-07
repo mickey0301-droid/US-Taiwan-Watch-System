@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import date, datetime
 from typing import Iterable
 
 import streamlit as st
@@ -125,7 +126,7 @@ def _render_db_legislation_card(selected: Legislation, service: LegislationServi
         st.markdown(f"`{chamber_label}`：{chamber_text}")
         st.markdown(f"`{sponsor_label}`：{sponsor_text}")
         st.markdown(f"`{cosponsor_label}`：{cosponsor_text}")
-        st.markdown(f"`{introduced_label}`：{_format_date(selected.introduced_date)}")
+        st.markdown(f"`{introduced_label}`：{_format_date(_effective_legislation_date(selected))}")
         if official_link:
             st.markdown(f"[link]({official_link})")
 
@@ -338,19 +339,19 @@ def _filter_sheet_rows_by_type(rows: list[dict[str, object]], selected_type: str
 
 def _list_years(rows: Iterable[Legislation]) -> list[int]:
     years = {
-        (row.introduced_date or row.last_action_date).year
+        _effective_legislation_date(row).year
         for row in rows
-        if (row.introduced_date or row.last_action_date)
+        if _effective_legislation_date(row)
     }
     return sorted(years, reverse=True)
 
 
 def _list_months(rows: Iterable[Legislation], year: int) -> list[int]:
     months = {
-        (row.introduced_date or row.last_action_date).month
+        _effective_legislation_date(row).month
         for row in rows
-        if (row.introduced_date or row.last_action_date)
-        and (row.introduced_date or row.last_action_date).year == year
+        if _effective_legislation_date(row)
+        and _effective_legislation_date(row).year == year
     }
     return sorted(months, reverse=True)
 
@@ -360,15 +361,15 @@ def _rows_for_year_month(rows: Iterable[Legislation], year: int, month: int) -> 
         return [
             row
             for row in rows
-            if (row.introduced_date or row.last_action_date)
-            and (row.introduced_date or row.last_action_date).year == year
+            if _effective_legislation_date(row)
+            and _effective_legislation_date(row).year == year
         ]
     return [
         row
         for row in rows
-        if (row.introduced_date or row.last_action_date)
-        and (row.introduced_date or row.last_action_date).year == year
-        and (row.introduced_date or row.last_action_date).month == month
+        if _effective_legislation_date(row)
+        and _effective_legislation_date(row).year == year
+        and _effective_legislation_date(row).month == month
     ]
 
 
@@ -376,3 +377,28 @@ def _format_date(value) -> str:
     if value is None:
         return "N/A"
     return value.strftime("%Y-%m-%d")
+
+
+def _effective_legislation_date(row: Legislation) -> date | None:
+    if row.introduced_date:
+        return row.introduced_date
+    if row.last_action_date:
+        return row.last_action_date
+    payload = row.raw_payload or {}
+    for key in ("introduced_on_congress", "introduced_date", "latest_action_date", "update_date", "update_date_including_text"):
+        parsed = _parse_date_value(payload.get(key))
+        if parsed:
+            return parsed
+    return None
+
+
+def _parse_date_value(value: object) -> date | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for parser in (date.fromisoformat, lambda raw: datetime.fromisoformat(raw).date()):
+        try:
+            return parser(text)
+        except ValueError:
+            continue
+    return None
