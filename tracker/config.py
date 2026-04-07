@@ -152,8 +152,7 @@ def get_settings() -> AppSettings:
 
 @lru_cache(maxsize=1)
 def use_google_sheet_primary_mode() -> bool:
-    settings = get_settings()
-    return bool(settings.google_sheet_primary_mode)
+    return False
 
 
 @lru_cache(maxsize=1)
