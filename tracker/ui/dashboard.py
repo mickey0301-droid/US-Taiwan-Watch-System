@@ -617,15 +617,16 @@ def _format_legislation_title_with_description(title: str, summary: str, lang: s
     if lang != "zh-TW":
         return title_text
 
-    chinese_title = _localize_legislation_text(
+    chinese_title_raw = _localize_legislation_text(
         bill_number="",
         title=title_text,
         summary=title_text,
         latest_action="",
         lang=lang,
     ).strip()
+    chinese_title = _clean_legislation_title_text(chinese_title_raw, fallback_title=title_text)
     if not chinese_title:
-        chinese_title = _translate_event_text(title_text, lang).strip()
+        chinese_title = _clean_legislation_title_text(_translate_event_text(title_text, lang).strip(), fallback_title=title_text)
 
     if _looks_like_english(title_text):
         headline = f"{chinese_title}（{title_text}）"
@@ -635,7 +636,8 @@ def _format_legislation_title_with_description(title: str, summary: str, lang: s
     summary_text = str(summary or "").strip()
     if not summary_text or _normalize_compare_text(summary_text) == _normalize_compare_text(title_text):
         return headline
-    summary_zh = _localize_event_text(title=title_text, description=summary_text, lang=lang, is_title=False).strip()
+    summary_zh_raw = _localize_event_text(title=title_text, description=summary_text, lang=lang, is_title=False).strip()
+    summary_zh = _clean_legislation_summary_text(summary_zh_raw, title_text=title_text, chinese_title=chinese_title)
     if not summary_zh:
         return headline
     return f"{headline}：{summary_zh}"
@@ -645,6 +647,38 @@ def _normalize_compare_text(text: str) -> str:
     normalized = str(text or "").strip().lower()
     normalized = re.sub(r"[\s\.\,\-\–\—\:\;\'\"\(\)\[\]\{\}]+", "", normalized)
     return normalized
+
+
+def _clean_legislation_title_text(text: str, fallback_title: str) -> str:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return ""
+    cleaned = re.split(r"[：:]", cleaned, maxsplit=1)[0].strip()
+    fallback_norm = _normalize_compare_text(fallback_title)
+    candidates = re.findall(r"（([^）]+)）", cleaned)
+    for candidate in candidates:
+        if _normalize_compare_text(candidate) == fallback_norm:
+            cleaned = cleaned.replace(f"（{candidate}）", "").strip()
+    cleaned = re.sub(r"\s+", "", cleaned)
+    return cleaned.strip("。．.")
+
+
+def _clean_legislation_summary_text(text: str, title_text: str, chinese_title: str) -> str:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    for part in [title_text, chinese_title]:
+        if not part:
+            continue
+        cleaned = cleaned.replace(part, "").strip()
+    cleaned = re.sub(r"^[：:，,\-–—\s]+", "", cleaned)
+    cleaned = re.sub(r"\(\s*\)", "", cleaned).strip()
+    if _normalize_compare_text(cleaned) in {"", _normalize_compare_text(title_text), _normalize_compare_text(chinese_title)}:
+        return ""
+    if len(cleaned) > 60:
+        cleaned = cleaned[:60].rstrip() + "…"
+    return cleaned
 
 
 def _translate_us_state_name_zh(state_name: str) -> str:
