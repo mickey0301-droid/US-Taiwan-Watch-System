@@ -571,6 +571,9 @@ def _bucket_recent_events_db(
 
 def _bucket_recent_legislation_db(rows: list[Legislation], session, lang: str) -> dict[str, list[dict[str, object]]]:
     buckets = _empty_legislation_buckets()
+    from tracker.ui import legislation_page as legislation_page_ui
+
+    rows = legislation_page_ui._dedupe_db_legislation_rows(rows)
     sponsor_ids: set[int] = set()
     for row in rows:
         sponsor_people = [item.person for item in row.sponsors if item.person and str(item.role or "").lower() == "sponsor"]
@@ -617,6 +620,7 @@ def _bucket_recent_legislation_db(rows: list[Legislation], session, lang: str) -
                 "introduced_date": row.introduced_date,
                 "date": row.last_action_date or row.introduced_date,
                 "source_url": row.source_url,
+                "source_urls": legislation_page_ui._collect_db_source_links(row),
                 "raw_payload": row.raw_payload or {},
                 "sponsor": (
                     {
@@ -700,6 +704,9 @@ def _bucket_recent_events_sheet(
 
 def _bucket_recent_legislation_sheet(rows: list[dict[str, object]], people: list[dict[str, object]], lang: str) -> dict[str, list[dict[str, object]]]:
     buckets = _empty_legislation_buckets()
+    from tracker.ui import legislation_page as legislation_page_ui
+
+    rows = legislation_page_ui._dedupe_sheet_legislation_rows(rows)
     person_lookup = _build_sheet_person_lookup(people)
     for item in rows:
         level = str(item.get("level") or "").strip().lower()
@@ -724,6 +731,7 @@ def _bucket_recent_legislation_sheet(rows: list[dict[str, object]], people: list
                 "introduced_date": item.get("date_date"),
                 "date": item.get("date_date"),
                 "source_url": str(item.get("source_url") or ""),
+                "source_urls": legislation_page_ui._collect_sheet_source_links(item),
                 "raw_payload": item.get("raw_payload") if isinstance(item.get("raw_payload"), dict) else {},
                 "sponsor": _first_sheet_sponsor(item, person_lookup=person_lookup, lang=lang),
                 "cosponsors": _remaining_sheet_cosponsors(item, person_lookup=person_lookup, lang=lang),
@@ -783,8 +791,11 @@ def _render_legislation_column(column, title: str, entries: list[dict[str, objec
                     cosponsor_text = f"{cosponsor_text} 等{extra}名" if lang == "zh-TW" else f"{cosponsor_text} and {extra} more"
                 st.markdown(f"`{cosponsor_label}`：{cosponsor_text}")
                 st.markdown(f"`{introduced_label}`：{_format_event_time(item.get('introduced_date'), lang)}")
-                if item.get("source_url"):
-                    st.markdown(f"[link]({item['source_url']})")
+                source_urls = [str(link or "").strip() for link in (item.get("source_urls") or []) if str(link or "").strip()]
+                if not source_urls and item.get("source_url"):
+                    source_urls = [str(item["source_url"]).strip()]
+                if source_urls:
+                    st.markdown(" | ".join(f"[link]({link})" for link in source_urls[:6]))
 
 
 def _should_prefix_bill_number(bill_number: str) -> bool:
