@@ -154,6 +154,108 @@ def _get_department_options(session, category_key: str) -> list[str]:
     return sorted({row[4] for row in rows if row[4]})
 
 
+DEPARTMENT_NAME_ZH = {
+    "White House": "白宮",
+    "Department of State": "國務院",
+    "Department of the Treasury": "財政部",
+    "Department of Defense": "國防部",
+    "Department of Justice": "司法部",
+    "Department of the Interior": "內政部",
+    "Department of Agriculture": "農業部",
+    "Department of Commerce": "商務部",
+    "Department of Labor": "勞工部",
+    "Department of Health and Human Services": "衛生與公共服務部",
+    "Department of Housing and Urban Development": "住房與城市發展部",
+    "Department of Transportation": "運輸部",
+    "Department of Energy": "能源部",
+    "Department of Education": "教育部",
+    "Department of Veterans Affairs": "退伍軍人事務部",
+    "Department of Homeland Security": "國土安全部",
+    "Office of the Director of National Intelligence": "國家情報總監辦公室",
+    "Environmental Protection Agency": "環境保護署",
+    "Small Business Administration": "小企業署",
+    "Office of Management and Budget": "管理及預算局",
+    "Office of the United States Trade Representative": "美國貿易代表署",
+    "United States Mission to the United Nations": "美國駐聯合國代表團",
+    "Council of Economic Advisers": "經濟顧問委員會",
+    "Central Intelligence Agency": "中央情報局",
+    "Advocacy": "倡議事務",
+    "American Institute in Taiwan": "美國在台協會",
+    "Archivist of the United States": "美國國家檔案館館長",
+    "Assistant Secretary for Congressional and Legislative Affairs": "國會與立法事務助理部長",
+    "Assistant Secretary of Defense for Indo-Pacific Security Affairs": "國防部印太安全事務助理部長",
+    "Assistant Secretary of State for East Asian and Pacific Affairs": "國務院東亞暨太平洋事務助理國務卿",
+    "Assistant Secretary of State for Political-Military Affairs": "國務院政軍事務助理國務卿",
+    "Board of Directors of the Metropolitan Washington Airports Authority": "華盛頓都會機場管理局董事會",
+    "Board of Directors of the Tennessee Valley Authority": "田納西河谷管理局董事會",
+    "Commission on Civil Rights": "民權委員會",
+    "Commodity Futures Trading Commission": "商品期貨交易委員會",
+    "Consumer Financial Protection Bureau": "消費者金融保護局",
+    "Consumer Product Safety Commission": "消費品安全委員會",
+    "Department of War": "戰爭部",
+    "Disaster Recovery and Resilience": "災後復原與韌性",
+    "Equal Employment Opportunity Commission": "平等就業機會委員會",
+    "Exportâ€“Import Bank of the United States": "美國進出口銀行",
+    "Export–Import Bank of the United States": "美國進出口銀行",
+    "Farm Credit Administration": "農業信貸管理局",
+    "Federal Communications Commission": "聯邦通訊委員會",
+    "Federal Deposit Insurance Corporation": "聯邦存款保險公司",
+    "Federal Energy Regulatory Commission": "聯邦能源監管委員會",
+    "Federal Housing Finance Agency": "聯邦住房金融局",
+    "Federal Labor Relations Authority": "聯邦勞資關係局",
+    "Federal Maritime Commission": "聯邦海事委員會",
+    "Federal Mine Safety and Health Review Commission": "聯邦礦場安全與健康審查委員會",
+    "Federal Reserve": "聯邦準備系統",
+    "Federal Reserve Board of Governors": "聯邦準備理事會",
+    "Federal Reserve for Supervision": "聯邦準備監理業務",
+    "Federal Trade Commission": "聯邦貿易委員會",
+    "General Services": "總務服務",
+    "Institute of Museum and Library Services": "博物館與圖書館服務研究所",
+    "Merit Systems Protection Board": "功績制度保護委員會",
+    "National Aeronautics and Space Administration": "國家航空暨太空總署",
+    "National Counterintelligence and Security Center": "國家反情報與安全中心",
+    "National Credit Union Administration": "國家信用合作社管理局",
+    "National Endowment for the Arts": "國家藝術基金會",
+    "National Labor Relations Board": "國家勞資關係委員會",
+    "National Railroad Passenger Corporation": "國家鐵路客運公司",
+    "National Transportation Safety Board": "國家運輸安全委員會",
+    "Nuclear Regulatory Commission": "核能管理委員會",
+    "Occupational Safety and Health Review Commission": "職業安全衛生審查委員會",
+    "Office of Government Ethics": "政府倫理辦公室",
+    "Office of Personnel Management": "人事管理局",
+    "Office of Science and Technology Policy": "科技政策辦公室",
+    "Pension Benefit Guaranty Corporation": "退休金給付擔保公司",
+    "Religious Liberty Commission": "宗教自由委員會",
+    "Securities and Exchange Commission": "證券交易委員會",
+    "Social Security Administration": "社會安全局",
+    "Surface Transportation Board": "地面運輸委員會",
+    "U.S. Agency for Global Media": "美國全球媒體總署",
+    "U.S. International Development Finance Corporation": "美國國際開發金融公司",
+    "Under Secretary of Veterans Affairs for Health": "退伍軍人事務部衛生事務次長",
+    "Under Secretary of Veterans Affairs for Memorial Affairs": "退伍軍人事務部紀念事務次長",
+    "United States": "美國",
+    "United States Ambassador to China": "美國駐中國大使",
+    "United States Ambassador to Japan": "美國駐日本大使",
+    "United States Director of the Asian Development Bank": "美國駐亞洲開發銀行理事",
+}
+
+
+def _department_label(value: str, lang: str) -> str:
+    if lang != "zh-TW":
+        return value
+    return DEPARTMENT_NAME_ZH.get(value, value)
+
+
+def _is_minister_level_federal_executive(office_name: str | None, raw_payload: dict | None) -> bool:
+    display = _display_office_name(office_name, raw_payload).lower().strip()
+    if display.startswith("secretary of ") or display.startswith("secretary,"):
+        return True
+    # Keep AG in this tier for the user's "部長級" browsing intent.
+    if "attorney general" in display:
+        return True
+    return False
+
+
 def _get_subdepartment_options(session, category_key: str, department_filter: str) -> list[str]:
     rows = session.execute(_get_base_people_query(category_key)).all()
     options = {
@@ -743,6 +845,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
         department_filter = None
         subdepartment_filter = None
         unit_filter = None
+        executive_rank_filter = None
         person = None
         person_id = None
 
@@ -758,18 +861,40 @@ def render(lang: str, labels: dict[str, str]) -> None:
             if not department_options:
                 st.info(labels["no_people_loaded"])
                 return
-            department_filter = st.selectbox(labels["department"], department_options)
+            department_filter = st.selectbox(
+                labels["department"],
+                department_options,
+                format_func=lambda value: _department_label(value, lang),
+            )
             subdepartment_options = _get_subdepartment_options(session, selected_category, department_filter)
             if subdepartment_options:
                 subdepartment_label = "次部門" if lang == "zh-TW" else "Subdepartment"
-                sub_selection = st.selectbox(subdepartment_label, ["全部", *subdepartment_options])
+                sub_selection = st.selectbox(
+                    subdepartment_label,
+                    ["全部", *subdepartment_options],
+                    format_func=lambda value: value if value == "全部" else _department_label(value, lang),
+                )
                 subdepartment_filter = None if sub_selection == "全部" else sub_selection
                 if subdepartment_filter:
                     unit_options = _get_unit_options(session, selected_category, department_filter, subdepartment_filter)
                     if unit_options:
                         unit_label = "下屬部門" if lang == "zh-TW" else "Sub-unit"
-                        unit_selection = st.selectbox(unit_label, ["全部", *unit_options])
+                        unit_selection = st.selectbox(
+                            unit_label,
+                            ["全部", *unit_options],
+                            format_func=lambda value: value if value == "全部" else _department_label(value, lang),
+                        )
                         unit_filter = None if unit_selection == "全部" else unit_selection
+            executive_rank_label = "職級" if lang == "zh-TW" else "Role tier"
+            executive_rank_options = ["minister", "all"]
+            executive_rank_filter = st.selectbox(
+                executive_rank_label,
+                executive_rank_options,
+                format_func=lambda value: (
+                    "部長級" if value == "minister" else "全部"
+                ) if lang == "zh-TW" else ("Secretary-level" if value == "minister" else "All"),
+                index=0,
+            )
 
         if person is None and selected_category in _categories_with_state_filter():
             state_options = _get_state_options(session, selected_category)
@@ -801,6 +926,11 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 unit_filter=unit_filter,
                 status_filter=selected_status,
             )
+            if selected_category == "federal_executive" and executive_rank_filter == "minister":
+                candidates = [
+                    row for row in candidates
+                    if _is_minister_level_federal_executive(row[4], row[6])
+                ]
             if not candidates:
                 st.info(labels["no_people_loaded"])
                 return
