@@ -8,18 +8,15 @@ import streamlit as st
 from tracker.config import use_google_sheet_primary_mode
 from tracker.db import session_scope
 from tracker.models import Person
-from tracker.services.ai_assist_service import AIAssistService
 from tracker.services.google_sheet_read_service import GoogleSheetReadService
 from tracker.services.statements_service import StatementsService
 from tracker.ui.display import localize_dataframe, localize_value
 from tracker.ui import dashboard
-from tracker.ui.navigation import render_person_links
-from tracker.ui.source_labels import source_label, statement_source_label
+from tracker.ui.source_labels import statement_source_label
 
 
 def render(lang: str, labels: dict[str, str]) -> None:
     st.header(labels["review_queue"])
-    ai_service = AIAssistService()
     if use_google_sheet_primary_mode():
         if _render_google_sheet_fallback(lang, labels):
             return
@@ -48,10 +45,6 @@ def render(lang: str, labels: dict[str, str]) -> None:
         year_label = "年份" if lang == "zh-TW" else "Year"
         month_label = "月份" if lang == "zh-TW" else "Month"
         category_label = "人物類別" if lang == "zh-TW" else "Person category"
-        time_label = "時間" if lang == "zh-TW" else "Time"
-        description_label = "事件描述" if lang == "zh-TW" else "Description"
-        participants_label = "參與人" if lang == "zh-TW" else "Participants"
-        quoted_sources_label = "引述來源" if lang == "zh-TW" else "Quoted sources"
         no_events_in_filter = "此篩選條件下沒有待審核事件。" if lang == "zh-TW" else "No review events match this filter."
 
         selected_year = st.selectbox(year_label, years)
@@ -113,44 +106,41 @@ def render(lang: str, labels: dict[str, str]) -> None:
             for participant_row in participant_rows_map.get(selected.id, []):
                 person = people_by_id.get(participant_row.person_id)
                 if person and not any(participant["person_id"] == person.id for participant in participants):
-                    participants.append({"person_id": person.id, "display_name": person.full_name})
-            sources = service.list_sources_for_statement(selected.id)
-            localized_summary = (
-                ai_service.summarize_statement(selected.title, selected.excerpt or selected.full_text or selected.raw_text or "")
-                if lang == "zh-TW"
-                else None
-            )
-
-            with st.container(border=True):
-                st.markdown(f"**{selected.title}**")
-                st.markdown(f"`{time_label}`：{_format_event_time(selected.date_published or selected.date_collected)}")
-                st.markdown(f"`{description_label}`：{localized_summary or selected.excerpt or selected.title or selected.source_url}")
-                if localized_summary:
-                    st.caption("AI 中文摘要" if lang == "zh-TW" else "AI summary")
-                st.markdown(f"`{participants_label}`：")
-                render_person_links(participants, lang, key_prefix=f"review-event-{selected.id}")
-                if sources:
-                    formatted_sources = " | ".join(
-                        f"[{source.source_title or source_label(source, lang, str(source.source_type or labels['unknown']))}]({source.source_url})"
-                        for source in sources[:3]
+                    participants.append(
+                        {
+                            "person_id": person.id,
+                            "display_name": person.full_name,
+                            "english_name": person.full_name,
+                            "chinese_name": "",
+                        }
                     )
-                    st.markdown(f"`{quoted_sources_label}`：{formatted_sources}")
-                st.write(f"{labels['attached_sources']}: {service.get_source_count(selected.id)}")
-                st.write(f"{labels['keywords']}: {', '.join((selected.matched_keywords or {}).get('hits', [])) or labels['unknown']}")
+            sources = service.list_sources_for_statement(selected.id)
+            event_payload = {
+                "title": selected.title,
+                "description": selected.excerpt or selected.title or selected.source_url,
+                "event_time": selected.date_published or selected.date_collected,
+                "participants": participants,
+                "sources": sources,
+                "representative_source_url": selected.source_url,
+            }
+            dashboard._render_event_card(index=1, event=event_payload, lang=lang)
 
-                col1, col2, col3 = st.columns(3)
-                if col1.button(labels["confirm_related"], key=f"confirm-{selected.id}"):
-                    service.update_review_status(selected.id, "confirmed")
-                    st.success(labels["confirm_related"])
-                    st.rerun()
-                if col2.button(labels["needs_review"], key=f"needs-{selected.id}"):
-                    service.update_review_status(selected.id, "needs_review")
-                    st.success(labels["needs_review"])
-                    st.rerun()
-                if col3.button(labels["dismiss"], key=f"dismiss-{selected.id}"):
-                    service.update_review_status(selected.id, "dismissed")
-                    st.success(labels["dismiss"])
-                    st.rerun()
+            st.write(f"{labels['attached_sources']}: {service.get_source_count(selected.id)}")
+            st.write(f"{labels['keywords']}: {', '.join((selected.matched_keywords or {}).get('hits', [])) or labels['unknown']}")
+
+            col1, col2, col3 = st.columns(3)
+            if col1.button(labels["confirm_related"], key=f"confirm-{selected.id}"):
+                service.update_review_status(selected.id, "confirmed")
+                st.success(labels["confirm_related"])
+                st.rerun()
+            if col2.button(labels["needs_review"], key=f"needs-{selected.id}"):
+                service.update_review_status(selected.id, "needs_review")
+                st.success(labels["needs_review"])
+                st.rerun()
+            if col3.button(labels["dismiss"], key=f"dismiss-{selected.id}"):
+                service.update_review_status(selected.id, "dismissed")
+                st.success(labels["dismiss"])
+                st.rerun()
 
         rows = [
             {
@@ -170,7 +160,6 @@ def render(lang: str, labels: dict[str, str]) -> None:
 def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
     events = GoogleSheetReadService().list_events()
     people = GoogleSheetReadService().list_people()
-    ai_service = AIAssistService()
     if not events:
         return False
 
@@ -194,10 +183,6 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
     year_label = "年份" if lang == "zh-TW" else "Year"
     month_label = "月份" if lang == "zh-TW" else "Month"
     category_label = "人物類別" if lang == "zh-TW" else "Person category"
-    time_label = "時間" if lang == "zh-TW" else "Time"
-    description_label = "事件描述" if lang == "zh-TW" else "Description"
-    participants_label = "參與人" if lang == "zh-TW" else "Participants"
-    quoted_sources_label = "引述來源" if lang == "zh-TW" else "Quoted sources"
 
     selected_year = st.selectbox(year_label, years, key="sheet-review-year")
     month_options = sorted(
@@ -248,24 +233,17 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
 
     for selected in filtered_events:
         participants = _sheet_participants(selected)
-        with st.container(border=True):
-            st.markdown(f"**{selected.get('title') or ''}**")
-            event_date = selected.get("event_date_date")
-            st.markdown(f"`{time_label}`：{event_date.strftime('%Y-%m-%d') if event_date else 'N/A'}")
-            localized_summary = (
-                ai_service.summarize_statement(str(selected.get("title") or ""), str(selected.get("summary") or ""))
-                if lang == "zh-TW"
-                else None
-            )
-            st.markdown(f"`{description_label}`：{localized_summary or selected.get('summary') or selected.get('title') or ''}")
-            if localized_summary:
-                st.caption("AI 中文摘要" if lang == "zh-TW" else "AI summary")
-            st.markdown(f"`{participants_label}`：")
-            render_person_links(participants, lang, key_prefix=f"sheet-review-event-{selected.get('event_id')}")
-            if selected.get("source_urls"):
-                st.markdown(f"`{quoted_sources_label}`：" + " | ".join(f"[link]({url})" for url in selected["source_urls"][:5]))
-            st.write(f"{labels['attached_sources']}: {selected.get('source_count_int') or 0}")
-            st.write(f"{labels['keywords']}: {selected.get('taiwan_keywords') or labels['unknown']}")
+        event_payload = {
+            "title": str(selected.get("title") or ""),
+            "description": str(selected.get("summary") or selected.get("title") or ""),
+            "event_time": selected.get("event_date_date"),
+            "participants": participants,
+            "sources": selected.get("source_urls") or [],
+            "representative_source_url": None,
+        }
+        dashboard._render_event_card(index=1, event=event_payload, lang=lang)
+        st.write(f"{labels['attached_sources']}: {selected.get('source_count_int') or 0}")
+        st.write(f"{labels['keywords']}: {selected.get('taiwan_keywords') or labels['unknown']}")
 
     summary_df = localize_dataframe(
         pd.DataFrame(
