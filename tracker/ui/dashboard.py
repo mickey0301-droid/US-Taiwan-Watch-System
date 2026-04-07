@@ -311,8 +311,16 @@ def _collect_dashboard_counts_sheet(people: list[dict[str, object]], legislation
             state_officials += 1
         elif level == "state" and branch == "legislative":
             state_legislators += 1
-    federal_legislation = sum(1 for item in legislation if str(item.get("level") or "").strip().lower() == "federal")
-    state_legislation = sum(1 for item in legislation if str(item.get("level") or "").strip().lower() == "state")
+    federal_keys: set[str] = set()
+    state_keys: set[str] = set()
+    for item in legislation:
+        category = _infer_sheet_legislation_category(item)
+        if category == "federal":
+            federal_keys.add(_sheet_legislation_identity_key(item, "federal"))
+        else:
+            state_keys.add(_sheet_legislation_identity_key(item, "state"))
+    federal_legislation = len(federal_keys)
+    state_legislation = len(state_keys)
     return {
         "federal_officials": federal_officials,
         "congress_members": congress_members,
@@ -321,6 +329,39 @@ def _collect_dashboard_counts_sheet(people: list[dict[str, object]], legislation
         "federal_legislation": federal_legislation,
         "state_legislation": state_legislation,
     }
+
+
+def _infer_sheet_legislation_category(item: dict[str, object]) -> str:
+    level = str(item.get("level") or "").strip().lower()
+    if level in {"federal", "state"}:
+        return level
+    jurisdiction = str(item.get("jurisdiction") or item.get("jurisdiction_name") or "").strip().lower()
+    if jurisdiction in {"united states", "us", "u.s."}:
+        return "federal"
+    session_year = str(item.get("session_year") or item.get("session") or "").strip()
+    if session_year.isdigit() and int(session_year) >= 100:
+        return "federal"
+    bill_number = str(item.get("bill_number") or "").strip().lower()
+    federal_prefixes = ("hr ", "hres", "hjres", "hconres", "s ", "sres", "sjres", "sconres")
+    if bill_number.startswith(federal_prefixes):
+        return "federal"
+    return "state"
+
+
+def _sheet_legislation_identity_key(item: dict[str, object], category: str) -> str:
+    bill_number = str(item.get("bill_number") or "").strip().lower()
+    title = str(item.get("title") or "").strip().lower()
+    date_value = item.get("date_date")
+    year_text = str(getattr(date_value, "year", "") or "")
+    if category == "federal":
+        session_year = str(item.get("session_year") or item.get("session") or "").strip()
+        if bill_number:
+            return f"fed|{session_year}|{bill_number}"
+        return f"fed|{session_year}|{title}"
+    jurisdiction = str(item.get("jurisdiction") or item.get("jurisdiction_name") or "").strip().lower()
+    if bill_number:
+        return f"state|{jurisdiction}|{bill_number}|{year_text}"
+    return f"state|{jurisdiction}|{title}|{year_text}"
 
 
 def _render_overview_sections(
