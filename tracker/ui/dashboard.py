@@ -160,7 +160,7 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
     if not (people or events or legislation):
         return False
 
-    dashboard_counts = _collect_dashboard_counts_sheet(people, legislation)
+    dashboard_counts = _collect_dashboard_counts_sheet(people, events, legislation)
     _render_metrics(dashboard_counts, lang)
     st.info(
         "Google Sheet fallback mode is active. The cloud app is showing exported data."
@@ -200,6 +200,12 @@ def _render_metrics(counts: dict[str, int], lang: str) -> None:
             ("州政府官員", "state_officials"),
             ("州議員", "state_legislators"),
         ]
+        middle_labels = [
+            ("聯邦官員事件", "federal_official_events"),
+            ("國會議員事件", "congress_member_events"),
+            ("州官員事件", "state_official_events"),
+            ("州議員事件", "state_legislator_events"),
+        ]
         bottom_labels = [
             ("國會法案", "federal_legislation"),
             ("州議會法案", "state_legislation"),
@@ -211,6 +217,12 @@ def _render_metrics(counts: dict[str, int], lang: str) -> None:
             ("State Officials", "state_officials"),
             ("State Legislators", "state_legislators"),
         ]
+        middle_labels = [
+            ("Federal Official Events", "federal_official_events"),
+            ("Congress Member Events", "congress_member_events"),
+            ("State Official Events", "state_official_events"),
+            ("State Legislator Events", "state_legislator_events"),
+        ]
         bottom_labels = [
             ("Congressional Bills", "federal_legislation"),
             ("State Bills", "state_legislation"),
@@ -218,8 +230,11 @@ def _render_metrics(counts: dict[str, int], lang: str) -> None:
     row1 = st.columns(4)
     for column, (title, key) in zip(row1, top_labels):
         column.metric(title, int(counts.get(key) or 0))
-    row2 = st.columns(2)
-    for column, (title, key) in zip(row2, bottom_labels):
+    row2 = st.columns(4)
+    for column, (title, key) in zip(row2, middle_labels):
+        column.metric(title, int(counts.get(key) or 0))
+    row3 = st.columns(2)
+    for column, (title, key) in zip(row3, bottom_labels):
         column.metric(title, int(counts.get(key) or 0))
 
 
@@ -238,11 +253,38 @@ def _collect_dashboard_counts_db(session) -> dict[str, int]:
             or 0
         )
 
+    event_rows = session.execute(
+        select(StatementParticipant.statement_id, Office.level, Office.branch)
+        .join(Appointment, Appointment.person_id == StatementParticipant.person_id)
+        .join(Office, Office.id == Appointment.office_id)
+        .where(Appointment.is_current.is_(True))
+    ).all()
+
+    event_sets = {
+        "federal_official_events": set(),
+        "congress_member_events": set(),
+        "state_official_events": set(),
+        "state_legislator_events": set(),
+    }
+    for statement_id, level, branch in event_rows:
+        if level == "federal" and branch == "executive":
+            event_sets["federal_official_events"].add(int(statement_id))
+        elif level == "federal" and branch == "legislative":
+            event_sets["congress_member_events"].add(int(statement_id))
+        elif level == "state" and branch == "executive":
+            event_sets["state_official_events"].add(int(statement_id))
+        elif level == "state" and branch == "legislative":
+            event_sets["state_legislator_events"].add(int(statement_id))
+
     return {
         "federal_officials": _count_people("federal", "executive"),
         "congress_members": _count_people("federal", "legislative"),
         "state_officials": _count_people("state", "executive"),
         "state_legislators": _count_people("state", "legislative"),
+        "federal_official_events": len(event_sets["federal_official_events"]),
+        "congress_member_events": len(event_sets["congress_member_events"]),
+        "state_official_events": len(event_sets["state_official_events"]),
+        "state_legislator_events": len(event_sets["state_legislator_events"]),
         "federal_legislation": int(
             session.scalar(
                 select(func.count())
@@ -262,12 +304,16 @@ def _collect_dashboard_counts_db(session) -> dict[str, int]:
     }
 
 
-def _collect_dashboard_counts_sheet(people: list[dict[str, object]], legislation: list[dict[str, object]]) -> dict[str, int]:
+def _collect_dashboard_counts_sheet(people: list[dict[str, object]], events: list[dict[str, object]], legislation: list[dict[str, object]]) -> dict[str, int]:
     counts = {
         "federal_officials": 0,
         "congress_members": 0,
         "state_officials": 0,
         "state_legislators": 0,
+        "federal_official_events": 0,
+        "congress_member_events": 0,
+        "state_official_events": 0,
+        "state_legislator_events": 0,
         "federal_legislation": 0,
         "state_legislation": 0,
     }
@@ -275,6 +321,41 @@ def _collect_dashboard_counts_sheet(people: list[dict[str, object]], legislation
         category = _sheet_person_category(person)
         if category in counts:
             counts[category] += 1
+
+    people_category = {
+        int(item.get("person_id") or 0): _sheet_person_category(item)
+        for item in people
+        if item.get("person_id")
+    }
+    event_sets = {
+        "federal_official_events": set(),
+        "congress_member_events": set(),
+        "state_official_events": set(),
+        "state_legislator_events": set(),
+    }
+    for idx, event in enumerate(events, start=1):
+        participant_ids = [
+            int(pid)
+            for pid in (event.get("participant_ids_list") or [])
+            if str(pid).strip()
+        ]
+        categories = {people_category.get(pid) for pid in participant_ids if people_category.get(pid)}
+        if not categories:
+            categories = _infer_categories_from_sheet_event(event)
+        event_id = str(event.get("event_id") or f"sheet-{idx}")
+        for category in categories:
+            if category == "federal_officials":
+                event_sets["federal_official_events"].add(event_id)
+            elif category == "congress_members":
+                event_sets["congress_member_events"].add(event_id)
+            elif category == "state_officials":
+                event_sets["state_official_events"].add(event_id)
+            elif category == "state_legislators":
+                event_sets["state_legislator_events"].add(event_id)
+    counts["federal_official_events"] = len(event_sets["federal_official_events"])
+    counts["congress_member_events"] = len(event_sets["congress_member_events"])
+    counts["state_official_events"] = len(event_sets["state_official_events"])
+    counts["state_legislator_events"] = len(event_sets["state_legislator_events"])
     for item in legislation:
         level = str(item.get("level") or "").strip().lower()
         if level == "federal":
