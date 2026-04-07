@@ -19,9 +19,10 @@ from tracker.utils.source_types import source_bucket_label, source_priority_key
 
 def render(lang: str, labels: dict[str, str]) -> None:
     st.header(labels["legislation"])
+    # Prefer Google Sheet data whenever available so cloud UI reflects latest export.
+    if _render_google_sheet_fallback(lang):
+        return
     if use_google_sheet_primary_mode():
-        if _render_google_sheet_fallback(lang):
-            return
         st.info("No legislation is available yet." if lang != "zh-TW" else "目前沒有可顯示的法案資料。")
         return
 
