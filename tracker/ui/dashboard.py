@@ -161,7 +161,7 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
     people_by_id = {int(item.get("person_id") or 0): item for item in people if item.get("person_id")}
     people_category = {pid: _sheet_person_category(item) for pid, item in people_by_id.items()}
     recent_events_by_category = _bucket_recent_events_sheet(events, people_by_id, people_category, lang=lang)
-    recent_legislation_by_category = _bucket_recent_legislation_sheet(legislation, lang=lang)
+    recent_legislation_by_category = _bucket_recent_legislation_sheet(legislation, people=people, lang=lang)
     _render_overview_sections(
         recent_legislation_by_category=recent_legislation_by_category,
         recent_events_by_category=recent_events_by_category,
@@ -517,8 +517,9 @@ def _bucket_recent_events_sheet(
     return buckets
 
 
-def _bucket_recent_legislation_sheet(rows: list[dict[str, object]], lang: str) -> dict[str, list[dict[str, object]]]:
+def _bucket_recent_legislation_sheet(rows: list[dict[str, object]], people: list[dict[str, object]], lang: str) -> dict[str, list[dict[str, object]]]:
     buckets = _empty_legislation_buckets()
+    person_lookup = _build_sheet_person_lookup(people)
     for item in rows:
         level = str(item.get("level") or "").strip().lower()
         category = None
@@ -542,8 +543,8 @@ def _bucket_recent_legislation_sheet(rows: list[dict[str, object]], lang: str) -
                 "introduced_date": item.get("date_date"),
                 "date": item.get("date_date"),
                 "source_url": str(item.get("source_url") or ""),
-                "sponsor": _first_sheet_sponsor(item, lang=lang),
-                "cosponsors": _remaining_sheet_cosponsors(item, lang=lang),
+                "sponsor": _first_sheet_sponsor(item, person_lookup=person_lookup, lang=lang),
+                "cosponsors": _remaining_sheet_cosponsors(item, person_lookup=person_lookup, lang=lang),
             }
         )
     return buckets
@@ -595,7 +596,7 @@ def _render_legislation_column(column, title: str, entries: list[dict[str, objec
                     st.markdown(f"[link]({item['source_url']})")
 
 
-def _first_sheet_sponsor(item: dict[str, object], lang: str) -> dict[str, object] | None:
+def _first_sheet_sponsor(item: dict[str, object], person_lookup: dict[str, int], lang: str) -> dict[str, object] | None:
     sponsor_ids = list(item.get("sponsor_ids_list") or [])
     sponsor_names = list(item.get("sponsors_en_list") or [])
     sponsor_names_zh = list(item.get("sponsors_zh_list") or [])
@@ -607,6 +608,8 @@ def _first_sheet_sponsor(item: dict[str, object], lang: str) -> dict[str, object
     zh_name = str(sponsor_names_zh[0] or "").strip() if sponsor_names_zh else ""
     display_name = zh_name if (lang == "zh-TW" and zh_name) else name
     person_id = sponsor_ids[0] if sponsor_ids else None
+    if person_id is None:
+        person_id = _resolve_sheet_person_id(name, zh_name, person_lookup)
     return {
         "person_id": person_id,
         "display_name": display_name,
@@ -615,7 +618,7 @@ def _first_sheet_sponsor(item: dict[str, object], lang: str) -> dict[str, object
     }
 
 
-def _remaining_sheet_cosponsors(item: dict[str, object], lang: str) -> list[dict[str, object]]:
+def _remaining_sheet_cosponsors(item: dict[str, object], person_lookup: dict[str, int], lang: str) -> list[dict[str, object]]:
     sponsor_ids = list(item.get("sponsor_ids_list") or [])
     sponsor_names = list(item.get("sponsors_en_list") or [])
     sponsor_names_zh = list(item.get("sponsors_zh_list") or [])
@@ -627,6 +630,8 @@ def _remaining_sheet_cosponsors(item: dict[str, object], lang: str) -> list[dict
         zh_name = str(sponsor_names_zh[i] or "").strip() if i < len(sponsor_names_zh) else ""
         display_name = zh_name if (lang == "zh-TW" and zh_name) else name
         person_id = sponsor_ids[i] if i < len(sponsor_ids) else None
+        if person_id is None:
+            person_id = _resolve_sheet_person_id(name, zh_name, person_lookup)
         results.append({
             "person_id": person_id,
             "display_name": display_name,
@@ -634,6 +639,34 @@ def _remaining_sheet_cosponsors(item: dict[str, object], lang: str) -> list[dict
             "chinese_name": zh_name,
         })
     return results
+
+
+def _build_sheet_person_lookup(people: list[dict[str, object]]) -> dict[str, int]:
+    lookup: dict[str, int] = {}
+    for item in people:
+        person_id = item.get("person_id")
+        if not person_id:
+            continue
+        for raw_name in (item.get("display_name_en"), item.get("full_name"), item.get("display_name_zh")):
+            key = _normalize_sheet_person_name(raw_name)
+            if key and key not in lookup:
+                lookup[key] = int(person_id)
+    return lookup
+
+
+def _resolve_sheet_person_id(english_name: str, chinese_name: str, person_lookup: dict[str, int]) -> int | None:
+    for raw_name in (english_name, chinese_name):
+        key = _normalize_sheet_person_name(raw_name)
+        if key and key in person_lookup:
+            return person_lookup[key]
+    return None
+
+
+def _normalize_sheet_person_name(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    return re.sub(r"[\s\.\,\-\(\)\'\"]+", "", text)
 
 
 def _format_legislation_chamber(level: str, chamber: str, jurisdiction_name: str, lang: str) -> str:

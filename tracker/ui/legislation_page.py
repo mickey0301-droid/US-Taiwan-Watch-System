@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Iterable
 
 import streamlit as st
@@ -129,7 +130,9 @@ def _render_db_legislation_card(selected: Legislation, service: LegislationServi
             st.markdown(f"[link]({official_link})")
 
 def _render_google_sheet_fallback(lang: str) -> bool:
-    rows = GoogleSheetReadService().list_legislation()
+    sheet_service = GoogleSheetReadService()
+    rows = sheet_service.list_legislation()
+    people = sheet_service.list_people()
     if not rows:
         return False
 
@@ -172,8 +175,9 @@ def _render_google_sheet_fallback(lang: str) -> bool:
     if not filtered_rows:
         return True
 
+    person_lookup = _build_sheet_person_lookup(people)
     for idx, selected in enumerate(filtered_rows, start=1):
-        sponsors = _sheet_sponsors(selected)
+        sponsors = _sheet_sponsors(selected, person_lookup=person_lookup)
         _render_sheet_legislation_card(selected, sponsors, lang, idx)
     return True
 
@@ -230,7 +234,7 @@ def _format_cosponsor_people(people: list[dict[str, object]], lang: str) -> str:
         return f"{text} 等{extra}名" if lang == "zh-TW" else f"{text} and {extra} more"
     return text
 
-def _sheet_sponsors(selected: dict[str, object]) -> list[dict[str, object]]:
+def _sheet_sponsors(selected: dict[str, object], person_lookup: dict[str, int]) -> list[dict[str, object]]:
     sponsor_ids = list(selected.get("sponsor_ids_list") or [])
     sponsor_names = list(selected.get("sponsors_en_list") or [])
     sponsor_names_zh = list(selected.get("sponsors_zh_list") or [])
@@ -241,6 +245,8 @@ def _sheet_sponsors(selected: dict[str, object]) -> list[dict[str, object]]:
         zh_name = str(sponsor_names_zh[index] or "").strip() if index < len(sponsor_names_zh) else ""
         if not en_name and not zh_name:
             continue
+        if person_id is None:
+            person_id = _resolve_sheet_person_id(en_name, zh_name, person_lookup)
         sponsors.append(
             {
                 "person_id": person_id,
@@ -261,6 +267,34 @@ def _current_chinese_alias(person: Person) -> str:
         ):
             return str(alias.alias).strip()
     return ""
+
+
+def _build_sheet_person_lookup(people: list[dict[str, object]]) -> dict[str, int]:
+    lookup: dict[str, int] = {}
+    for item in people:
+        person_id = item.get("person_id")
+        if not person_id:
+            continue
+        for raw_name in (item.get("display_name_en"), item.get("full_name"), item.get("display_name_zh")):
+            key = _normalize_sheet_person_name(raw_name)
+            if key and key not in lookup:
+                lookup[key] = int(person_id)
+    return lookup
+
+
+def _resolve_sheet_person_id(english_name: str, chinese_name: str, person_lookup: dict[str, int]) -> int | None:
+    for raw_name in (english_name, chinese_name):
+        key = _normalize_sheet_person_name(raw_name)
+        if key and key in person_lookup:
+            return person_lookup[key]
+    return None
+
+
+def _normalize_sheet_person_name(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    return re.sub(r"[\s\.\,\-\(\)\'\"]+", "", text)
 
 
 def _type_options(lang: str) -> dict[str, str]:
