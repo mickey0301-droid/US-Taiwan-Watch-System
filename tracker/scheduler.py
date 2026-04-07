@@ -32,7 +32,10 @@ from tracker.jobs.seed_wikipedia_predecessors import run_seed_wikipedia_predeces
 from tracker.jobs.seed_taiwan_2026_sample_events import run_seed_taiwan_2026_sample_events
 from tracker.jobs.sync_media import run_sync_media
 from tracker.jobs.sync_federal_department_wikipedia import run_sync_federal_department_wikipedia
-from tracker.jobs.sync_federal_house_wikipedia import run_sync_federal_house_wikipedia
+try:
+    from tracker.jobs.sync_federal_house_wikipedia import run_sync_federal_house_wikipedia
+except Exception:  # optional job should not block app startup
+    run_sync_federal_house_wikipedia = None
 from tracker.jobs.sync_federal_senators_wikipedia import run_sync_federal_senators_wikipedia
 from tracker.jobs.sync_officials import run_sync_officials
 from tracker.jobs.sync_officials_wikipedia_only import run_sync_officials_wikipedia_only
@@ -55,7 +58,6 @@ JOB_REGISTRY = {
     "sync_officials": run_sync_officials,
     "sync_officials_wikipedia_only": run_sync_officials_wikipedia_only,
     "sync_federal_department_wikipedia": run_sync_federal_department_wikipedia,
-    "sync_federal_house_wikipedia": run_sync_federal_house_wikipedia,
     "sync_federal_senators_wikipedia": run_sync_federal_senators_wikipedia,
     "sync_state_department_wikipedia": run_sync_state_department_wikipedia,
     "sync_state_executive_official_pages": run_sync_state_executive_official_pages,
@@ -94,6 +96,9 @@ JOB_REGISTRY = {
     "cleanup": run_cleanup,
     "cleanup_malformed_legislation_people": run_cleanup_malformed_legislation_people,
 }
+
+if run_sync_federal_house_wikipedia is not None:
+    JOB_REGISTRY["sync_federal_house_wikipedia"] = run_sync_federal_house_wikipedia
 
 
 def build_scheduler() -> BackgroundScheduler:
