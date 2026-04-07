@@ -19,12 +19,9 @@ from tracker.utils.source_types import source_bucket_label, source_priority_key
 
 def render(lang: str, labels: dict[str, str]) -> None:
     st.header(labels["legislation"])
-    # Prefer Google Sheet data whenever available so cloud UI reflects latest export.
-    if _render_google_sheet_fallback(lang):
-        return
-    if use_google_sheet_primary_mode():
-        st.info("No legislation is available yet." if lang != "zh-TW" else "目前沒有可顯示的法案資料。")
-        return
+    sheet_service = GoogleSheetReadService()
+    sheet_rows = sheet_service.list_legislation()
+    sheet_people = sheet_service.list_people()
 
     with session_scope() as session:
         service = LegislationService(session)
@@ -34,8 +31,16 @@ def render(lang: str, labels: dict[str, str]) -> None:
             Legislation.last_action_date.desc().nullslast(),
             Legislation.id.desc(),
         ).all()
+
+        source = _choose_legislation_source(sheet_rows, all_rows)
+        if source == "sheet":
+            if _render_sheet_legislation_rows(sheet_rows, sheet_people, lang):
+                return
+            if use_google_sheet_primary_mode():
+                st.info("No legislation is available yet." if lang != "zh-TW" else "目前沒有可顯示的法案資料。")
+                return
         if not all_rows:
-            if _render_google_sheet_fallback(lang):
+            if _render_sheet_legislation_rows(sheet_rows, sheet_people, lang):
                 return
             st.info("目前還沒有立法資料。" if lang == "zh-TW" else "No legislation is available yet.")
             return
@@ -67,6 +72,21 @@ def render(lang: str, labels: dict[str, str]) -> None:
 
         for idx, item in enumerate(legislation_rows, start=1):
             _render_db_legislation_card(item, service, people_by_id, lang, idx)
+
+
+def _choose_legislation_source(sheet_rows: list[dict[str, object]], db_rows: list[Legislation]) -> str:
+    if sheet_rows and not db_rows:
+        return "sheet"
+    if db_rows and not sheet_rows:
+        return "db"
+    if not sheet_rows and not db_rows:
+        return "none"
+
+    sheet_years = {row.get("date_date").year for row in sheet_rows if row.get("date_date")}
+    db_years = {_effective_legislation_date(row).year for row in db_rows if _effective_legislation_date(row)}
+    sheet_score = (len(sheet_years), max(sheet_years) if sheet_years else 0, len(sheet_rows))
+    db_score = (len(db_years), max(db_years) if db_years else 0, len(db_rows))
+    return "sheet" if sheet_score >= db_score else "db"
 
 
 def _render_db_legislation_card(selected: Legislation, service: LegislationService, people_by_id: dict[int, Person], lang: str, index: int) -> None:
@@ -140,6 +160,10 @@ def _render_google_sheet_fallback(lang: str) -> bool:
     sheet_service = GoogleSheetReadService()
     rows = sheet_service.list_legislation()
     people = sheet_service.list_people()
+    return _render_sheet_legislation_rows(rows, people, lang)
+
+
+def _render_sheet_legislation_rows(rows: list[dict[str, object]], people: list[dict[str, object]], lang: str) -> bool:
     if not rows:
         return False
 
