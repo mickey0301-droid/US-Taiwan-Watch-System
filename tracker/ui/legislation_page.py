@@ -127,6 +127,7 @@ def _render_db_legislation_card(selected: Legislation, service: LegislationServi
         raw_payload.get("congress"),
         selected.bill_number,
     ) or selected.source_url
+    source_links = _collect_db_source_links(selected)
 
     chamber_text = dashboard._format_legislation_chamber(
         level=str(selected.level or ""),
@@ -153,8 +154,7 @@ def _render_db_legislation_card(selected: Legislation, service: LegislationServi
         st.markdown(f"`{sponsor_label}`：{sponsor_text}")
         st.markdown(f"`{cosponsor_label}`：{cosponsor_text}")
         st.markdown(f"`{introduced_label}`：{_format_date(_effective_legislation_date(selected))}")
-        if official_link:
-            st.markdown(f"[link]({official_link})")
+        _render_legislation_links(source_links or ([str(official_link)] if official_link else []))
 
 def _render_google_sheet_fallback(lang: str) -> bool:
     sheet_service = GoogleSheetReadService()
@@ -256,9 +256,16 @@ def _render_sheet_legislation_card(selected: dict[str, object], sponsors: list[d
         st.markdown(f"`{sponsor_label}`：{sponsor_text}")
         st.markdown(f"`{cosponsor_label}`：{cosponsor_text}")
         st.markdown(f"`{introduced_label}`：{_format_date(selected.get('date_date'))}")
-        source_url = str(selected.get("source_url") or selected.get("official_page") or "").strip()
-        if source_url:
-            st.markdown(f"[link]({source_url})")
+        source_links = _collect_sheet_source_links(selected)
+        _render_legislation_links(source_links)
+
+
+def _render_legislation_links(links: list[str]) -> None:
+    clean_links = [str(link or "").strip() for link in links if str(link or "").strip()]
+    if not clean_links:
+        return
+    rendered = " | ".join(f"[link]({link})" for link in clean_links[:6])
+    st.markdown(rendered)
 
 def _format_cosponsor_people(people: list[dict[str, object]], lang: str) -> str:
     deduped_people = dashboard._dedupe_people_for_display(people)
@@ -421,8 +428,9 @@ def _format_date(value) -> str:
 
 
 def _dedupe_db_legislation_rows(rows: list[Legislation]) -> list[Legislation]:
-    deduped: list[Legislation] = []
-    seen: set[str] = set()
+    best_by_key: dict[str, Legislation] = {}
+    source_links_by_key: dict[str, set[str]] = {}
+    order: list[str] = []
     for row in rows:
         key = str(row.bill_slug or "").strip().lower()
         if not key:
@@ -434,25 +442,44 @@ def _dedupe_db_legislation_rows(rows: list[Legislation]) -> list[Legislation]:
                     str(row.title or "").strip().lower(),
                 ]
             )
-        if key in seen:
+        source_links_by_key.setdefault(key, set()).update(_collect_db_source_links(row))
+        if key not in best_by_key:
+            best_by_key[key] = row
+            order.append(key)
             continue
-        seen.add(key)
-        deduped.append(row)
+        if _db_row_quality_score(row) > _db_row_quality_score(best_by_key[key]):
+            best_by_key[key] = row
+
+    deduped: list[Legislation] = []
+    for key in order:
+        selected = best_by_key[key]
+        merged_links = _sort_source_links(source_links_by_key.get(key, set()))
+        payload = dict(selected.raw_payload or {})
+        payload["_source_urls"] = merged_links
+        selected.raw_payload = payload
+        deduped.append(selected)
     return deduped
 
 
 def _dedupe_sheet_legislation_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
     best_by_key: dict[str, dict[str, object]] = {}
+    source_links_by_key: dict[str, set[str]] = {}
     order: list[str] = []
     for item in rows:
         key = _sheet_legislation_identity_key(item)
+        source_links_by_key.setdefault(key, set()).update(_collect_sheet_source_links(item))
         if key not in best_by_key:
             best_by_key[key] = item
             order.append(key)
             continue
         if _sheet_row_quality_score(item) > _sheet_row_quality_score(best_by_key[key]):
             best_by_key[key] = item
-    return [best_by_key[key] for key in order]
+    deduped: list[dict[str, object]] = []
+    for key in order:
+        selected = dict(best_by_key[key])
+        selected["_source_urls"] = _sort_source_links(source_links_by_key.get(key, set()))
+        deduped.append(selected)
+    return deduped
 
 
 def _sheet_legislation_identity_key(item: dict[str, object]) -> str:
@@ -496,6 +523,64 @@ def _sheet_row_quality_score(item: dict[str, object]) -> int:
     if str(item.get("bill_number") or "").strip():
         score += 5
     return score
+
+
+def _db_row_quality_score(row: Legislation) -> int:
+    title = str(row.title or "")
+    summary = str(row.summary or "")
+    source_url = str(row.source_url or "").lower()
+    text = f"{title} {summary}"
+    score = 0
+    if "《" in text and "》" in text:
+        score += 100
+    cjk_count = len(re.findall(r"[\u4e00-\u9fff]", text))
+    score += min(cjk_count, 40)
+    if "congress.gov" in source_url:
+        score += 10
+    if str(row.bill_number or "").strip():
+        score += 5
+    return score
+
+
+def _collect_sheet_source_links(item: dict[str, object]) -> list[str]:
+    links: set[str] = set()
+    for key in ("source_url", "official_page"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            links.add(value)
+    for value in item.get("_source_urls", []) or []:
+        link = str(value or "").strip()
+        if link:
+            links.add(link)
+    return _sort_source_links(links)
+
+
+def _collect_db_source_links(row: Legislation) -> list[str]:
+    links: set[str] = set()
+    if row.source_url:
+        links.add(str(row.source_url).strip())
+    payload = row.raw_payload if isinstance(row.raw_payload, dict) else {}
+    congress_link = str(payload.get("congress_gov_url") or "").strip()
+    if congress_link:
+        links.add(congress_link)
+    official_page = str(payload.get("official_page") or "").strip()
+    if official_page:
+        links.add(official_page)
+    for value in payload.get("_source_urls", []) if isinstance(payload.get("_source_urls"), list) else []:
+        link = str(value or "").strip()
+        if link:
+            links.add(link)
+    return _sort_source_links(links)
+
+
+def _sort_source_links(links: set[str]) -> list[str]:
+    return sorted(
+        [link for link in links if link],
+        key=lambda link: (
+            0 if "congress.gov" in link.lower() else 1,
+            link.lower(),
+        ),
+    )
 
 
 def _effective_legislation_date(row: Legislation) -> date | None:
