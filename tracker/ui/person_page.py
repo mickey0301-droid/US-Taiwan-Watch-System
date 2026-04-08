@@ -463,6 +463,41 @@ def _strip_legislative_name_suffix(name: str | None) -> str:
     ).strip()
 
 
+def _extract_legislative_name_suffix(name: str | None) -> str | None:
+    text = str(name or "").strip()
+    if not text:
+        return None
+    match = re.search(
+        r"(?:--|—|-)\s*((?:majority|minority|assistant|president|speaker|leader|whip|pro tempore).*)$",
+        text,
+        flags=re.I,
+    )
+    if not match:
+        return None
+    value = str(match.group(1) or "").strip()
+    return value or None
+
+
+def _leadership_title_label(title: str, lang: str) -> str:
+    normalized = str(title or "").strip().lower()
+    mapping = {
+        "majority leader": "多數黨領袖",
+        "minority leader": "少數黨領袖",
+        "majority whip": "多數黨黨鞭",
+        "minority whip": "少數黨黨鞭",
+        "assistant majority leader": "多數黨副領袖",
+        "assistant majority whip": "多數黨副黨鞭",
+        "assistant minority leader": "少數黨副領袖",
+        "assistant minority whip": "少數黨副黨鞭",
+        "president": "議長",
+        "president pro tempore": "臨時議長",
+        "speaker": "議長",
+    }
+    if lang == "zh-TW":
+        return mapping.get(normalized, title)
+    return title
+
+
 def _likely_same_legislator_name_variant(a: str | None, b: str | None) -> bool:
     a_tokens = _normalize_name_tokens_for_match(a)
     b_tokens = _normalize_name_tokens_for_match(b)
@@ -1965,6 +2000,10 @@ def render(lang: str, labels: dict[str, str]) -> None:
             st.write(" / ".join(chinese_aliases) if lang == "zh-TW" else ", ".join(chinese_aliases))
         elif generated_chinese_name:
             st.caption("中文名由 AI 協助生成" if lang == "zh-TW" else "Chinese name generated with AI assistance")
+        leadership_title = _extract_legislative_name_suffix(person_data["full_name"])
+        if leadership_title:
+            leadership_label = "議會職務" if lang == "zh-TW" else "Leadership role"
+            st.write(f"{leadership_label}: {_leadership_title_label(leadership_title, lang)}")
 
         with st.expander("編輯中文譯名" if lang == "zh-TW" else "Edit Chinese names"):
             help_text = (
