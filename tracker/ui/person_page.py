@@ -1835,22 +1835,19 @@ def render(lang: str, labels: dict[str, str]) -> None:
     category_select_prompt_label = "請選擇" if lang == "zh-TW" else "Please select"
     category_options = [
         category_select_prompt_value,
-        "__all__",
         *_visible_person_category_keys(),
     ]
     selected_category_value = st.selectbox(
         labels["person_category"],
         category_options,
         format_func=lambda key: (
-            category_select_prompt_label
-            if key == category_select_prompt_value
-            else (labels["all"] if key == "__all__" else _category_label(PERSON_CATEGORIES[key], lang))
+            category_select_prompt_label if key == category_select_prompt_value else _category_label(PERSON_CATEGORIES[key], lang)
         ),
     )
     if selected_category_value == category_select_prompt_value:
         st.info(category_select_prompt_label)
         return
-    selected_category = "all" if selected_category_value == "__all__" else selected_category_value
+    selected_category = selected_category_value
 
 
     with session_scope() as session:
