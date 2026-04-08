@@ -32,6 +32,7 @@ from tracker.utils.wikipedia_links import build_wikipedia_search_url, resolve_wi
 
 PERSON_CATEGORIES = {
     "federal_executive": {"label_zh": "聯邦政府部門官員", "label_en": "Federal executive officials", "level": "federal", "branch": "executive", "chamber": None},
+    "federal_military": {"label_zh": "軍職人員", "label_en": "Military personnel", "level": "federal", "branch": "executive", "chamber": None},
     "federal_senate": {"label_zh": "聯邦參議員", "label_en": "U.S. Senators", "level": "federal", "branch": "legislative", "chamber": "senate"},
     "federal_house": {"label_zh": "聯邦眾議員", "label_en": "U.S. Representatives", "level": "federal", "branch": "legislative", "chamber": "house"},
     "state_executive": {"label_zh": "州政府官員", "label_en": "State executive officials", "level": "state", "branch": "executive", "chamber": None},
@@ -109,6 +110,56 @@ WHITE_HOUSE_UNIT_LABELS_ZH = {
     "Defense": "國防事務",
 }
 
+MILITARY_SUBDEPARTMENT_LABELS_ZH = {
+    "Joint Chiefs of Staff": "參謀首長聯席會議",
+    "Combatant Commands": "聯合作戰司令部",
+}
+
+MILITARY_UNIT_LABELS_ZH = {
+    "Joint Staff": "參謀本部",
+    "Army": "陸軍",
+    "Navy": "海軍",
+    "Marine Corps": "海軍陸戰隊",
+    "Air Force": "空軍",
+    "Space Force": "太空軍",
+    "National Guard": "國民兵",
+    "U.S. Africa Command": "美軍非洲司令部",
+    "U.S. Central Command": "美軍中央司令部",
+    "U.S. Cyber Command": "美軍網路司令部",
+    "U.S. European Command": "美軍歐洲司令部",
+    "U.S. Indo-Pacific Command": "美軍印太司令部",
+    "U.S. Northern Command": "美軍北方司令部",
+    "U.S. Southern Command": "美軍南方司令部",
+    "U.S. Space Command": "美軍太空司令部",
+    "U.S. Special Operations Command": "美軍特種作戰司令部",
+    "U.S. Strategic Command": "美軍戰略司令部",
+    "U.S. Transportation Command": "美軍運輸司令部",
+}
+
+COMBATANT_COMMAND_UNIT_MAP = {
+    "africom": "U.S. Africa Command",
+    "africa command": "U.S. Africa Command",
+    "centcom": "U.S. Central Command",
+    "central command": "U.S. Central Command",
+    "cyber command": "U.S. Cyber Command",
+    "eucom": "U.S. European Command",
+    "european command": "U.S. European Command",
+    "indopacom": "U.S. Indo-Pacific Command",
+    "indo-pacific command": "U.S. Indo-Pacific Command",
+    "northern command": "U.S. Northern Command",
+    "northcom": "U.S. Northern Command",
+    "southern command": "U.S. Southern Command",
+    "southcom": "U.S. Southern Command",
+    "space command": "U.S. Space Command",
+    "spaccom": "U.S. Space Command",
+    "special operations command": "U.S. Special Operations Command",
+    "socom": "U.S. Special Operations Command",
+    "strategic command": "U.S. Strategic Command",
+    "stratcom": "U.S. Strategic Command",
+    "transportation command": "U.S. Transportation Command",
+    "transcom": "U.S. Transportation Command",
+}
+
 
 def _category_label(category: dict, lang: str) -> str:
     return category["label_zh"] if lang == "zh-TW" else category["label_en"]
@@ -131,6 +182,10 @@ def _subdepartment_label(subdepartment_name: str | None, lang: str, department_n
         return label
     if (department_name or "").strip() == "White House":
         return WHITE_HOUSE_SUBDEPARTMENT_LABELS_ZH.get(label, label)
+    if (department_name or "").strip() == "Department of Defense":
+        return MILITARY_SUBDEPARTMENT_LABELS_ZH.get(label, label)
+    if label in MILITARY_SUBDEPARTMENT_LABELS_ZH:
+        return MILITARY_SUBDEPARTMENT_LABELS_ZH[label]
     return WHITE_HOUSE_SUBDEPARTMENT_LABELS_ZH.get(label, label)
 
 
@@ -142,6 +197,10 @@ def _unit_label(unit_name: str | None, lang: str, department_name: str | None = 
         return label
     if (department_name or "").strip() == "White House":
         return WHITE_HOUSE_UNIT_LABELS_ZH.get(label, label)
+    if (department_name or "").strip() == "Department of Defense":
+        return MILITARY_UNIT_LABELS_ZH.get(label, label)
+    if label in MILITARY_UNIT_LABELS_ZH:
+        return MILITARY_UNIT_LABELS_ZH[label]
     return WHITE_HOUSE_UNIT_LABELS_ZH.get(label, label)
 
 
@@ -209,6 +268,7 @@ def _get_people_for_category(
     unit_filter: str | None = None,
     status_filter: str | None = None,
     minister_only: bool = False,
+    include_military_roles: bool = False,
 ) -> list[tuple[int, str, str | None, str | None, str, str | None, dict | None]]:
     stmt = _get_base_people_query(category_key)
     if state_filter:
@@ -216,17 +276,26 @@ def _get_people_for_category(
     if status_filter:
         stmt = stmt.where(Appointment.status == status_filter)
     rows = session.execute(stmt).all()
+    if category_key == "federal_military":
+        rows = [row for row in rows if _is_military_role(row[4], row[6])]
     if department_filter and category_key == "federal_executive":
+        rows = [row for row in rows if _executive_hierarchy(row[4], row[6])[0] == department_filter]
+    if department_filter and category_key == "federal_military":
         rows = [row for row in rows if _executive_hierarchy(row[4], row[6])[0] == department_filter]
     if subdepartment_filter and category_key == "federal_executive":
         rows = [row for row in rows if _executive_hierarchy(row[4], row[6])[1] == subdepartment_filter]
+    if subdepartment_filter and category_key == "federal_military":
+        rows = [row for row in rows if _executive_hierarchy(row[4], row[6])[1] == subdepartment_filter]
     if unit_filter and category_key == "federal_executive":
+        rows = [row for row in rows if _executive_hierarchy(row[4], row[6])[2] == unit_filter]
+    if unit_filter and category_key == "federal_military":
         rows = [row for row in rows if _executive_hierarchy(row[4], row[6])[2] == unit_filter]
     if minister_only and category_key == "federal_executive":
         rows = [
             row
             for row in rows
             if _executive_role_rank(_display_office_name(row[4], row[6]))[0] <= 4
+            or (include_military_roles and _is_military_role(row[4], row[6]))
         ]
     return rows
 
@@ -236,7 +305,7 @@ def _categories_with_state_filter() -> set[str]:
 
 
 def _categories_with_department_filter() -> set[str]:
-    return {"federal_executive"}
+    return {"federal_executive", "federal_military"}
 
 
 def _get_state_options(session, category_key: str) -> list[str]:
@@ -246,7 +315,12 @@ def _get_state_options(session, category_key: str) -> list[str]:
 
 def _get_department_options(session, category_key: str) -> list[str]:
     rows = session.execute(_get_base_people_query(category_key)).all()
+    if category_key == "federal_military":
+        rows = [row for row in rows if _is_military_role(row[4], row[6])]
     if category_key == "federal_executive":
+        departments = {_executive_hierarchy(row[4], row[6])[0] for row in rows if row[4]}
+        return sorted(departments, key=_executive_department_sort_key)
+    if category_key == "federal_military":
         departments = {_executive_hierarchy(row[4], row[6])[0] for row in rows if row[4]}
         return sorted(departments, key=_executive_department_sort_key)
     return sorted({row[4] for row in rows if row[4]})
@@ -254,6 +328,8 @@ def _get_department_options(session, category_key: str) -> list[str]:
 
 def _get_subdepartment_options(session, category_key: str, department_filter: str) -> list[str]:
     rows = session.execute(_get_base_people_query(category_key)).all()
+    if category_key == "federal_military":
+        rows = [row for row in rows if _is_military_role(row[4], row[6])]
     options = {
         hierarchy[1]
         for row in rows
@@ -265,6 +341,8 @@ def _get_subdepartment_options(session, category_key: str, department_filter: st
 
 def _get_unit_options(session, category_key: str, department_filter: str, subdepartment_filter: str) -> list[str]:
     rows = session.execute(_get_base_people_query(category_key)).all()
+    if category_key == "federal_military":
+        rows = [row for row in rows if _is_military_role(row[4], row[6])]
     options = {
         hierarchy[2]
         for row in rows
@@ -369,6 +447,35 @@ def _executive_department_name(office_name: str | None) -> str:
         return "White House"
     if "national security council" in normalized_name or "national security affairs" in normalized_name:
         return "White House"
+    if any(
+        keyword in normalized_name
+        for keyword in [
+            "joint chiefs",
+            "chairman of the joint chiefs",
+            "vice chairman of the joint chiefs",
+            "chief of naval operations",
+            "chief of staff of the army",
+            "chief of staff of the air force",
+            "commandant of the marine corps",
+            "chief of space operations",
+            "chief of the national guard bureau",
+            "combatant command",
+            "commander, u.s.",
+            "commander, united states",
+            "commander of u.s.",
+            "commander of united states",
+            "africom",
+            "centcom",
+            "eucom",
+            "indopacom",
+            "northcom",
+            "southcom",
+            "socom",
+            "stratcom",
+            "transcom",
+        ]
+    ):
+        return "Department of Defense"
     if "council of economic advisers" in normalized_name:
         return "Council of Economic Advisers"
     if "trade representative" in normalized_name:
@@ -488,7 +595,78 @@ def _executive_hierarchy(office_name: str | None, appointment_payload: dict | No
             subdepartment = "National Security Council"
         elif "chief of staff" in title_for_grouping or "white house office" in title_for_grouping:
             subdepartment = "White House Office"
+    if top_department == "Department of Defense":
+        if not subdepartment:
+            if any(
+                keyword in title_for_grouping
+                for keyword in [
+                    "joint chiefs",
+                    "chairman of the joint chiefs",
+                    "vice chairman of the joint chiefs",
+                    "chief of naval operations",
+                    "chief of staff of the army",
+                    "chief of staff of the air force",
+                    "commandant of the marine corps",
+                    "chief of space operations",
+                    "chief of the national guard bureau",
+                ]
+            ):
+                subdepartment = "Joint Chiefs of Staff"
+            elif "commander" in title_for_grouping and any(
+                key in title_for_grouping for key in COMBATANT_COMMAND_UNIT_MAP
+            ):
+                subdepartment = "Combatant Commands"
+        if subdepartment == "Joint Chiefs of Staff" and not unit:
+            if "chairman of the joint chiefs" in title_for_grouping or "vice chairman of the joint chiefs" in title_for_grouping:
+                unit = "Joint Staff"
+            elif "chief of staff of the army" in title_for_grouping:
+                unit = "Army"
+            elif "chief of naval operations" in title_for_grouping:
+                unit = "Navy"
+            elif "commandant of the marine corps" in title_for_grouping:
+                unit = "Marine Corps"
+            elif "chief of staff of the air force" in title_for_grouping:
+                unit = "Air Force"
+            elif "chief of space operations" in title_for_grouping:
+                unit = "Space Force"
+            elif "chief of the national guard bureau" in title_for_grouping:
+                unit = "National Guard"
+        if subdepartment == "Combatant Commands" and not unit:
+            for key, mapped_unit in COMBATANT_COMMAND_UNIT_MAP.items():
+                if key in title_for_grouping:
+                    unit = mapped_unit
+                    break
     return top_department, subdepartment, unit
+
+
+def _is_military_role(office_name: str | None, appointment_payload: dict | None) -> bool:
+    title = _display_office_name(office_name, appointment_payload).lower()
+    return any(
+        keyword in title
+        for keyword in [
+            "joint chiefs",
+            "chief of naval operations",
+            "chief of staff of the army",
+            "chief of staff of the air force",
+            "commandant of the marine corps",
+            "chief of space operations",
+            "chief of the national guard bureau",
+            "combatant command",
+            "commander, u.s.",
+            "commander, united states",
+            "commander of u.s.",
+            "commander of united states",
+            "africom",
+            "centcom",
+            "eucom",
+            "indopacom",
+            "northcom",
+            "southcom",
+            "socom",
+            "stratcom",
+            "transcom",
+        ]
+    )
 
 
 def _executive_role_rank(office_name: str | None) -> tuple[int, str]:
@@ -894,6 +1072,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
         subdepartment_filter = None
         unit_filter = None
         minister_only = False
+        include_military_roles = False
         person = None
         person_id = None
 
@@ -907,9 +1086,14 @@ def render(lang: str, labels: dict[str, str]) -> None:
         if person is None and selected_category in _categories_with_department_filter():
             if selected_category == "federal_executive":
                 role_scope_label = "職級" if lang == "zh-TW" else "Role scope"
-                role_scope_options = ["部長級", "全部"] if lang == "zh-TW" else ["Minister-level", "All"]
+                role_scope_options = (
+                    ["部長級與軍職", "部長級", "全部"]
+                    if lang == "zh-TW"
+                    else ["Minister-level + Military", "Minister-level", "All"]
+                )
                 role_scope = st.selectbox(role_scope_label, role_scope_options, index=0)
-                minister_only = role_scope == ("部長級" if lang == "zh-TW" else "Minister-level")
+                minister_only = role_scope in {"部長級與軍職", "部長級", "Minister-level + Military", "Minister-level"}
+                include_military_roles = role_scope in {"部長級與軍職", "Minister-level + Military"}
             department_options = _get_department_options(session, selected_category)
             if not department_options:
                 st.info(labels["no_people_loaded"])
@@ -969,6 +1153,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 unit_filter=unit_filter,
                 status_filter=selected_status,
                 minister_only=minister_only,
+                include_military_roles=include_military_roles,
             )
             if not candidates:
                 st.info(labels["no_people_loaded"])
