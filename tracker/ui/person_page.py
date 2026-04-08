@@ -95,6 +95,17 @@ DEPARTMENT_LABELS_ZH = {
     "U.S. Air Force Biographies": "美國空軍高階領導",
     "U.S. Space Force Leadership": "美國太空軍高階領導",
     "National Guard Bureau Leadership": "國民兵局高階領導",
+    "U.S. Indo-Pacific Command": "美軍印太司令部",
+    "U.S. Central Command": "美軍中央司令部",
+    "U.S. European Command": "美軍歐洲司令部",
+    "U.S. Northern Command": "美軍北方司令部",
+    "U.S. Southern Command": "美軍南方司令部",
+    "U.S. Africa Command": "美軍非洲司令部",
+    "U.S. Strategic Command": "美軍戰略司令部",
+    "U.S. Transportation Command": "美軍運輸司令部",
+    "U.S. Special Operations Command": "美軍特種作戰司令部",
+    "U.S. Cyber Command": "美軍網路司令部",
+    "U.S. Space Command": "美軍太空司令部",
     "Other": "其他",
 }
 
@@ -1265,16 +1276,19 @@ def render(lang: str, labels: dict[str, str]) -> None:
             state_filter = None if state_selection == labels["all"] else state_selection
 
         if person is None:
-            status_options = ["current", "former"]
+            status_options = ["all", "current", "former"]
             status_labels = {
+                "all": labels["all"],
                 "current": localize_value("current", lang),
                 "former": localize_value("former", lang),
             }
+            default_status_index = 0 if selected_category == "federal_military" else 1
             selected_status = st.selectbox(
                 labels["status_filter"],
                 status_options,
                 format_func=lambda value: str(status_labels[value]),
                 key=f"person-status-{selected_category}",
+                index=default_status_index,
             )
 
             candidates = _get_people_for_category(
@@ -1284,7 +1298,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 department_filter=department_filter,
                 subdepartment_filter=subdepartment_filter,
                 unit_filter=unit_filter,
-                status_filter=selected_status,
+                status_filter=(None if selected_status == "all" else selected_status),
                 minister_only=minister_only,
                 include_military_roles=include_military_roles,
             )
