@@ -39,7 +39,7 @@ PERSON_CATEGORIES = {
     "state_executive": {"label_zh": "州政府官員", "label_en": "State executive officials", "level": "state", "branch": "executive", "chamber": None},
     "state_senate": {"label_zh": "州參議員", "label_en": "State senators", "level": "state", "branch": "legislative", "chamber": "senate"},
     "state_house": {"label_zh": "州眾議員", "label_en": "State representatives", "level": "state", "branch": "legislative", "chamber": "house"},
-    "all": {"label_zh": "全部人物", "label_en": "All people", "level": None, "branch": None, "chamber": None},
+    "all": {"label_zh": "全部", "label_en": "All", "level": None, "branch": None, "chamber": None},
 }
 
 CABINET_DEPARTMENT_ORDER = [
@@ -1768,11 +1768,27 @@ def render(lang: str, labels: dict[str, str]) -> None:
     if total_people == 0 and _render_google_sheet_fallback_v2(lang, labels, pending_person_id):
         return
 
-    selected_category = st.selectbox(
+    category_select_prompt_value = "__select__"
+    category_select_prompt_label = "請選擇" if lang == "zh-TW" else "Please select"
+    category_options = [
+        category_select_prompt_value,
+        "__all__",
+        *[key for key in PERSON_CATEGORIES.keys() if key != "all"],
+    ]
+    selected_category_value = st.selectbox(
         labels["person_category"],
-        list(PERSON_CATEGORIES.keys()),
-        format_func=lambda key: _category_label(PERSON_CATEGORIES[key], lang),
+        category_options,
+        format_func=lambda key: (
+            category_select_prompt_label
+            if key == category_select_prompt_value
+            else (labels["all"] if key == "__all__" else _category_label(PERSON_CATEGORIES[key], lang))
+        ),
     )
+    if selected_category_value == category_select_prompt_value:
+        st.info(category_select_prompt_label)
+        return
+    selected_category = "all" if selected_category_value == "__all__" else selected_category_value
+
 
     with session_scope() as session:
         state_filter = None
