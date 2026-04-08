@@ -34,9 +34,11 @@ from tracker.utils.wikipedia_links import build_wikipedia_search_url, resolve_wi
 PERSON_CATEGORIES = {
     "federal_executive": {"label_zh": "聯邦政府部門官員", "label_en": "Federal executive officials", "level": "federal", "branch": "executive", "chamber": None},
     "federal_military": {"label_zh": "軍職人員", "label_en": "Military personnel", "level": "federal", "branch": "executive", "chamber": None},
+    "federal_legislative": {"label_zh": "聯邦議員", "label_en": "Federal legislators", "level": "federal", "branch": "legislative", "chamber": None},
     "federal_senate": {"label_zh": "聯邦參議員", "label_en": "U.S. Senators", "level": "federal", "branch": "legislative", "chamber": "senate"},
     "federal_house": {"label_zh": "聯邦眾議員", "label_en": "U.S. Representatives", "level": "federal", "branch": "legislative", "chamber": "house"},
     "state_executive": {"label_zh": "州政府官員", "label_en": "State executive officials", "level": "state", "branch": "executive", "chamber": None},
+    "state_legislative": {"label_zh": "州議員", "label_en": "State legislators", "level": "state", "branch": "legislative", "chamber": None},
     "state_senate": {"label_zh": "州參議員", "label_en": "State senators", "level": "state", "branch": "legislative", "chamber": "senate"},
     "state_house": {"label_zh": "州眾議員", "label_en": "State representatives", "level": "state", "branch": "legislative", "chamber": "house"},
     "all": {"label_zh": "全部", "label_en": "All", "level": None, "branch": None, "chamber": None},
@@ -256,6 +258,16 @@ def _category_label(category: dict, lang: str) -> str:
     return category["label_zh"] if lang == "zh-TW" else category["label_en"]
 
 
+def _visible_person_category_keys() -> list[str]:
+    return [
+        "federal_executive",
+        "federal_military",
+        "federal_legislative",
+        "state_executive",
+        "state_legislative",
+    ]
+
+
 def _department_label(department_name: str | None, lang: str) -> str:
     label = (department_name or "").strip()
     if not label:
@@ -422,7 +434,15 @@ def _get_people_for_category(
 
 
 def _categories_with_state_filter() -> set[str]:
-    return {"federal_senate", "federal_house", "state_executive", "state_senate", "state_house"}
+    return {
+        "federal_legislative",
+        "federal_senate",
+        "federal_house",
+        "state_executive",
+        "state_legislative",
+        "state_senate",
+        "state_house",
+    }
 
 
 def _categories_with_department_filter() -> set[str]:
@@ -430,7 +450,29 @@ def _categories_with_department_filter() -> set[str]:
 
 
 def _legislative_categories() -> set[str]:
-    return {"federal_senate", "federal_house", "state_senate", "state_house"}
+    return {"federal_legislative", "federal_senate", "federal_house", "state_legislative", "state_senate", "state_house"}
+
+
+def _state_legislative_chamber_options(
+    session,
+    state_filter: str | None,
+) -> list[str]:
+    senate_rows = _get_people_for_category(session, "state_senate", state_filter=state_filter)
+    house_rows = _get_people_for_category(session, "state_house", state_filter=state_filter)
+
+    state_name = str(state_filter or "").strip().lower()
+    if state_name == "nebraska" and senate_rows and not house_rows:
+        return ["state_legislative"]
+
+    options = ["__all__"]
+    if senate_rows:
+        options.append("state_senate")
+    if house_rows:
+        options.append("state_house")
+
+    if len(options) == 1:
+        return ["state_legislative"]
+    return options
 
 
 def _category_office_filters(category_key: str) -> tuple[str | None, str | None, str | None]:
@@ -666,6 +708,27 @@ def _render_member_roster(
                 display_person_name(row[1], row[2], row[3]).lower(),
             ),
         )
+    elif selected_category == "federal_legislative":
+        ordered = sorted(
+            candidates,
+            key=lambda row: (
+                _state_sort_key(row[5]),
+                _district_sort_key(row[7]),
+                _surname_sort_key(display_person_name(row[1], row[2], row[3]), row[3]),
+                display_person_name(row[1], row[2], row[3]).lower(),
+            ),
+        )
+    elif selected_category == "state_legislative":
+        multi_state = len({str(row[5] or "").strip() for row in candidates if str(row[5] or "").strip()}) > 1
+        ordered = sorted(
+            candidates,
+            key=lambda row: (
+                _state_sort_key(row[5]) if multi_state else (0, ""),
+                _district_sort_key(row[7]),
+                _surname_sort_key(display_person_name(row[1], row[2], row[3]), row[3]),
+                display_person_name(row[1], row[2], row[3]).lower(),
+            ),
+        )
     elif selected_category == "state_house":
         multi_state = len({str(row[5] or "").strip() for row in candidates if str(row[5] or "").strip()}) > 1
         ordered = sorted(
@@ -718,7 +781,7 @@ def _render_member_roster(
     # Deduplicate by person and keep the highest-ranked row based on current ordering.
     # Also suppress unspecified-district rows when a likely same person already appears with a specific district.
     specific_district_names: list[str] = []
-    if selected_category in {"state_senate", "state_house"}:
+    if selected_category in {"state_legislative", "state_senate", "state_house"}:
         for row in ordered:
             row_name = display_person_name(row[1], row[2], row[3])
             if _is_invalid_person_name(row_name):
@@ -734,9 +797,9 @@ def _render_member_roster(
         if person_id in seen_person_ids:
             continue
         row_name = display_person_name(row[1], row[2], row[3])
-        if selected_category in {"state_senate", "state_house"} and _is_invalid_person_name(row_name):
+        if selected_category in {"state_legislative", "state_senate", "state_house"} and _is_invalid_person_name(row_name):
             continue
-        if selected_category in {"state_senate", "state_house"}:
+        if selected_category in {"state_legislative", "state_senate", "state_house"}:
             district = str(row[7] or "").strip()
             if not district or district.lower() == "unspecified district":
                 if any(_likely_same_legislator_name_variant(row_name, existing_name) for existing_name in specific_district_names):
@@ -747,7 +810,7 @@ def _render_member_roster(
 
     department_header = (
         ("州" if lang == "zh-TW" else "State")
-        if selected_category in {"federal_senate", "federal_house", "state_senate", "state_house"}
+        if selected_category in {"federal_legislative", "federal_senate", "federal_house", "state_legislative", "state_senate", "state_house"}
         else ("部門" if lang == "zh-TW" else "Department")
     )
     headers = ("姓名", department_header, "職位") if lang == "zh-TW" else ("Name", department_header, "Position")
@@ -759,7 +822,7 @@ def _render_member_roster(
     for row in ordered:
         person_id = int(row[0])
         name = display_person_name(row[1], row[2], row[3])
-        if selected_category in {"state_senate", "state_house"}:
+        if selected_category in {"state_legislative", "state_senate", "state_house"}:
             name = _strip_legislative_name_suffix(name)
         office = _display_office_name(row[4], row[6])
         district = str(row[7] or "").strip()
@@ -784,7 +847,7 @@ def _render_member_roster(
         else:
             office_bilingual = _bilingual_text(office, office_zh)
 
-        if selected_category in {"state_senate", "state_house"}:
+        if selected_category in {"state_legislative", "state_senate", "state_house"}:
             district_label = district or "Unspecified district"
             position = f"{office_bilingual} (第{district_label}選區 / District {district_label})"
         else:
@@ -1773,7 +1836,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
     category_options = [
         category_select_prompt_value,
         "__all__",
-        *[key for key in PERSON_CATEGORIES.keys() if key != "all"],
+        *_visible_person_category_keys(),
     ]
     selected_category_value = st.selectbox(
         labels["person_category"],
@@ -1808,6 +1871,16 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 person_id = int(pending_person_id)
             else:
                 pass
+
+        if person is None and selected_category == "federal_legislative":
+            chamber_label = "院別" if lang == "zh-TW" else "Chamber"
+            federal_legislative_selection = st.selectbox(
+                chamber_label,
+                ["__all__", "federal_senate", "federal_house"],
+                format_func=lambda item: labels["all"] if item == "__all__" else _category_label(PERSON_CATEGORIES[item], lang),
+                key="person-federal-legislative-chamber",
+            )
+            selected_category = "federal_legislative" if federal_legislative_selection == "__all__" else federal_legislative_selection
 
         if person is None and selected_category in _categories_with_department_filter():
             if selected_category == "federal_executive":
@@ -1858,6 +1931,20 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 return
             state_filter = None if state_selection == labels["all"] else state_selection
 
+        if person is None and selected_category == "state_legislative":
+            chamber_label = "院別" if lang == "zh-TW" else "Chamber"
+            state_chamber_options = _state_legislative_chamber_options(session, state_filter=state_filter)
+            if state_chamber_options == ["state_legislative"]:
+                selected_category = "state_legislative"
+            else:
+                state_legislative_selection = st.selectbox(
+                    chamber_label,
+                    state_chamber_options,
+                    format_func=lambda item: labels["all"] if item == "__all__" else _category_label(PERSON_CATEGORIES[item], lang),
+                    key=f"person-state-legislative-chamber-{state_filter or 'all'}",
+                )
+                selected_category = "state_legislative" if state_legislative_selection == "__all__" else state_legislative_selection
+
         if person is None:
             status_options = ["all", "current", "former"]
             status_labels = {
@@ -1904,7 +1991,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                         if not candidates:
                             st.info(labels["no_people_loaded"])
                             return
-            if selected_category in {"federal_senate", "federal_house"}:
+            if selected_category in {"federal_legislative", "federal_senate", "federal_house"}:
                 caucus_map = _build_taiwan_caucus_map_for_candidates(session, candidates, selected_category)
                 caucus_options = []
                 caucus_seen: set[tuple[int, str]] = set()
@@ -1995,8 +2082,10 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 return
             if selected_category in _categories_with_department_filter() or selected_category in {
                 "state_executive",
+                "state_legislative",
                 "state_senate",
                 "state_house",
+                "federal_legislative",
                 "federal_senate",
                 "federal_house",
             }:
@@ -2102,7 +2191,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 current_appointment_row[2] if current_appointment_row else None,
                 current_appointment_row[4] if current_appointment_row else None,
             )
-            if selected_category in {"federal_senate", "federal_house"}
+            if selected_category in {"federal_legislative", "federal_senate", "federal_house"}
             else None
         )
 
@@ -2544,7 +2633,7 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str], pending_per
         if lang != "zh-TW"
         else "目前使用 Google Sheet fallback 模式，雲端版先顯示已匯出的人物資料。"
     )
-    categories = list(PERSON_CATEGORIES.keys())
+    categories = [*_visible_person_category_keys(), "all"]
     selected_category = st.selectbox(
         labels["person_category"],
         categories,
@@ -2666,7 +2755,7 @@ def _render_google_sheet_fallback_v2(lang: str, labels: dict[str, str], pending_
         if lang != "zh-TW"
         else "目前使用 Google Sheet fallback 模式，雲端版先顯示已匯出的人物資料。"
     )
-    categories = list(PERSON_CATEGORIES.keys())
+    categories = [*_visible_person_category_keys(), "all"]
     selected_category = st.selectbox(
         labels["person_category"],
         categories,
@@ -2970,12 +3059,16 @@ def _sheet_person_matches_category(person: dict[str, object], category_key: str)
                 "u.s. space command",
             )
         )
+    if category_key == "federal_legislative":
+        return level == "federal" and branch == "legislative"
     if category_key == "federal_senate":
         return level == "federal" and branch == "legislative" and is_senate
     if category_key == "federal_house":
         return level == "federal" and branch == "legislative" and (is_house or not is_senate)
     if category_key == "state_executive":
         return level == "state" and branch == "executive"
+    if category_key == "state_legislative":
+        return level == "state" and branch == "legislative"
     if category_key == "state_senate":
         return level == "state" and branch == "legislative" and is_senate
     if category_key == "state_house":
