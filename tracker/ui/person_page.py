@@ -1905,7 +1905,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                         caucus_options.append(key)
                 caucus_options = sorted(caucus_options, key=lambda item: (-item[0], item[1]))
                 if caucus_options:
-                    caucus_label = "Taiwan Caucus"
+                    caucus_label = "台灣連線"
                     any_label = "任一屆（含歷年）" if lang == "zh-TW" else "Any congress (historical)"
                     option_values = ["__all__", "__any__", *[f"{congress}:{chamber}" for congress, chamber in caucus_options]]
                     def _format_caucus(value: str) -> str:
@@ -2351,7 +2351,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     seen_caucus.add(key)
                     caucus_entries.append(_taiwan_caucus_option_label(congress, chamber, lang))
             if caucus_entries:
-                caucus_label = "Taiwan Caucus"
+                caucus_label = "台灣連線"
                 st.write(f"{caucus_label}: {' / '.join(sorted(caucus_entries, reverse=True))}")
         if person_data["social_profiles"]:
             st.write(labels["social_profiles"])
