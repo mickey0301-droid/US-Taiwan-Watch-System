@@ -2551,6 +2551,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     )
 
                 session.flush()
+                session.commit()
                 st.session_state[alias_flash_key] = "已更新中文譯名" if lang == "zh-TW" else "Chinese names updated"
                 st.rerun()
 
@@ -2622,6 +2623,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     lookback_days=int(lookback_days),
                 )
                 session.flush()
+                session.commit()
                 st.session_state[monitor_flash_key] = "已儲存監測設定" if lang == "zh-TW" else "Monitor settings saved"
                 st.rerun()
 
