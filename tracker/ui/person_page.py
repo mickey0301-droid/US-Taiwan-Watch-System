@@ -479,6 +479,46 @@ def _build_party_map_for_candidates(
     return party_map
 
 
+def _build_taiwan_caucus_map_for_candidates(
+    session,
+    candidates: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]],
+    category_key: str,
+) -> dict[int, list[dict[str, object]]]:
+    person_ids = sorted({int(row[0]) for row in candidates})
+    if not person_ids:
+        return {}
+
+    chamber_filter = "house" if category_key == "federal_house" else "senate" if category_key == "federal_senate" else None
+    result: dict[int, list[dict[str, object]]] = {}
+    rows = session.execute(select(Person.id, Person.raw_payload).where(Person.id.in_(person_ids))).all()
+    for person_id, raw_payload in rows:
+        payload = raw_payload if isinstance(raw_payload, dict) else {}
+        memberships = payload.get("taiwan_caucus_memberships") or []
+        if not isinstance(memberships, list):
+            continue
+        filtered: list[dict[str, object]] = []
+        for item in memberships:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("group") or "").strip().lower() != "taiwan caucus":
+                continue
+            chamber = str(item.get("chamber") or "").strip().lower()
+            if chamber_filter and chamber and chamber != chamber_filter:
+                continue
+            filtered.append(item)
+        if filtered:
+            result[int(person_id)] = filtered
+    return result
+
+
+def _taiwan_caucus_option_label(congress: int, chamber: str, lang: str) -> str:
+    chamber_label = "眾議院" if chamber == "house" else "參議院"
+    if lang == "zh-TW":
+        return f"{congress} 屆（{chamber_label}）"
+    chamber_en = "House" if chamber == "house" else "Senate"
+    return f"{congress}th ({chamber_en})"
+
+
 def _district_sort_key(value: str | None) -> tuple[int, object]:
     text = str(value or "").strip()
     if not text:
@@ -1848,6 +1888,58 @@ def render(lang: str, labels: dict[str, str]) -> None:
                         if not candidates:
                             st.info(labels["no_people_loaded"])
                             return
+            if selected_category in {"federal_senate", "federal_house"}:
+                caucus_map = _build_taiwan_caucus_map_for_candidates(session, candidates, selected_category)
+                caucus_options = []
+                caucus_seen: set[tuple[int, str]] = set()
+                for memberships in caucus_map.values():
+                    for membership in memberships:
+                        congress = int(membership.get("congress") or 0)
+                        chamber = str(membership.get("chamber") or "").strip().lower()
+                        if congress <= 0 or chamber not in {"house", "senate"}:
+                            continue
+                        key = (congress, chamber)
+                        if key in caucus_seen:
+                            continue
+                        caucus_seen.add(key)
+                        caucus_options.append(key)
+                caucus_options = sorted(caucus_options, key=lambda item: (-item[0], item[1]))
+                if caucus_options:
+                    caucus_label = "Taiwan Caucus"
+                    any_label = "任一屆（含歷年）" if lang == "zh-TW" else "Any congress (historical)"
+                    option_values = ["__all__", "__any__", *[f"{congress}:{chamber}" for congress, chamber in caucus_options]]
+                    def _format_caucus(value: str) -> str:
+                        if value == "__all__":
+                            return labels["all"]
+                        if value == "__any__":
+                            return any_label
+                        congress_text, chamber_text = value.split(":", 1)
+                        return _taiwan_caucus_option_label(int(congress_text), chamber_text, lang)
+
+                    selected_caucus = st.selectbox(
+                        caucus_label,
+                        option_values,
+                        format_func=_format_caucus,
+                        key=f"person-caucus-{selected_category}",
+                    )
+                    if selected_caucus != "__all__":
+                        if selected_caucus == "__any__":
+                            candidates = [row for row in candidates if int(row[0]) in caucus_map]
+                        else:
+                            congress_text, chamber_text = selected_caucus.split(":", 1)
+                            congress_value = int(congress_text)
+                            candidates = [
+                                row
+                                for row in candidates
+                                if any(
+                                    int(item.get("congress") or 0) == congress_value
+                                    and str(item.get("chamber") or "").strip().lower() == chamber_text
+                                    for item in caucus_map.get(int(row[0]), [])
+                                )
+                            ]
+                        if not candidates:
+                            st.info(labels["no_people_loaded"])
+                            return
 
             if selected_category == "federal_executive":
                 candidates = sorted(
@@ -2240,6 +2332,27 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 st.markdown(
                     f"[{congress_search_label}]({build_congress_member_search_url(person_data['full_name'], current_appointment)})"
                 )
+            caucus_memberships = (person_data.get("raw_payload") or {}).get("taiwan_caucus_memberships", [])
+            caucus_entries: list[str] = []
+            if isinstance(caucus_memberships, list):
+                seen_caucus: set[tuple[int, str]] = set()
+                for item in caucus_memberships:
+                    if not isinstance(item, dict):
+                        continue
+                    if str(item.get("group") or "").strip().lower() != "taiwan caucus":
+                        continue
+                    congress = int(item.get("congress") or 0)
+                    chamber = str(item.get("chamber") or "").strip().lower()
+                    if congress <= 0 or chamber not in {"house", "senate"}:
+                        continue
+                    key = (congress, chamber)
+                    if key in seen_caucus:
+                        continue
+                    seen_caucus.add(key)
+                    caucus_entries.append(_taiwan_caucus_option_label(congress, chamber, lang))
+            if caucus_entries:
+                caucus_label = "Taiwan Caucus"
+                st.write(f"{caucus_label}: {' / '.join(sorted(caucus_entries, reverse=True))}")
         if person_data["social_profiles"]:
             st.write(labels["social_profiles"])
             render_social_links(person_data["social_profiles"], key_prefix=f"person-social-{person_id}")
