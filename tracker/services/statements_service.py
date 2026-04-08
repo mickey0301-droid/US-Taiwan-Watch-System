@@ -60,9 +60,8 @@ class StatementsService:
                 StatementSource.source_type.in_(["media", "cspan"]),
             )
             .order_by(Statement.date_published.desc().nullslast(), Statement.date_collected.desc())
-            .distinct()
         )
-        statements = self.session.execute(stmt).scalars().all()
+        statements = self._dedupe_statements_by_id(self.session.execute(stmt).scalars().all())
         return [statement for statement in statements if self._is_taiwan_event(statement)][:limit]
 
     def list_recent_social_posts(self, person_id: int, limit: int = 20) -> list[Statement]:
@@ -75,9 +74,8 @@ class StatementsService:
                 StatementSource.source_type == "social",
             )
             .order_by(Statement.date_published.desc().nullslast(), Statement.date_collected.desc())
-            .distinct()
         )
-        statements = self.session.execute(stmt).scalars().all()
+        statements = self._dedupe_statements_by_id(self.session.execute(stmt).scalars().all())
         return [statement for statement in statements if self._is_taiwan_event(statement)][:limit]
 
     def list_recent_official_statements(self, person_id: int, limit: int = 20) -> list[Statement]:
@@ -90,10 +88,20 @@ class StatementsService:
                 StatementSource.source_type == "official",
             )
             .order_by(Statement.date_published.desc().nullslast(), Statement.date_collected.desc())
-            .distinct()
         )
-        statements = self.session.execute(stmt).scalars().all()
+        statements = self._dedupe_statements_by_id(self.session.execute(stmt).scalars().all())
         return [statement for statement in statements if self._is_taiwan_event(statement)][:limit]
+
+    @staticmethod
+    def _dedupe_statements_by_id(statements: list[Statement]) -> list[Statement]:
+        output: list[Statement] = []
+        seen_ids: set[int] = set()
+        for statement in statements:
+            if statement.id in seen_ids:
+                continue
+            seen_ids.add(statement.id)
+            output.append(statement)
+        return output
 
     def list_recent_taiwan_statements(self, person_id: int, limit: int = 3) -> list[Statement]:
         stmt = (
