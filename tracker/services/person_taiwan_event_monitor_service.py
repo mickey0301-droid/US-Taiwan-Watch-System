@@ -12,7 +12,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from tracker.models import Person
+from tracker.models import Person, StatementParticipant, StatementSource
 from tracker.services.statements_service import StatementsService
 from tracker.utils.web import build_google_news_rss_url, domain_from_url, parse_datetime
 
@@ -162,6 +162,7 @@ class PersonTaiwanEventMonitorService:
                 found = 0
                 created = 0
                 updated = 0
+                skipped_existing = 0
                 for item in items:
                     if not self._within_lookback(item.get("published_at"), lookback_days):
                         continue
@@ -174,6 +175,9 @@ class PersonTaiwanEventMonitorService:
 
                     source_url = str(item.get("url") or "").strip()
                     if not source_url:
+                        continue
+                    if self._has_existing_person_source_url(person.id, source_url):
+                        skipped_existing += 1
                         continue
                     source_domain = domain_from_url(source_url)
                     source_type = "official" if source_domain in {"president.gov.tw", "mofa.gov.tw"} else "media"
@@ -219,6 +223,7 @@ class PersonTaiwanEventMonitorService:
                         "items_found": found,
                         "items_added": created,
                         "items_updated": updated,
+                        "items_skipped_existing": skipped_existing,
                     }
                 )
 
@@ -290,6 +295,21 @@ class PersonTaiwanEventMonitorService:
                 }
             )
         return items
+
+    def _has_existing_person_source_url(self, person_id: int, source_url: str) -> bool:
+        url = str(source_url or "").strip()
+        if not url:
+            return False
+        existing = self.session.execute(
+            select(StatementSource.id)
+            .join(StatementParticipant, StatementParticipant.statement_id == StatementSource.statement_id)
+            .where(
+                StatementParticipant.person_id == int(person_id),
+                StatementSource.source_url == url,
+            )
+            .limit(1)
+        ).first()
+        return existing is not None
 
     def _resolve_entry_url(self, client: httpx.Client, url: str) -> str:
         link = str(url or "").strip()
