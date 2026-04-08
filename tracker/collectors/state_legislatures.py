@@ -287,7 +287,7 @@ class StateLegislaturesCollector(BaseCollector):
                     )
             elif parser_identity == "de_legislators_json_v1":
                 try:
-                    payload_json = self._post_json(source["source_url"], {"page": 1, "pageSize": 500})
+                    payload_json = self._fetch_de_legislators_json(source)
                     records.extend(self._parse_de_legislators_json(source, payload_json))
                 except Exception as exc:
                     logger.exception("Delaware legislators parse failed for %s", source.get("source_url"))
@@ -693,6 +693,42 @@ class StateLegislaturesCollector(BaseCollector):
         )
         response.raise_for_status()
         return response.json()
+
+    def _fetch_de_legislators_json(self, source: dict[str, Any]) -> dict[str, Any] | list[Any]:
+        source_url = str(source.get("source_url") or "")
+        if "/json/" in source_url.lower():
+            return self._post_json(source_url, {"page": 1, "pageSize": 500})
+
+        chamber = str(source.get("chamber") or "").lower()
+        if chamber == "senate":
+            endpoint = "/json/Senate/GetSenators"
+        else:
+            endpoint = "/json/House/GetRepresentatives"
+
+        with httpx.Client(
+            timeout=30.0,
+            follow_redirects=True,
+            trust_env=False,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+        ) as client:
+            entry = client.get(source_url)
+            entry.raise_for_status()
+            json_url = urljoin(str(entry.url), endpoint)
+            response = client.post(
+                json_url,
+                data={"page": 1, "pageSize": 500},
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Accept": "application/json,text/plain,*/*",
+                    "Referer": str(entry.url),
+                    "X-Requested-With": "XMLHttpRequest",
+                },
+            )
+            response.raise_for_status()
+            return response.json()
 
     def _post_graphql_json(self, url: str, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
         response = httpx.post(
@@ -1677,4 +1713,3 @@ class StateLegislaturesCollector(BaseCollector):
             family, given = [part.strip() for part in cleaned.split(",", 1)]
             cleaned = f"{given} {family}"
         return cleaned
-
