@@ -1342,10 +1342,10 @@ def _executive_department_name(office_name: str | None) -> str:
 
 
 def _executive_hierarchy(office_name: str | None, appointment_payload: dict | None) -> tuple[str, str | None, str | None]:
-    payload = appointment_payload or {}
-    payload_office_title = payload.get("office_title") if isinstance(payload, dict) else None
-    department_name = payload.get("department_name") if isinstance(payload, dict) else None
-    top_department_name = payload.get("top_department_name") if isinstance(payload, dict) else None
+    payload = appointment_payload if isinstance(appointment_payload, dict) else {}
+    payload_office_title = payload.get("office_title")
+    department_name = payload.get("department_name")
+    top_department_name = payload.get("top_department_name")
     top_department = (
         top_department_name
         or department_name
