@@ -16,7 +16,7 @@ from tracker.services.statements_service import StatementsService
 from tracker.services.x_candidate_confirmation_service import XCandidateConfirmationService
 from tracker.ui.badges import render_source_badges
 from tracker.ui.display import localize_dataframe, localize_value, style_source_columns
-from tracker.ui.navigation import render_person_links
+from tracker.ui.navigation import person_detail_href, render_person_links
 from tracker.ui.social_links import render_social_links
 from tracker.ui.source_labels import source_label, statement_source_label
 from tracker.utils.congress import build_congress_member_search_url, extract_legislator_metadata
@@ -314,6 +314,7 @@ def _get_base_people_query(category_key: str):
             Office.office_name,
             Jurisdiction.name,
             Appointment.raw_payload,
+            Appointment.district,
         )
         .join(Appointment, Appointment.person_id == Person.id)
         .join(Office, Office.id == Appointment.office_id)
@@ -340,7 +341,7 @@ def _get_people_for_category(
     status_filter: str | None = None,
     minister_only: bool = False,
     include_military_roles: bool = False,
-) -> list[tuple[int, str, str | None, str | None, str, str | None, dict | None]]:
+) -> list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]]:
     stmt = _get_base_people_query(category_key)
     if state_filter:
         stmt = stmt.where(Jurisdiction.name == state_filter)
@@ -377,6 +378,49 @@ def _categories_with_state_filter() -> set[str]:
 
 def _categories_with_department_filter() -> set[str]:
     return {"federal_executive", "federal_military"}
+
+
+def _district_sort_key(value: str | None) -> tuple[int, object]:
+    text = str(value or "").strip()
+    if not text:
+        return (2, "")
+    match = re.search(r"district\s*([0-9A-Za-z-]+)", text, flags=re.I)
+    normalized = match.group(1) if match else text
+    if normalized.isdigit():
+        return (0, int(normalized))
+    return (1, normalized.lower())
+
+
+def _render_member_roster(
+    candidates: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]],
+    lang: str,
+    selected_category: str,
+) -> None:
+    title = "成員名單" if lang == "zh-TW" else "Member roster"
+    st.markdown(f"**{title}**")
+    if not candidates:
+        st.caption("目前無資料" if lang == "zh-TW" else "No data yet")
+        return
+
+    ordered = candidates
+    if selected_category in {"state_senate", "state_house"}:
+        ordered = sorted(
+            candidates,
+            key=lambda row: (_district_sort_key(row[7]), display_person_name(row[1], row[2], row[3]).lower()),
+        )
+
+    lines: list[str] = []
+    for row in ordered:
+        person_id = int(row[0])
+        name = display_person_name(row[1], row[2], row[3])
+        office = _display_office_name(row[4], row[6])
+        district = str(row[7] or "").strip()
+        if selected_category in {"state_senate", "state_house"}:
+            district_label = district or ("未填" if lang == "zh-TW" else "Unspecified")
+            lines.append(f"- `{district_label}` [{name}]({person_detail_href(person_id)})")
+        else:
+            lines.append(f"- [{name}]({person_detail_href(person_id)}) · {office}")
+    st.markdown("\n".join(lines))
 
 
 def _get_state_options(session, category_key: str) -> list[str]:
@@ -1235,9 +1279,9 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     if lang == "zh-TW"
                     else ["Minister-level + Military", "Minister-level", "All"]
                 )
-                role_scope = st.selectbox(role_scope_label, role_scope_options, index=0)
+                role_scope = st.selectbox(role_scope_label, role_scope_options, index=2)
                 minister_only = role_scope in {"部長級與軍職", "部長級", "Minister-level + Military", "Minister-level"}
-                include_military_roles = role_scope in {"部長級與軍職", "Minister-level + Military"}
+                include_military_roles = role_scope in {"部長級與軍職", "全部", "Minister-level + Military", "All"}
             department_options = _get_department_options(session, selected_category)
             if not department_options:
                 st.info(labels["no_people_loaded"])
@@ -1325,6 +1369,9 @@ def render(lang: str, labels: dict[str, str]) -> None:
                         display_person_name(row[1], row[2], row[3]).lower(),
                     ),
                 )
+
+            if selected_category in _categories_with_department_filter() or selected_category in {"state_executive", "state_senate", "state_house"}:
+                _render_member_roster(candidates, lang=lang, selected_category=selected_category)
 
             person_options = {
                 f"{display_person_name(row[1], row[2], row[3])} ({_display_office_name(row[4], row[6])})": row[0]
