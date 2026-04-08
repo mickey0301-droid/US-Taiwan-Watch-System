@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import re
 import pandas as pd
 import streamlit as st
@@ -1720,6 +1721,40 @@ def render(lang: str, labels: dict[str, str]) -> None:
         officials_service = OfficialsService(session)
         aliases = session.execute(select(Alias.alias).where(Alias.person_id == person.id, Alias.alias_type != "chinese_name")).scalars().all()
         chinese_aliases = officials_service.list_chinese_aliases(person.id)
+        appointment_source_rows = session.execute(
+            select(Appointment.source_url, Appointment.source_type, Appointment.parser_identity)
+            .where(Appointment.person_id == person.id, Appointment.source_url.is_not(None))
+            .order_by(Appointment.id.desc())
+        ).all()
+        source_links: list[dict[str, str]] = []
+        seen_source_urls: set[str] = set()
+
+        def _append_source(url: str | None, source_type: str | None, parser_identity: str | None) -> None:
+            url_text = str(url or "").strip()
+            if not url_text or url_text in seen_source_urls:
+                return
+            seen_source_urls.add(url_text)
+            source_links.append(
+                {
+                    "url": url_text,
+                    "source_type": str(source_type or "").strip(),
+                    "parser_identity": str(parser_identity or "").strip(),
+                }
+            )
+
+        _append_source(person.canonical_official_url, person.source_type, person.parser_identity)
+        _append_source(person.source_url, person.source_type, person.parser_identity)
+        for row_source_url, row_source_type, row_parser_identity in appointment_source_rows:
+            _append_source(row_source_url, row_source_type, row_parser_identity)
+        for item in ((person.raw_payload or {}).get("source_links") or []):
+            if not isinstance(item, dict):
+                continue
+            _append_source(
+                str(item.get("url") or ""),
+                str(item.get("source_type") or ""),
+                str(item.get("parser_identity") or ""),
+            )
+        person_data["source_links"] = source_links
         appointments = session.execute(
             select(Appointment.role_title, Appointment.party, Appointment.status, Appointment.start_date, Appointment.end_date, Appointment.district)
             .where(Appointment.person_id == person.id)
@@ -1874,6 +1909,59 @@ def render(lang: str, labels: dict[str, str]) -> None:
         elif generated_chinese_name:
             st.caption("中文名由 AI 協助生成" if lang == "zh-TW" else "Chinese name generated with AI assistance")
 
+        with st.expander("編輯中文譯名" if lang == "zh-TW" else "Edit Chinese names"):
+            help_text = (
+                "可用逗號、頓號或換行分隔多個譯名"
+                if lang == "zh-TW"
+                else "Use commas or new lines to separate multiple names"
+            )
+            st.caption(help_text)
+            initial_alias_text = "\n".join(chinese_aliases or ([generated_chinese_name] if generated_chinese_name else []))
+            alias_input = st.text_area(
+                "中文譯名",
+                value=initial_alias_text,
+                key=f"edit-chinese-aliases-{person.id}",
+                height=100,
+            )
+            save_aliases = st.button(
+                "儲存中文譯名" if lang == "zh-TW" else "Save Chinese names",
+                key=f"save-chinese-aliases-{person.id}",
+            )
+            if save_aliases:
+                raw_parts = re.split(r"[\n,，、;/]+", str(alias_input or ""))
+                submitted_aliases: list[str] = []
+                seen_aliases: set[str] = set()
+                for part in raw_parts:
+                    alias_text = str(part or "").strip()
+                    if not alias_text or alias_text in seen_aliases:
+                        continue
+                    seen_aliases.add(alias_text)
+                    submitted_aliases.append(alias_text)
+
+                existing_alias_rows = session.execute(
+                    select(Alias).where(
+                        Alias.person_id == person.id,
+                        Alias.alias_type == "chinese_name",
+                        Alias.is_current.is_(True),
+                    )
+                ).scalars().all()
+                for alias_row in existing_alias_rows:
+                    alias_row.is_current = False
+                    alias_row.last_seen_at = datetime.utcnow()
+
+                for alias_text in submitted_aliases:
+                    officials_service.ensure_alias(
+                        person.id,
+                        alias_text,
+                        source_url="manual://person_page",
+                        source_type="manual",
+                        alias_type="chinese_name",
+                    )
+
+                session.flush()
+                chinese_aliases = submitted_aliases
+                st.success("已更新中文譯名" if lang == "zh-TW" else "Chinese names updated")
+
         _render_db_person_highlights(
             recent_events=recent_statements,
             recent_legislation=recent_legislation,
@@ -1942,6 +2030,19 @@ def render(lang: str, labels: dict[str, str]) -> None:
 
         st.write(f"{labels['primary_source']}: {source_bucket_label(person_data['source_type'], person_source_url, lang)}")
         st.write(f"{labels['official_page']}: {official_page_url or 'N/A'}")
+        all_sources_label = "所有來源" if lang == "zh-TW" else "All sources"
+        st.write(all_sources_label)
+        if person_data["source_links"]:
+            for source_item in person_data["source_links"]:
+                source_url = source_item.get("url") or ""
+                source_type = source_item.get("source_type") or None
+                parser_identity = source_item.get("parser_identity") or ""
+                display = source_bucket_label(source_type, source_url, lang)
+                if parser_identity:
+                    display = f"{display} ({parser_identity})"
+                st.markdown(f"- [{display}]({source_url})")
+        else:
+            st.write("N/A")
 
         st.write(labels["aliases"])
         st.write(", ".join(aliases) if aliases else "N/A")
