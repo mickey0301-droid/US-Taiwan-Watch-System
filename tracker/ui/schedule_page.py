@@ -36,17 +36,32 @@ def _combine_dt(date_value, time_value) -> datetime:
 def _render_search_result(result: dict | None, result_type: str) -> None:
     if not result:
         return
+    if result_type == "event":
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("找到幾則", int(result.get("found") or 0))
+        c2.metric("新增", int(result.get("created") or 0))
+        c3.metric("更新", int(result.get("updated") or 0))
+        c4.metric("已去重", int(result.get("skipped_existing") or 0))
+    if result_type == "legislation":
+        c1, c2, c3 = st.columns(3)
+        c1.metric("找到幾則", int(result.get("records_found") or 0))
+        c2.metric("新增", int(result.get("records_created") or 0))
+        c3.metric("更新", int(result.get("records_updated") or 0))
     st.json(result)
     if result_type == "event":
         items = list(result.get("items") or [])
         if items:
             st.markdown("**事件結果清單**")
             st.dataframe(pd.DataFrame(items), use_container_width=True, hide_index=True)
+        else:
+            st.caption("本次事件搜尋沒有可顯示的結果明細。")
     if result_type == "legislation":
         items = list(result.get("items") or [])
         if items:
             st.markdown("**法案結果清單**")
             st.dataframe(pd.DataFrame(items), use_container_width=True, hide_index=True)
+        else:
+            st.caption("本次法案搜尋沒有可顯示的結果明細。")
 
 
 def _render_schedule_table(lang: str) -> None:
