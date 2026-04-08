@@ -593,6 +593,13 @@ def _surname_sort_key(full_name: str | None, family_name: str | None) -> tuple[s
     return (inferred_family, full.lower())
 
 
+def _state_sort_key(value: str | None) -> tuple[int, str]:
+    text = str(value or "").strip()
+    if not text:
+        return (1, "")
+    return (0, text.lower())
+
+
 def _render_member_roster(
     candidates: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]],
     lang: str,
@@ -610,10 +617,34 @@ def _render_member_roster(
             candidates,
             key=lambda row: (_district_sort_key(row[7]), display_person_name(row[1], row[2], row[3]).lower()),
         )
-    elif selected_category == "state_house":
+    elif selected_category == "federal_senate":
         ordered = sorted(
             candidates,
-            key=lambda row: (_district_sort_key(row[7]), display_person_name(row[1], row[2], row[3]).lower()),
+            key=lambda row: (
+                _state_sort_key(row[5]),
+                _surname_sort_key(display_person_name(row[1], row[2], row[3]), row[3]),
+                display_person_name(row[1], row[2], row[3]).lower(),
+            ),
+        )
+    elif selected_category == "state_house":
+        multi_state = len({str(row[5] or "").strip() for row in candidates if str(row[5] or "").strip()}) > 1
+        ordered = sorted(
+            candidates,
+            key=lambda row: (
+                _state_sort_key(row[5]) if multi_state else (0, ""),
+                _district_sort_key(row[7]),
+                display_person_name(row[1], row[2], row[3]).lower(),
+            ),
+        )
+    elif selected_category == "federal_house":
+        multi_state = len({str(row[5] or "").strip() for row in candidates if str(row[5] or "").strip()}) > 1
+        ordered = sorted(
+            candidates,
+            key=lambda row: (
+                _state_sort_key(row[5]) if multi_state else (0, ""),
+                _district_sort_key(row[7]),
+                display_person_name(row[1], row[2], row[3]).lower(),
+            ),
         )
     elif selected_category == "state_executive":
         ordered = sorted(
@@ -674,7 +705,12 @@ def _render_member_roster(
         deduped_ordered.append(row)
     ordered = deduped_ordered
 
-    headers = ("姓名", "部門", "職位") if lang == "zh-TW" else ("Name", "Department", "Position")
+    department_header = (
+        ("州" if lang == "zh-TW" else "State")
+        if selected_category in {"federal_senate", "federal_house", "state_senate", "state_house"}
+        else ("部門" if lang == "zh-TW" else "Department")
+    )
+    headers = ("姓名", department_header, "職位") if lang == "zh-TW" else ("Name", department_header, "Position")
     lines: list[str] = [f"| {headers[0]} | {headers[1]} | {headers[2]} |", "|---|---|---|"]
 
     def _clean_cell(text: str) -> str:
