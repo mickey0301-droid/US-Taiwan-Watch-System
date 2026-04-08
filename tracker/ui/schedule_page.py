@@ -64,6 +64,22 @@ def _render_search_result(result: dict | None, result_type: str) -> None:
             st.caption("本次法案搜尋沒有可顯示的結果明細。")
 
 
+def _event_now_summary_text() -> str:
+    result = st.session_state.get("schedule_event_now_last_result") or {}
+    return (
+        f"找到 {int(result.get('found') or 0)} ｜ 新增 {int(result.get('created') or 0)} ｜ "
+        f"更新 {int(result.get('updated') or 0)} ｜ 去重 {int(result.get('skipped_existing') or 0)}"
+    )
+
+
+def _congress_now_summary_text() -> str:
+    result = st.session_state.get("schedule_congress_now_last_result") or {}
+    return (
+        f"找到 {int(result.get('records_found') or 0)} ｜ 新增 {int(result.get('records_created') or 0)} ｜ "
+        f"更新 {int(result.get('records_updated') or 0)}"
+    )
+
+
 def _render_schedule_table(lang: str) -> None:
     with session_scope() as session:
         service = ScheduledCollectionService(session)
@@ -133,7 +149,12 @@ def render(lang: str, labels: dict[str, str]) -> None:
             selected_domains = st.multiselect("預設網域", options=DEFAULT_EVENT_DOMAINS, default=DEFAULT_EVENT_DOMAINS, key="schedule-event-now-domain-default")
             custom_domains_text = st.text_input("新增網域（可多個，逗號分隔）", value="", key="schedule-event-now-domain-custom")
             max_people = st.number_input("人物數上限（0=不限）", min_value=0, max_value=10000, value=0, step=10, key="schedule-event-now-max-people")
-            submit_now_event = st.form_submit_button("立刻搜尋")
+            btn_col, result_col = st.columns([2, 5])
+            with btn_col:
+                submit_now_event = st.form_submit_button("立刻搜尋")
+            with result_col:
+                if "schedule_event_now_last_result" in st.session_state:
+                    st.caption(f"最近結果：{_event_now_summary_text()}")
         if submit_now_event:
             start_at = _combine_dt(start_date, start_time)
             end_at = _combine_dt(end_date, end_time)
@@ -148,7 +169,10 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     domains=domains,
                     max_people=(None if int(max_people) <= 0 else int(max_people)),
                 )
-                _render_search_result(result, "event")
+                st.session_state["schedule_event_now_last_result"] = result
+            st.rerun()
+        if "schedule_event_now_last_result" in st.session_state:
+            _render_search_result(st.session_state["schedule_event_now_last_result"], "event")
 
         st.subheader("預約搜尋事件")
         with st.form("schedule-event-reserve-form"):
@@ -201,7 +225,12 @@ def render(lang: str, labels: dict[str, str]) -> None:
             start_time = col3.time_input("開始時間", value=time(0, 0), key="schedule-congress-now-start-time")
             end_time = col4.time_input("結束時間", value=time(23, 59), key="schedule-congress-now-end-time")
             keywords = st.text_area("台灣關鍵字（逗號或換行分隔）", value=", ".join(DEFAULT_TAIWAN_KEYWORDS), key="schedule-congress-now-keywords")
-            submit_now = st.form_submit_button("立刻搜尋法案")
+            btn_col, result_col = st.columns([2, 5])
+            with btn_col:
+                submit_now = st.form_submit_button("立刻搜尋法案")
+            with result_col:
+                if "schedule_congress_now_last_result" in st.session_state:
+                    st.caption(f"最近結果：{_congress_now_summary_text()}")
         if submit_now:
             start_at = _combine_dt(start_date, start_time)
             end_at = _combine_dt(end_date, end_time)
@@ -212,7 +241,10 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     end_at=end_at,
                     taiwan_keywords=_parse_csv_lines(keywords),
                 )
-                _render_search_result(result, "legislation")
+                st.session_state["schedule_congress_now_last_result"] = result
+            st.rerun()
+        if "schedule_congress_now_last_result" in st.session_state:
+            _render_search_result(st.session_state["schedule_congress_now_last_result"], "legislation")
 
         st.subheader("預約搜尋 Congress 涉台法案")
         with st.form("schedule-congress-reserve-form"):
