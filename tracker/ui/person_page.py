@@ -450,6 +450,23 @@ def _normalize_name_tokens_for_match(name: str | None) -> list[str]:
     return [token for token in text.split(" ") if token]
 
 
+def _is_invalid_person_name(name: str | None) -> bool:
+    normalized = " ".join(_normalize_name_tokens_for_match(name))
+    if not normalized:
+        return True
+    blocked_phrases = {
+        "find my legislator",
+        "find legislator",
+        "find your legislator",
+        "legislator finder",
+    }
+    if normalized in blocked_phrases:
+        return True
+    if any(token in normalized for token in {"district lookup", "member lookup", "search legislators"}):
+        return True
+    return False
+
+
 def _strip_legislative_name_suffix(name: str | None) -> str:
     text = str(name or "").strip()
     if not text:
@@ -582,9 +599,12 @@ def _render_member_roster(
     specific_district_names: list[str] = []
     if selected_category in {"state_senate", "state_house"}:
         for row in ordered:
+            row_name = display_person_name(row[1], row[2], row[3])
+            if _is_invalid_person_name(row_name):
+                continue
             district = str(row[7] or "").strip()
             if district and district.lower() != "unspecified district":
-                specific_district_names.append(display_person_name(row[1], row[2], row[3]))
+                specific_district_names.append(row_name)
 
     seen_person_ids: set[int] = set()
     deduped_ordered: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]] = []
@@ -592,10 +612,12 @@ def _render_member_roster(
         person_id = int(row[0])
         if person_id in seen_person_ids:
             continue
+        row_name = display_person_name(row[1], row[2], row[3])
+        if selected_category in {"state_senate", "state_house"} and _is_invalid_person_name(row_name):
+            continue
         if selected_category in {"state_senate", "state_house"}:
             district = str(row[7] or "").strip()
             if not district or district.lower() == "unspecified district":
-                row_name = display_person_name(row[1], row[2], row[3])
                 if any(_likely_same_legislator_name_variant(row_name, existing_name) for existing_name in specific_district_names):
                     continue
         seen_person_ids.add(person_id)
