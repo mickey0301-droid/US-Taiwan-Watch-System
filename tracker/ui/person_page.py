@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import re
+from urllib.parse import urlencode
 import pandas as pd
 import streamlit as st
 from sqlalchemy import case, desc, func, select
@@ -827,35 +828,12 @@ def _render_member_roster(
         deduped_ordered.append(row)
     ordered = deduped_ordered
 
-    sort_field_state_key = f"member-roster-sort-field-{selected_category}"
-    sort_asc_state_key = f"member-roster-sort-asc-{selected_category}"
-    if sort_field_state_key not in st.session_state:
-        st.session_state[sort_field_state_key] = "default"
-    if sort_asc_state_key not in st.session_state:
-        st.session_state[sort_asc_state_key] = True
-
-    sort_columns = st.columns(3)
-    sort_candidates = [
-        ("name", "姓名" if lang == "zh-TW" else "Name"),
-        ("department", "部門" if lang == "zh-TW" else "Department"),
-        ("position", "職位" if lang == "zh-TW" else "Position"),
-    ]
-    for idx, (sort_field, sort_label) in enumerate(sort_candidates):
-        active = st.session_state[sort_field_state_key] == sort_field
-        arrow = ""
-        if active:
-            arrow = " ▲" if st.session_state[sort_asc_state_key] else " ▼"
-        if sort_columns[idx].button(
-            f"{sort_label}{arrow}",
-            key=f"member-roster-sort-button-{selected_category}-{sort_field}",
-            use_container_width=True,
-        ):
-            if active:
-                st.session_state[sort_asc_state_key] = not st.session_state[sort_asc_state_key]
-            else:
-                st.session_state[sort_field_state_key] = sort_field
-                st.session_state[sort_asc_state_key] = True
-            st.rerun()
+    sort_scope = f"member-roster-{selected_category}"
+    qp_scope = str(st.query_params.get("roster_sort_scope", ""))
+    qp_field = str(st.query_params.get("roster_sort_field", "default"))
+    qp_dir = str(st.query_params.get("roster_sort_dir", "asc")).lower()
+    sort_field = qp_field if qp_scope == sort_scope else "default"
+    sort_asc = qp_dir != "desc"
 
     def _row_name_for_sort(row: tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]) -> str:
         value = display_person_name(row[1], row[2], row[3])
@@ -873,7 +851,6 @@ def _render_member_roster(
             return f"{office} {district}".strip().lower()
         return office.lower()
 
-    sort_field = str(st.session_state[sort_field_state_key] or "default")
     if sort_field in {"name", "department", "position"}:
         sort_map = {
             "name": _row_name_for_sort,
@@ -883,15 +860,36 @@ def _render_member_roster(
         ordered = sorted(
             ordered,
             key=sort_map[sort_field],
-            reverse=not bool(st.session_state[sort_asc_state_key]),
+            reverse=not sort_asc,
         )
 
-    department_header = (
+    def _sortable_header(label: str, field: str) -> str:
+        next_dir = "asc"
+        if sort_field == field:
+            next_dir = "desc" if sort_asc else "asc"
+        arrow = ""
+        if sort_field == field:
+            arrow = " ▲" if sort_asc else " ▼"
+        params: dict[str, object] = {}
+        for key in st.query_params.keys():
+            if key in {"roster_sort_scope", "roster_sort_field", "roster_sort_dir"}:
+                continue
+            params[key] = st.query_params.get_all(key)
+        params["roster_sort_scope"] = sort_scope
+        params["roster_sort_field"] = field
+        params["roster_sort_dir"] = next_dir
+        return f"[{label}{arrow}](?{urlencode(params, doseq=True)})"
+
+    department_header_text = (
         ("州" if lang == "zh-TW" else "State")
         if selected_category in {"federal_legislative", "federal_senate", "federal_house", "state_legislative", "state_senate", "state_house"}
         else ("部門" if lang == "zh-TW" else "Department")
     )
-    headers = ("姓名", department_header, "職位") if lang == "zh-TW" else ("Name", department_header, "Position")
+    headers = (
+        _sortable_header("姓名" if lang == "zh-TW" else "Name", "name"),
+        _sortable_header(department_header_text, "department"),
+        _sortable_header("職位" if lang == "zh-TW" else "Position", "position"),
+    )
     lines: list[str] = [f"| {headers[0]} | {headers[1]} | {headers[2]} |", "|---|---|---|"]
 
     def _clean_cell(text: str) -> str:
@@ -994,37 +992,12 @@ def _render_white_house_roster(
             ),
         )
         table_key = re.sub(r"[^a-z0-9]+", "-", heading_en.lower()).strip("-") or "white-house"
-        sort_field_state_key = f"member-roster-sort-field-white-house-{table_key}"
-        sort_asc_state_key = f"member-roster-sort-asc-white-house-{table_key}"
-        if sort_field_state_key not in st.session_state:
-            st.session_state[sort_field_state_key] = "default"
-        if sort_asc_state_key not in st.session_state:
-            st.session_state[sort_asc_state_key] = True
-
-        sort_columns = st.columns(3)
-        sort_candidates = [
-            ("name", "姓名" if lang == "zh-TW" else "Name"),
-            ("department", "部門" if lang == "zh-TW" else "Department"),
-            ("position", "職位" if lang == "zh-TW" else "Position"),
-        ]
-        for idx, (sort_field, sort_label) in enumerate(sort_candidates):
-            active = st.session_state[sort_field_state_key] == sort_field
-            arrow = ""
-            if active:
-                arrow = " ▲" if st.session_state[sort_asc_state_key] else " ▼"
-            if sort_columns[idx].button(
-                f"{sort_label}{arrow}",
-                key=f"member-roster-sort-button-white-house-{table_key}-{sort_field}",
-                use_container_width=True,
-            ):
-                if active:
-                    st.session_state[sort_asc_state_key] = not st.session_state[sort_asc_state_key]
-                else:
-                    st.session_state[sort_field_state_key] = sort_field
-                    st.session_state[sort_asc_state_key] = True
-                st.rerun()
-
-        sort_field = str(st.session_state[sort_field_state_key] or "default")
+        sort_scope = f"white-house-roster-{table_key}"
+        qp_scope = str(st.query_params.get("roster_sort_scope", ""))
+        qp_field = str(st.query_params.get("roster_sort_field", "default"))
+        qp_dir = str(st.query_params.get("roster_sort_dir", "asc")).lower()
+        sort_field = qp_field if qp_scope == sort_scope else "default"
+        sort_asc = qp_dir != "desc"
         if sort_field in {"name", "department", "position"}:
             def _row_name_for_sort(row: tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]) -> str:
                 return display_person_name(row[1], row[2], row[3]).lower()
@@ -1044,10 +1017,31 @@ def _render_white_house_roster(
             ordered = sorted(
                 ordered,
                 key=sort_map[sort_field],
-                reverse=not bool(st.session_state[sort_asc_state_key]),
+                reverse=not sort_asc,
             )
 
-        headers = ("姓名", "部門", "職位") if lang == "zh-TW" else ("Name", "Department", "Position")
+        def _sortable_header(label: str, field: str) -> str:
+            next_dir = "asc"
+            if sort_field == field:
+                next_dir = "desc" if sort_asc else "asc"
+            arrow = ""
+            if sort_field == field:
+                arrow = " ▲" if sort_asc else " ▼"
+            params: dict[str, object] = {}
+            for key in st.query_params.keys():
+                if key in {"roster_sort_scope", "roster_sort_field", "roster_sort_dir"}:
+                    continue
+                params[key] = st.query_params.get_all(key)
+            params["roster_sort_scope"] = sort_scope
+            params["roster_sort_field"] = field
+            params["roster_sort_dir"] = next_dir
+            return f"[{label}{arrow}](?{urlencode(params, doseq=True)})"
+
+        headers = (
+            _sortable_header("姓名" if lang == "zh-TW" else "Name", "name"),
+            _sortable_header("部門" if lang == "zh-TW" else "Department", "department"),
+            _sortable_header("職位" if lang == "zh-TW" else "Position", "position"),
+        )
         lines = [f"| {headers[0]} | {headers[1]} | {headers[2]} |", "|---|---|---|"]
         for row in ordered:
             person_id = int(row[0])
