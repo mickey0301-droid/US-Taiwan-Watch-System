@@ -591,10 +591,11 @@ def _is_invalid_person_name(name: str | None) -> bool:
         "find legislator",
         "find your legislator",
         "legislator finder",
+        "california master plan",
     }
     if normalized in blocked_phrases:
         return True
-    if any(token in normalized for token in {"district lookup", "member lookup", "search legislators"}):
+    if any(token in normalized for token in {"district lookup", "member lookup", "search legislators", "master plan"}):
         return True
     return False
 
@@ -815,7 +816,7 @@ def _render_member_roster(
         if person_id in seen_person_ids:
             continue
         row_name = display_person_name(row[1], row[2], row[3])
-        if selected_category in {"state_legislative", "state_senate", "state_house"} and _is_invalid_person_name(row_name):
+        if _is_invalid_person_name(row_name):
             continue
         if selected_category in {"state_legislative", "state_senate", "state_house"}:
             district = str(row[7] or "").strip()
@@ -840,6 +841,8 @@ def _render_member_roster(
     for row in ordered:
         person_id = int(row[0])
         name = display_person_name(row[1], row[2], row[3])
+        if _is_invalid_person_name(name):
+            continue
         if selected_category in {"state_legislative", "state_senate", "state_house"}:
             name = _strip_legislative_name_suffix(name)
         office = _display_office_name(row[4], row[6])
