@@ -124,12 +124,16 @@ def render(lang: str, labels: dict[str, str]) -> None:
             participants = []
             for participant_row in participant_rows_map.get(selected.id, []):
                 person = people_by_id.get(participant_row.person_id)
-                if person and not any(participant["person_id"] == person.id for participant in participants):
+                person_id = getattr(person, "id", None)
+                person_name = str(getattr(person, "full_name", "") or "").strip()
+                if person_id is None or not person_name:
+                    continue
+                if not any(participant["person_id"] == person_id for participant in participants):
                     participants.append(
                         {
-                            "person_id": person.id,
-                            "display_name": person.full_name,
-                            "english_name": person.full_name,
+                            "person_id": int(person_id),
+                            "display_name": person_name,
+                            "english_name": person_name,
                             "chinese_name": "",
                         }
                     )
