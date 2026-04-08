@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import re
+from urllib.parse import quote_plus
 import pandas as pd
 import streamlit as st
 from sqlalchemy import case, desc, func, select
@@ -129,6 +130,10 @@ POSITION_LABELS_ZH = {
     "Treasurer": "州財務長",
     "Comptroller": "主計長",
     "Auditor": "審計長",
+    "United States Senator": "聯邦參議員",
+    "United States Representative": "聯邦眾議員",
+    "State Senator": "州參議員",
+    "State Representative": "州眾議員",
 }
 
 WHITE_HOUSE_SUBDEPARTMENT_LABELS_ZH = {
@@ -683,6 +688,38 @@ def _state_sort_key(value: str | None) -> tuple[int, str]:
     return (0, text.lower())
 
 
+def _person_link_value_for_table(
+    person_id: int,
+    display_name: str,
+    family_name: str | None,
+    given_name: str | None,
+) -> str:
+    family_sort, _full_sort = _surname_sort_key(display_name, family_name)
+    given_sort = str(given_name or "").strip().lower()
+    sort_name = " ".join(part for part in [family_sort, given_sort, display_name.lower()] if part)
+    href = person_detail_href(int(person_id))
+    safe_name = str(display_name or "").replace("#", " ").strip()
+    return f"?sort_name={quote_plus(sort_name)}&{href.lstrip('?')}#{safe_name}"
+
+
+def _normalize_legislative_position_title(office_title: str, selected_category: str) -> str:
+    title = str(office_title or "").strip()
+    lower = title.lower()
+    if selected_category in {"federal_legislative", "federal_house"}:
+        if any(token in lower for token in {"representative", "rep.", "rep ", "member"}):
+            return "United States Representative"
+    if selected_category in {"federal_legislative", "federal_senate"}:
+        if "senator" in lower:
+            return "United States Senator"
+    if selected_category in {"state_legislative", "state_house"}:
+        if any(token in lower for token in {"representative", "assembly", "delegate", "member"}):
+            return "State Representative"
+    if selected_category in {"state_legislative", "state_senate"}:
+        if "senator" in lower:
+            return "State Senator"
+    return title
+
+
 def _legislative_chamber_rank(office_name: str | None, appointment_payload: dict | None = None) -> int:
     title = _display_office_name(office_name, appointment_payload).lower()
     if "senat" in title:
@@ -834,15 +871,18 @@ def _render_member_roster(
     )
     name_header = "姓名" if lang == "zh-TW" else "Name"
     position_header = "職位" if lang == "zh-TW" else "Position"
+    link_name_header = "__name_link__"
     table_rows: list[dict[str, str]] = []
 
     for row in ordered:
+        person_id = int(row[0])
         name = display_person_name(row[1], row[2], row[3])
         if _is_invalid_person_name(name):
             continue
         if selected_category in {"state_legislative", "state_senate", "state_house"}:
             name = _strip_legislative_name_suffix(name)
         office = _display_office_name(row[4], row[6])
+        office = _normalize_legislative_position_title(office, selected_category)
         district = str(row[7] or "").strip()
 
         hierarchy = _executive_hierarchy(row[4], row[6])
@@ -873,7 +913,7 @@ def _render_member_roster(
 
         table_rows.append(
             {
-                name_header: name,
+                link_name_header: _person_link_value_for_table(person_id, name, row[3], row[2]),
                 department_header_text: department,
                 position_header: position,
             }
@@ -883,8 +923,19 @@ def _render_member_roster(
         st.caption("目前無資料" if lang == "zh-TW" else "No data yet")
         return
 
+    roster_df = pd.DataFrame(table_rows).rename(columns={link_name_header: name_header})
     # Streamlit native dataframe supports clicking header cells for immediate sort.
-    st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+    st.dataframe(
+        roster_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            name_header: st.column_config.LinkColumn(
+                name_header,
+                display_text=r"#(.*)$",
+            ),
+        },
+    )
 
 
 def _render_white_house_roster(
@@ -939,8 +990,10 @@ def _render_white_house_roster(
             ),
         )
         headers = ("姓名", "部門", "職位") if lang == "zh-TW" else ("Name", "Department", "Position")
+        link_name_header = "__name_link__"
         table_rows: list[dict[str, str]] = []
         for row in ordered:
+            person_id = int(row[0])
             name = display_person_name(row[1], row[2], row[3])
             if _is_invalid_person_name(name):
                 continue
@@ -951,7 +1004,7 @@ def _render_white_house_roster(
             subdepartment = _bilingual_text(subdepartment_en, _subdepartment_label(subdepartment_en, "zh-TW", "White House"))
             table_rows.append(
                 {
-                    headers[0]: name,
+                    link_name_header: _person_link_value_for_table(person_id, name, row[3], row[2]),
                     headers[1]: subdepartment,
                     headers[2]: office_bilingual,
                 }
@@ -959,8 +1012,19 @@ def _render_white_house_roster(
         if not table_rows:
             st.caption("目前無資料" if lang == "zh-TW" else "No data yet")
             return
+        table_df = pd.DataFrame(table_rows).rename(columns={link_name_header: headers[0]})
         # Streamlit native dataframe supports clicking header cells for immediate sort.
-        st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+        st.dataframe(
+            table_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                headers[0]: st.column_config.LinkColumn(
+                    headers[0],
+                    display_text=r"#(.*)$",
+                ),
+            },
+        )
 
     _render_table("白宮辦公室", "White House Office", office_rows)
     _render_table("國家安全會議", "National Security Council", nsc_rows)
