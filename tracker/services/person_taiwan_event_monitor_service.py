@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 from typing import Any
 from urllib.parse import urlparse
@@ -12,6 +12,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from scripts.discover_restricted_source_events import discover_cna, discover_mofa, discover_president
 from tracker.models import Person, StatementParticipant, StatementSource
 from tracker.services.statements_service import StatementsService
 from tracker.utils.web import build_google_news_rss_url, domain_from_url, parse_datetime
@@ -157,8 +158,13 @@ class PersonTaiwanEventMonitorService:
         with httpx.Client(headers=self._http_headers, follow_redirects=True, timeout=25.0) as client:
             for domain in domains:
                 query = self.build_query(person_keywords, taiwan_keywords, domain=domain)
-                rss_url = build_google_news_rss_url(query=query, hl="zh-TW", gl="TW", ceid="TW:zh-Hant")
-                items = self._collect_rss_items(client, rss_url=rss_url, domain=domain)
+                items = self._collect_domain_items(
+                    client=client,
+                    domain=domain,
+                    query=query,
+                    person_keywords=person_keywords,
+                    lookback_days=lookback_days,
+                )
                 found = 0
                 created = 0
                 updated = 0
@@ -297,6 +303,92 @@ class PersonTaiwanEventMonitorService:
                     "url": url or raw_link,
                     "title": title,
                     "summary": self._strip_html(summary),
+                    "published_at": published_at,
+                }
+            )
+        return items
+
+    def _collect_domain_items(
+        self,
+        client: httpx.Client,
+        domain: str,
+        query: str,
+        person_keywords: list[str],
+        lookback_days: int,
+    ) -> list[dict[str, Any]]:
+        normalized_domain = str(domain or "").strip().lower()
+        if normalized_domain in {"cna.com.tw", "mofa.gov.tw", "president.gov.tw"}:
+            return self._collect_direct_site_items(client, normalized_domain, person_keywords, lookback_days)
+        rss_url = build_google_news_rss_url(query=query, hl="zh-TW", gl="TW", ceid="TW:zh-Hant")
+        return self._collect_rss_items(client, rss_url=rss_url, domain=normalized_domain)
+
+    def _collect_direct_site_items(
+        self,
+        client: httpx.Client,
+        domain: str,
+        person_keywords: list[str],
+        lookback_days: int,
+    ) -> list[dict[str, Any]]:
+        end = datetime.utcnow().date() + timedelta(days=1)
+        start = end - timedelta(days=max(1, int(lookback_days)))
+        hits = []
+        try:
+            if domain == "cna.com.tw":
+                hits = discover_cna(
+                    client,
+                    client,
+                    person_terms=person_keywords,
+                    start=start,
+                    end=end,
+                    require_taiwan_keyword=False,
+                    require_dated_url=False,
+                )
+            elif domain == "mofa.gov.tw":
+                hits = discover_mofa(
+                    client,
+                    client,
+                    person_terms=person_keywords,
+                    start=start,
+                    end=end,
+                    max_pages=40,
+                    require_taiwan_keyword=False,
+                )
+            elif domain == "president.gov.tw":
+                hits = discover_president(
+                    client,
+                    client,
+                    person_terms=person_keywords,
+                    start=start,
+                    end=end,
+                    max_pages=40,
+                    require_taiwan_keyword=False,
+                )
+        except Exception:
+            hits = []
+
+        items: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for hit in hits:
+            url = str(getattr(hit, "url", "") or "").strip()
+            if not url:
+                continue
+            key = self._url_key(url)
+            if key in seen:
+                continue
+            seen.add(key)
+            published_at = None
+            published_date = str(getattr(hit, "published_date", "") or "").strip()
+            if published_date:
+                try:
+                    day = datetime.strptime(published_date, "%Y-%m-%d").date()
+                    published_at = datetime(day.year, day.month, day.day)
+                except Exception:
+                    published_at = None
+            items.append(
+                {
+                    "url": url,
+                    "title": str(getattr(hit, "title", "") or url),
+                    "summary": str(getattr(hit, "excerpt", "") or ""),
                     "published_at": published_at,
                 }
             )
