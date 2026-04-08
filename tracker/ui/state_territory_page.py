@@ -23,6 +23,29 @@ from tracker.services.statements_service import StatementsService
 from tracker.ui import dashboard
 from tracker.ui.navigation import person_detail_href
 
+STATE_EXECUTIVE_ROLE_ZH = {
+    "Governor": "州長",
+    "Lieutenant Governor": "副州長",
+    "Secretary of State": "州務卿",
+    "Attorney General": "州檢察長",
+    "Treasurer": "州財務長",
+    "Comptroller": "主計長",
+    "Auditor": "審計長",
+    "Superintendent": "教育總監",
+    "Insurance Commissioner": "保險專員",
+    "Agriculture Commissioner": "農業專員",
+}
+
+
+def _bilingual_text(english: str | None, chinese: str | None) -> str:
+    en = str(english or "").strip()
+    zh = str(chinese or "").strip()
+    if en and zh:
+        if en == zh:
+            return en
+        return f"{zh} / {en}"
+    return zh or en
+
 
 def _is_valid_region_option(value: object) -> bool:
     text = str(value or "").strip()
@@ -603,7 +626,8 @@ def _render_state_legislature_roster(container, legislature_roster: dict[str, li
     senate_rows = legislature_roster.get("senate", [])
     house_rows = legislature_roster.get("house", [])
 
-    def _render_chamber(title: str, rows: list[dict[str, str]], position_label: str) -> None:
+    def _render_chamber(title_zh: str, title_en: str, rows: list[dict[str, str]], position_label_zh: str, position_label_en: str) -> None:
+        title = _bilingual_text(title_en, title_zh)
         container.markdown(f"_{title}_")
         if not rows:
             container.caption("目前無資料" if lang == "zh-TW" else "No data yet")
@@ -623,19 +647,24 @@ def _render_state_legislature_roster(container, legislature_roster: dict[str, li
             else:
                 member = _clean_cell(name)
             district_text = district or ("未填選區" if lang == "zh-TW" else "Unspecified district")
-            position = f"{position_label} ({district_text})"
-            lines.append(f"| {member} | {_clean_cell(title)} | {_clean_cell(position)} |")
+            department = title
+            position = f"{_bilingual_text(position_label_en, position_label_zh)} (第{district_text}選區 / District {district_text})"
+            lines.append(f"| {member} | {_clean_cell(department)} | {_clean_cell(position)} |")
         container.markdown("\n".join(lines))
 
     _render_chamber(
-        "州參議院" if lang == "zh-TW" else "State Senate",
+        "州參議院",
+        "State Senate",
         senate_rows,
-        "州參議員" if lang == "zh-TW" else "State Senator",
+        "州參議員",
+        "State Senator",
     )
     _render_chamber(
-        "州眾議院" if lang == "zh-TW" else "State House",
+        "州眾議院",
+        "State House",
         house_rows,
-        "州眾議員" if lang == "zh-TW" else "State Representative",
+        "州眾議員",
+        "State Representative",
     )
 
 
@@ -659,6 +688,7 @@ def _render_state_executive_roster(container, executive_roster: list[dict[str, s
             official = f"[{_clean_cell(name)}]({person_detail_href(int(person_id))})"
         else:
             official = _clean_cell(name)
-        department = "州政府" if lang == "zh-TW" else "State Government"
-        lines.append(f"| {official} | {_clean_cell(department)} | {_clean_cell(role)} |")
+        department = _bilingual_text("State Government", "州政府")
+        role_bilingual = _bilingual_text(role, STATE_EXECUTIVE_ROLE_ZH.get(role, ""))
+        lines.append(f"| {official} | {_clean_cell(department)} | {_clean_cell(role_bilingual)} |")
     container.markdown("\n".join(lines))

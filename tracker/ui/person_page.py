@@ -109,6 +109,25 @@ DEPARTMENT_LABELS_ZH = {
     "Other": "其他",
 }
 
+POSITION_LABELS_ZH = {
+    "President of the United States": "美國總統",
+    "Vice President of the United States": "美國副總統",
+    "Chief of Staff": "幕僚長",
+    "White House Chief of Staff": "白宮幕僚長",
+    "National Security Adviser": "國家安全顧問",
+    "National Security Advisor": "國家安全顧問",
+    "Deputy National Security Adviser": "副國家安全顧問",
+    "Deputy National Security Advisor": "副國家安全顧問",
+    "Executive Secretary": "執行秘書",
+    "Governor": "州長",
+    "Lieutenant Governor": "副州長",
+    "Secretary of State": "州務卿",
+    "Attorney General": "州檢察長",
+    "Treasurer": "州財務長",
+    "Comptroller": "主計長",
+    "Auditor": "審計長",
+}
+
 WHITE_HOUSE_SUBDEPARTMENT_LABELS_ZH = {
     "National Security Council": "國家安全會議",
     "White House Office": "白宮辦公室",
@@ -243,6 +262,35 @@ def _department_label(department_name: str | None, lang: str) -> str:
     if lang != "zh-TW":
         return label
     return DEPARTMENT_LABELS_ZH.get(label, label)
+
+
+def _bilingual_text(english: str | None, chinese: str | None) -> str:
+    en = str(english or "").strip()
+    zh = str(chinese or "").strip()
+    if en and zh:
+        if en == zh:
+            return en
+        return f"{zh} / {en}"
+    return zh or en
+
+
+def _position_label_zh(position_name: str | None) -> str:
+    title = str(position_name or "").strip()
+    if not title:
+        return ""
+    if title in POSITION_LABELS_ZH:
+        return POSITION_LABELS_ZH[title]
+
+    lower = title.lower()
+    if lower.startswith("secretary of "):
+        return f"{title.replace('Secretary of ', '', 1)}部長"
+    if lower.startswith("deputy secretary of "):
+        return f"{title.replace('Deputy Secretary of ', '', 1)}副部長"
+    if lower.startswith("under secretary for "):
+        return f"{title.replace('Under Secretary for ', '', 1)}次長"
+    if lower.startswith("assistant secretary for "):
+        return f"{title.replace('Assistant Secretary for ', '', 1)}助理部長"
+    return ""
 
 
 def _subdepartment_label(subdepartment_name: str | None, lang: str, department_name: str | None = None) -> str:
@@ -423,16 +471,19 @@ def _render_member_roster(
 
         hierarchy = _executive_hierarchy(row[4], row[6])
         if selected_category in {"federal_executive", "federal_military"}:
-            department = hierarchy[0] or (row[5] or "")
-            department = _department_label(department, lang)
+            department_en = hierarchy[0] or (row[5] or "")
         else:
-            department = str(row[5] or "")
+            department_en = str(row[5] or "")
+        department = _bilingual_text(department_en, _department_label(department_en, "zh-TW"))
+
+        office_zh = _position_label_zh(office)
+        office_bilingual = _bilingual_text(office, office_zh)
 
         if selected_category in {"state_senate", "state_house"}:
-            district_label = district or ("未填選區" if lang == "zh-TW" else "Unspecified district")
-            position = f"{office} ({district_label})"
+            district_label = district or "Unspecified district"
+            position = f"{office_bilingual} (第{district_label}選區 / District {district_label})"
         else:
-            position = office
+            position = office_bilingual
 
         name_link = f"[{_clean_cell(name)}]({person_detail_href(person_id)})"
         lines.append(f"| {name_link} | {_clean_cell(department)} | {_clean_cell(position)} |")
