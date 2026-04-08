@@ -65,7 +65,7 @@ def _render_search_result(result: dict | None, result_type: str) -> None:
 
 
 def _event_now_summary_text() -> str:
-    result = st.session_state.get("schedule_event_now_last_result") or {}
+    result = st.session_state.get("schedule_event_now_last_result") or {"found": 0, "created": 0, "updated": 0, "skipped_existing": 0}
     return (
         f"找到 {int(result.get('found') or 0)} ｜ 新增 {int(result.get('created') or 0)} ｜ "
         f"更新 {int(result.get('updated') or 0)} ｜ 去重 {int(result.get('skipped_existing') or 0)}"
@@ -73,7 +73,7 @@ def _event_now_summary_text() -> str:
 
 
 def _congress_now_summary_text() -> str:
-    result = st.session_state.get("schedule_congress_now_last_result") or {}
+    result = st.session_state.get("schedule_congress_now_last_result") or {"records_found": 0, "records_created": 0, "records_updated": 0}
     return (
         f"找到 {int(result.get('records_found') or 0)} ｜ 新增 {int(result.get('records_created') or 0)} ｜ "
         f"更新 {int(result.get('records_updated') or 0)}"
@@ -131,6 +131,8 @@ def _render_schedule_table(lang: str) -> None:
 
 
 def render(lang: str, labels: dict[str, str]) -> None:
+    st.session_state.setdefault("schedule_event_now_last_result", {"found": 0, "created": 0, "updated": 0, "skipped_existing": 0, "items": []})
+    st.session_state.setdefault("schedule_congress_now_last_result", {"records_found": 0, "records_created": 0, "records_updated": 0, "items": []})
     st.header(labels.get("schedule", "排程"))
     st.caption("支援：人物事件搜尋（立刻/預約）與 Congress.gov 涉台法案搜尋（立刻/預約）。")
     event_tab, congress_tab, saved_tab = st.tabs(["事件搜尋", "Congress 法案搜尋", "已建立排程"])
@@ -153,8 +155,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
             with btn_col:
                 submit_now_event = st.form_submit_button("立刻搜尋")
             with result_col:
-                if "schedule_event_now_last_result" in st.session_state:
-                    st.caption(f"最近結果：{_event_now_summary_text()}")
+                st.markdown(f"**搜尋結果：{_event_now_summary_text()}**")
         if submit_now_event:
             start_at = _combine_dt(start_date, start_time)
             end_at = _combine_dt(end_date, end_time)
@@ -229,8 +230,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
             with btn_col:
                 submit_now = st.form_submit_button("立刻搜尋法案")
             with result_col:
-                if "schedule_congress_now_last_result" in st.session_state:
-                    st.caption(f"最近結果：{_congress_now_summary_text()}")
+                st.markdown(f"**搜尋結果：{_congress_now_summary_text()}**")
         if submit_now:
             start_at = _combine_dt(start_date, start_time)
             end_at = _combine_dt(end_date, end_time)
