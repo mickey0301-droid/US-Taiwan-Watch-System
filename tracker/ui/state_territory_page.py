@@ -621,9 +621,21 @@ def _expand_and_sort_district_rows(by_district: dict[str, dict[str, str]]) -> li
     return rows
 
 
+def _name_surname_sort_key(name: str | None) -> tuple[str, str]:
+    full = str(name or "").strip()
+    if not full:
+        return ("", "")
+    parts = full.split()
+    surname = parts[-1].lower() if parts else ""
+    return (surname, full.lower())
+
+
 def _render_state_legislature_roster(container, legislature_roster: dict[str, list[dict[str, str]]], lang: str) -> None:
     container.markdown("**州議會名單**" if lang == "zh-TW" else "**State Legislature Roster**")
-    senate_rows = legislature_roster.get("senate", [])
+    senate_rows = sorted(
+        legislature_roster.get("senate", []),
+        key=lambda item: _name_surname_sort_key(item.get("name")),
+    )
     house_rows = legislature_roster.get("house", [])
 
     def _render_chamber(title_zh: str, title_en: str, rows: list[dict[str, str]], position_label_zh: str, position_label_en: str) -> None:

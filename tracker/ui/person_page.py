@@ -439,6 +439,18 @@ def _district_sort_key(value: str | None) -> tuple[int, object]:
     return (1, normalized.lower())
 
 
+def _surname_sort_key(full_name: str | None, family_name: str | None) -> tuple[str, str]:
+    family = str(family_name or "").strip().lower()
+    full = str(full_name or "").strip()
+    if family:
+        return (family, full.lower())
+    if not full:
+        return ("", "")
+    parts = full.split()
+    inferred_family = parts[-1].lower() if parts else ""
+    return (inferred_family, full.lower())
+
+
 def _render_member_roster(
     candidates: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]],
     lang: str,
@@ -451,7 +463,15 @@ def _render_member_roster(
         return
 
     ordered = candidates
-    if selected_category in {"state_senate", "state_house"}:
+    if selected_category == "state_senate":
+        ordered = sorted(
+            candidates,
+            key=lambda row: (
+                _surname_sort_key(display_person_name(row[1], row[2], row[3]), row[3]),
+                display_person_name(row[1], row[2], row[3]).lower(),
+            ),
+        )
+    elif selected_category == "state_house":
         ordered = sorted(
             candidates,
             key=lambda row: (_district_sort_key(row[7]), display_person_name(row[1], row[2], row[3]).lower()),
