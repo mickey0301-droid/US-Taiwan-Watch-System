@@ -4,7 +4,7 @@ from datetime import datetime
 import re
 import pandas as pd
 import streamlit as st
-from sqlalchemy import desc, func, select
+from sqlalchemy import case, desc, func, select
 
 from tracker.config import get_settings, use_google_sheet_primary_mode
 from tracker.db import session_scope
@@ -427,6 +427,56 @@ def _categories_with_state_filter() -> set[str]:
 
 def _categories_with_department_filter() -> set[str]:
     return {"federal_executive", "federal_military"}
+
+
+def _legislative_categories() -> set[str]:
+    return {"federal_senate", "federal_house", "state_senate", "state_house"}
+
+
+def _category_office_filters(category_key: str) -> tuple[str | None, str | None, str | None]:
+    category = PERSON_CATEGORIES.get(category_key, {})
+    return (
+        str(category.get("level") or "") or None,
+        str(category.get("branch") or "") or None,
+        str(category.get("chamber") or "") or None,
+    )
+
+
+def _build_party_map_for_candidates(
+    session,
+    candidates: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]],
+    category_key: str,
+) -> dict[int, str]:
+    person_ids = sorted({int(row[0]) for row in candidates})
+    if not person_ids:
+        return {}
+    level_filter, branch_filter, chamber_filter = _category_office_filters(category_key)
+    stmt = (
+        select(Appointment.person_id, Appointment.party, Appointment.status, Appointment.id)
+        .join(Office, Office.id == Appointment.office_id)
+        .where(Appointment.person_id.in_(person_ids))
+    )
+    if level_filter:
+        stmt = stmt.where(Office.level == level_filter)
+    if branch_filter:
+        stmt = stmt.where(Office.branch == branch_filter)
+    if chamber_filter:
+        stmt = stmt.where(Office.chamber == chamber_filter)
+    stmt = stmt.order_by(
+        Appointment.person_id.asc(),
+        case((Appointment.status == "current", 0), else_=1),
+        Appointment.id.desc(),
+    )
+
+    party_map: dict[int, str] = {}
+    for person_id, party, _status, _appointment_id in session.execute(stmt).all():
+        if int(person_id) in party_map:
+            continue
+        party_text = str(party or "").strip()
+        if not party_text:
+            continue
+        party_map[int(person_id)] = party_text
+    return party_map
 
 
 def _district_sort_key(value: str | None) -> tuple[int, object]:
@@ -1746,6 +1796,22 @@ def render(lang: str, labels: dict[str, str]) -> None:
             if not candidates:
                 st.info(labels["no_people_loaded"])
                 return
+
+            if selected_category in _legislative_categories():
+                party_map = _build_party_map_for_candidates(session, candidates, selected_category)
+                party_options = sorted({party for party in party_map.values() if party})
+                if party_options:
+                    party_label = "黨籍" if lang == "zh-TW" else "Party"
+                    party_selection = st.selectbox(
+                        party_label,
+                        [labels["all"], *party_options],
+                        key=f"person-party-{selected_category}",
+                    )
+                    if party_selection != labels["all"]:
+                        candidates = [row for row in candidates if party_map.get(int(row[0])) == party_selection]
+                        if not candidates:
+                            st.info(labels["no_people_loaded"])
+                            return
 
             if selected_category == "federal_executive":
                 candidates = sorted(
