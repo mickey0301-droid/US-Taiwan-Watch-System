@@ -518,6 +518,78 @@ def _render_member_roster(
     st.markdown("\n".join(lines))
 
 
+def _render_white_house_roster(
+    candidates: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]],
+    lang: str,
+) -> None:
+    title = "白宮成員名單" if lang == "zh-TW" else "White House roster"
+    st.markdown(f"**{title}**")
+    if not candidates:
+        st.caption("目前無資料" if lang == "zh-TW" else "No data yet")
+        return
+
+    def _clean_cell(text: str) -> str:
+        return str(text or "").replace("|", "\\|").replace("\n", " ").strip()
+
+    # Deduplicate people appearing in multiple White House subdepartments.
+    sorted_candidates = sorted(
+        candidates,
+        key=lambda row: (
+            _executive_role_rank(_display_office_name(row[4], row[6])),
+            display_person_name(row[1], row[2], row[3]).lower(),
+        ),
+    )
+    best_row_by_person: dict[int, tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]] = {}
+    for row in sorted_candidates:
+        person_id = int(row[0])
+        if person_id not in best_row_by_person:
+            best_row_by_person[person_id] = row
+
+    office_rows: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]] = []
+    nsc_rows: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]] = []
+    for row in best_row_by_person.values():
+        hierarchy = _executive_hierarchy(row[4], row[6])
+        subdepartment = (hierarchy[1] or "").strip()
+        if subdepartment == "National Security Council":
+            nsc_rows.append(row)
+        else:
+            office_rows.append(row)
+
+    def _render_table(
+        heading_zh: str,
+        heading_en: str,
+        rows: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]],
+    ) -> None:
+        heading = _bilingual_text(heading_en, heading_zh)
+        st.markdown(f"_{heading}_")
+        if not rows:
+            st.caption("目前無資料" if lang == "zh-TW" else "No data yet")
+            return
+        ordered = sorted(
+            rows,
+            key=lambda row: (
+                _executive_role_rank(_display_office_name(row[4], row[6])),
+                display_person_name(row[1], row[2], row[3]).lower(),
+            ),
+        )
+        headers = ("姓名", "部門", "職位") if lang == "zh-TW" else ("Name", "Department", "Position")
+        lines = [f"| {headers[0]} | {headers[1]} | {headers[2]} |", "|---|---|---|"]
+        for row in ordered:
+            person_id = int(row[0])
+            name = display_person_name(row[1], row[2], row[3])
+            office = _display_office_name(row[4], row[6])
+            office_bilingual = _bilingual_text(office, _position_label_zh(office))
+            hierarchy = _executive_hierarchy(row[4], row[6])
+            subdepartment_en = (hierarchy[1] or "White House Office").strip()
+            subdepartment = _bilingual_text(subdepartment_en, _subdepartment_label(subdepartment_en, "zh-TW", "White House"))
+            name_link = f"[{_clean_cell(name)}]({person_detail_href(person_id)})"
+            lines.append(f"| {name_link} | {_clean_cell(subdepartment)} | {_clean_cell(office_bilingual)} |")
+        st.markdown("\n".join(lines))
+
+    _render_table("白宮辦公室", "White House Office", office_rows)
+    _render_table("國家安全會議", "National Security Council", nsc_rows)
+
+
 def _get_state_options(session, category_key: str) -> list[str]:
     rows = session.execute(_get_base_people_query(category_key)).all()
     return sorted({row[5] for row in rows if row[5]})
@@ -1465,6 +1537,14 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     ),
                 )
 
+            white_house_roster_only = (
+                selected_category == "federal_executive"
+                and department_filter == "White House"
+                and pending_person_id is None
+            )
+            if white_house_roster_only:
+                _render_white_house_roster(candidates, lang=lang)
+                return
             if selected_category in _categories_with_department_filter() or selected_category in {"state_executive", "state_senate", "state_house"}:
                 _render_member_roster(candidates, lang=lang, selected_category=selected_category)
 
