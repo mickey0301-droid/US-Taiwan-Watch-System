@@ -720,12 +720,18 @@ def _person_link_value_for_table(
     display_name: str,
     family_name: str | None,
     given_name: str | None,
+    current_page: str | None = None,
 ) -> str:
     family_sort, _full_sort = _surname_sort_key(display_name, family_name)
     given_sort = str(given_name or "").strip().lower()
     sort_name = " ".join(part for part in [family_sort, given_sort, display_name.lower()] if part)
     safe_name = str(display_name or "").replace("#", " ").strip()
-    return f"?page=person_detail&person_id={int(person_id)}&name_sort={quote_plus(sort_name)}#{safe_name}"
+    query_parts = []
+    if current_page:
+        query_parts.append(f"page={quote_plus(str(current_page))}")
+    query_parts.append(f"person_id={int(person_id)}")
+    query_parts.append(f"name_sort={quote_plus(sort_name)}")
+    return f"?{'&'.join(query_parts)}#{safe_name}"
 
 
 def _render_member_roster(
@@ -871,6 +877,7 @@ def _render_member_roster(
     name_header = "姓名" if lang == "zh-TW" else "Name"
     position_header = "職位" if lang == "zh-TW" else "Position"
     link_name_header = "__name_link__"
+    current_page = str(st.query_params.get("page") or "").strip() or None
     table_rows: list[dict[str, str]] = []
 
     for row in ordered:
@@ -912,7 +919,7 @@ def _render_member_roster(
 
         table_rows.append(
             {
-                link_name_header: _person_link_value_for_table(person_id, name, row[3], row[2]),
+                link_name_header: _person_link_value_for_table(person_id, name, row[3], row[2], current_page=current_page),
                 department_header_text: department,
                 position_header: position,
             }
@@ -989,6 +996,7 @@ def _render_white_house_roster(
         )
         headers = ("姓名", "部門", "職位") if lang == "zh-TW" else ("Name", "Department", "Position")
         link_name_header = "__name_link__"
+        current_page = str(st.query_params.get("page") or "").strip() or None
         table_rows: list[dict[str, str]] = []
         for row in ordered:
             person_id = int(row[0])
@@ -1002,7 +1010,7 @@ def _render_white_house_roster(
             subdepartment = _bilingual_text(subdepartment_en, _subdepartment_label(subdepartment_en, "zh-TW", "White House"))
             table_rows.append(
                 {
-                    link_name_header: _person_link_value_for_table(person_id, name, row[3], row[2]),
+                    link_name_header: _person_link_value_for_table(person_id, name, row[3], row[2], current_page=current_page),
                     headers[1]: subdepartment,
                     headers[2]: office_bilingual,
                 }
