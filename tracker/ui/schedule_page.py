@@ -141,6 +141,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
         st.subheader("立刻搜尋事件")
         with st.form("schedule-event-now-form"):
             scope = st.selectbox("搜尋範圍", options=PERSON_SCOPE_OPTIONS, format_func=lambda item: item[1], key="schedule-event-now-scope")
+            st.caption("註：聯邦官員＝行政部門，不含國會議員（參議員/眾議員）。")
             col1, col2 = st.columns(2)
             start_date = col1.date_input("開始日期", value=datetime.utcnow().date(), key="schedule-event-now-start-date")
             end_date = col2.date_input("結束日期", value=datetime.utcnow().date(), key="schedule-event-now-end-date")
@@ -179,6 +180,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
         with st.form("schedule-event-reserve-form"):
             reserve_name = st.text_input("排程名稱", value=f"事件搜尋-{datetime.utcnow().strftime('%Y%m%d-%H%M')}", key="schedule-event-reserve-name")
             reserve_scope = st.selectbox("搜尋範圍", options=PERSON_SCOPE_OPTIONS, format_func=lambda item: item[1], key="schedule-event-reserve-scope")
+            st.caption("註：聯邦官員＝行政部門，不含國會議員（參議員/眾議員）。")
             col1, col2 = st.columns(2)
             reserve_start_date = col1.date_input("開始日期", value=datetime.utcnow().date(), key="schedule-event-reserve-start-date")
             reserve_end_date = col2.date_input("結束日期", value=datetime.utcnow().date(), key="schedule-event-reserve-end-date")

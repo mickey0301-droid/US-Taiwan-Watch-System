@@ -676,10 +676,21 @@ class ScheduledCollectionService:
         start = start_at.date()
         end = end_at.date()
         if domain == "cna.com.tw":
-            try:
-                return discover_cna(client, insecure_client, person_terms=person_terms, start=start, end=end)
-            except TypeError:
-                return discover_cna(client, insecure_client, person_terms, start, end)
+            # CNA search endpoint only uses the first term as query seed.
+            # Run multiple seeds (full name / aliases) then merge to avoid missing
+            # Chinese-name-only coverage.
+            aggregate = []
+            ordered_terms = [term.strip() for term in person_terms if term and term.strip()]
+            for idx, seed in enumerate(ordered_terms[:4]):
+                reordered = [seed] + [term for term in ordered_terms if term != seed]
+                try:
+                    aggregate.extend(discover_cna(client, insecure_client, person_terms=reordered, start=start, end=end))
+                except TypeError:
+                    aggregate.extend(discover_cna(client, insecure_client, reordered, start, end))
+                # Keep runtime bounded for large scopes.
+                if idx >= 2 and len(aggregate) >= 20:
+                    break
+            return dedupe_hits(aggregate)
         if domain == "mofa.gov.tw":
             try:
                 return discover_mofa(client, insecure_client, person_terms=person_terms, start=start, end=end, max_pages=30)
