@@ -1755,14 +1755,15 @@ def _confirmed_x_profiles(raw_payload: dict[str, object]) -> list[dict[str, str]
     return [item for item in confirmed_profiles if isinstance(item, dict) and item.get("profile_url")]
 
 
-def _merged_confirmed_x_profiles(raw_payload: dict[str, object], social_profiles: dict[str, str]) -> list[dict[str, str]]:
+def _merged_confirmed_x_profiles(raw_payload: dict[str, object], social_profiles: object) -> list[dict[str, str]]:
     confirmed_profiles = list(_confirmed_x_profiles(raw_payload))
     existing_urls = {
         item.get("profile_url")
         for item in confirmed_profiles
         if isinstance(item, dict) and item.get("profile_url")
     }
-    official_x_url = (social_profiles or {}).get("x")
+    social_map = social_profiles if isinstance(social_profiles, dict) else {}
+    official_x_url = social_map.get("x")
     if official_x_url and official_x_url not in existing_urls:
         confirmed_profiles.insert(
             0,
