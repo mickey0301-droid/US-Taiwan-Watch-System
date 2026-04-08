@@ -207,17 +207,27 @@ def _render_metrics(
     category_event_counts: dict[str, int] | None = None,
 ) -> None:
     category_event_counts = category_event_counts or {}
+    total_officials_label = labels.get("total_officials", "官員總數")
+    total_trackers_label = labels.get("total_trackers", "追蹤器總數")
+    recent_statements_label = labels.get("recent_statements", "近期聲明")
+    recent_sync_runs_label = labels.get("recent_sync_runs", "近期同步")
+    federal_official_events_label = labels.get("federal_official_events", "聯邦官員事件")
+    congress_member_events_label = labels.get("congress_member_events", "國會議員事件")
+    state_official_events_label = labels.get("state_official_events", "州官員事件")
+    state_legislator_events_label = labels.get("state_legislator_events", "州議員事件")
+    recent_alerts_label = labels.get("recent_alerts", "近期提醒")
+
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric(labels["total_officials"], total_officials)
-    col2.metric(labels["total_trackers"], total_trackers)
-    col3.metric(labels["recent_statements"], total_statements)
-    col4.metric(labels["recent_sync_runs"], total_sync_runs)
+    col1.metric(total_officials_label, total_officials)
+    col2.metric(total_trackers_label, total_trackers)
+    col3.metric(recent_statements_label, total_statements)
+    col4.metric(recent_sync_runs_label, total_sync_runs)
     row2_col1, row2_col2, row2_col3, row2_col4 = st.columns(4)
-    row2_col1.metric(labels["federal_official_events"], int(category_event_counts.get("federal_officials", 0)))
-    row2_col2.metric(labels["congress_member_events"], int(category_event_counts.get("congress_members", 0)))
-    row2_col3.metric(labels["state_official_events"], int(category_event_counts.get("state_officials", 0)))
-    row2_col4.metric(labels["state_legislator_events"], int(category_event_counts.get("state_legislators", 0)))
-    st.caption(f"{labels['recent_alerts']}: {total_alerts}")
+    row2_col1.metric(federal_official_events_label, int(category_event_counts.get("federal_officials", 0)))
+    row2_col2.metric(congress_member_events_label, int(category_event_counts.get("congress_members", 0)))
+    row2_col3.metric(state_official_events_label, int(category_event_counts.get("state_officials", 0)))
+    row2_col4.metric(state_legislator_events_label, int(category_event_counts.get("state_legislators", 0)))
+    st.caption(f"{recent_alerts_label}: {total_alerts}")
 
 
 def _render_database_persistence_status(lang: str) -> None:
