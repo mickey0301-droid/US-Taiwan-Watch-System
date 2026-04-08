@@ -1,7 +1,23 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 from urllib.parse import quote_plus
+
+
+def _coerce_payload_dict(value: object) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
 
 def build_congress_member_search_url(full_name: str, role_title: str | None = None) -> str:
@@ -12,7 +28,7 @@ def build_congress_member_search_url(full_name: str, role_title: str | None = No
 
 
 def congress_profile_url(source_url: str | None, canonical_official_url: str | None, raw_payload: dict[str, Any] | None) -> str | None:
-    raw_payload = raw_payload or {}
+    raw_payload = _coerce_payload_dict(raw_payload)
     for candidate in [
         raw_payload.get("congress_profile_url"),
         canonical_official_url,
@@ -31,8 +47,8 @@ def extract_legislator_metadata(
     current_district: str | None,
     chamber: str | None,
 ) -> dict[str, Any]:
-    person_raw_payload = person_raw_payload or {}
-    current_appointment_payload = current_appointment_payload or {}
+    person_raw_payload = _coerce_payload_dict(person_raw_payload)
+    current_appointment_payload = _coerce_payload_dict(current_appointment_payload)
 
     party = (
         current_party
