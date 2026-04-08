@@ -2295,9 +2295,10 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     st.info(labels["person_not_found"])
                     return
 
+        person_raw_payload = person.raw_payload if isinstance(person.raw_payload, dict) else {}
         person_data = {
             "full_name": display_person_name(person.full_name, person.given_name, person.family_name),
-            "full_name_display": (person.raw_payload or {}).get("full_name_display"),
+            "full_name_display": person_raw_payload.get("full_name_display"),
             "portrait_url": person.portrait_url,
             "portrait_source_url": person.portrait_source_url,
             "portrait_source_type": person.portrait_source_type,
@@ -2314,8 +2315,8 @@ def render(lang: str, labels: dict[str, str]) -> None:
             "education": person.education,
             "career_history": person.career_history,
             "bio": person.bio,
-            "background_sources": (person.raw_payload or {}).get("background_sources", {}),
-            "raw_payload": person.raw_payload or {},
+            "background_sources": person_raw_payload.get("background_sources", {}),
+            "raw_payload": person_raw_payload,
         }
 
         statements_service = StatementsService(session)
@@ -2347,7 +2348,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
         _append_source(person.source_url, person.source_type, person.parser_identity)
         for row_source_url, row_source_type, row_parser_identity in appointment_source_rows:
             _append_source(row_source_url, row_source_type, row_parser_identity)
-        for item in ((person.raw_payload or {}).get("source_links") or []):
+        for item in (person_raw_payload.get("source_links") or []):
             if not isinstance(item, dict):
                 continue
             _append_source(
