@@ -246,6 +246,9 @@ class ManualUrlImportService:
                 statement_type = self._statement_type(source_type)
                 ai_category = self.ai_assist_service.classify_event_category(title=title, body=full_text, source_url=final_url)
                 existing_statement = self._find_statement_by_url(final_url)
+                inferred_categories = self._infer_event_categories(primary_person_id)
+                if ai_category and ai_category != "other":
+                    inferred_categories.add(ai_category)
                 if existing_statement:
                     statement = existing_statement
                     statement.title = statement.title or title
@@ -311,7 +314,8 @@ class ManualUrlImportService:
                                 "seeded_from": "manual_url_events_batch_v1",
                                 "manual_input_url": url,
                                 "matched_person_ids": participant_ids,
-                                "auto_category": self._infer_event_category(primary_person_id),
+                                "auto_categories": sorted(inferred_categories),
+                                "auto_category": sorted(inferred_categories)[0] if inferred_categories else "unknown",
                                 "ai_auto_category": ai_category,
                             },
                         }
@@ -328,6 +332,7 @@ class ManualUrlImportService:
                         "title": statement.title,
                         "created": bool(created),
                         "matched_people": len(participant_ids),
+                        "auto_categories": sorted(inferred_categories),
                         "ai_auto_category": ai_category,
                     }
                 )
@@ -633,31 +638,29 @@ class ManualUrlImportService:
                     break
         return found
 
-    def _infer_event_category(self, person_id: int | None) -> str:
+    def _infer_event_categories(self, person_id: int | None) -> set[str]:
+        categories: set[str] = set()
         if not person_id:
-            return "unknown"
-        row = self.session.execute(
+            return categories
+        rows = self.session.execute(
             select(Office.level, Office.branch, Office.chamber)
             .join(Appointment, Appointment.office_id == Office.id)
             .where(Appointment.person_id == person_id)
-            .order_by(Appointment.id.desc())
-        ).first()
-        if not row:
-            return "unknown"
-        level, branch, chamber = row
-        if level == "federal" and branch == "executive":
-            return "federal_official"
-        if level == "federal" and branch == "legislative":
-            if chamber == "senate":
-                return "federal_senator"
-            if chamber == "house":
-                return "federal_house"
-            return "congress_member"
-        if level == "state" and branch == "executive":
-            return "state_official"
-        if level == "state" and branch == "legislative":
-            return "state_legislator"
-        return "other"
+        ).all()
+        for level, branch, chamber in rows:
+            if level == "federal" and branch == "executive":
+                categories.add("federal_official")
+            if level == "federal" and branch == "legislative":
+                if chamber == "senate":
+                    categories.add("federal_senator")
+                elif chamber == "house":
+                    categories.add("federal_house")
+                categories.add("congress_member")
+            if level == "state" and branch == "executive":
+                categories.add("state_official")
+            if level == "state" and branch == "legislative":
+                categories.add("state_legislator")
+        return categories
 
     def _classify_legislation(self, source_url: str, title: str, body: str) -> dict[str, Any]:
         parsed = urlparse(source_url)

@@ -366,31 +366,31 @@ def _empty_legislation_buckets() -> dict[str, list[dict[str, object]]]:
     }
 
 
-def _build_person_category_map(session, person_ids: set[int]) -> dict[int, str]:
+def _build_person_category_map(session, person_ids: set[int]) -> dict[int, set[str]]:
     if not person_ids:
         return {}
     rows = session.execute(
         select(Appointment.person_id, Office.level, Office.branch)
         .join(Office, Office.id == Appointment.office_id)
-        .where(
-            Appointment.is_current.is_(True),
-            Appointment.person_id.in_(person_ids),
-        )
+        .where(Appointment.person_id.in_(person_ids))
     ).all()
     by_person: dict[int, list[tuple[str | None, str | None]]] = {}
     for person_id, level, branch in rows:
         by_person.setdefault(person_id, []).append((level, branch))
 
-    result: dict[int, str] = {}
+    result: dict[int, set[str]] = {}
     for person_id, offices in by_person.items():
+        categories: set[str] = set()
         if any(level == "federal" and branch == "executive" for level, branch in offices):
-            result[person_id] = "federal_officials"
-        elif any(level == "federal" and branch == "legislative" for level, branch in offices):
-            result[person_id] = "congress_members"
-        elif any(level == "state" and branch == "executive" for level, branch in offices):
-            result[person_id] = "state_officials"
-        elif any(level == "state" and branch == "legislative" for level, branch in offices):
-            result[person_id] = "state_legislators"
+            categories.add("federal_officials")
+        if any(level == "federal" and branch == "legislative" for level, branch in offices):
+            categories.add("congress_members")
+        if any(level == "state" and branch == "executive" for level, branch in offices):
+            categories.add("state_officials")
+        if any(level == "state" and branch == "legislative" for level, branch in offices):
+            categories.add("state_legislators")
+        if categories:
+            result[person_id] = categories
     return result
 
 
@@ -420,7 +420,7 @@ def _bucket_recent_events_db(
     statement_participants_map: dict[int, list[int]],
     people_by_id: dict[int, Person],
     chinese_alias_map: dict[int, str],
-    person_category_map: dict[int, str],
+    person_category_map: dict[int, set[str]],
     statements_service: StatementsService,
     lang: str,
 ) -> dict[str, list[dict[str, object]]]:
@@ -432,11 +432,11 @@ def _bucket_recent_events_db(
         if _is_test_event(statement.title):
             continue
         participant_ids = statement_participants_map.get(statement.id) or ([statement.person_id] if statement.person_id else [])
-        categories = {
-            person_category_map.get(person_id)
-            for person_id in participant_ids
-            if person_id and person_category_map.get(person_id)
-        }
+        categories: set[str] = set()
+        for person_id in participant_ids:
+            if not person_id:
+                continue
+            categories.update(person_category_map.get(person_id) or set())
         if not categories:
             categories = _infer_categories_from_statement(statement, participants=[people_by_id.get(pid) for pid in participant_ids if pid])
         if not categories:
