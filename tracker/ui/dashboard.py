@@ -53,6 +53,10 @@ def render(lang: str, labels: dict[str, str]) -> None:
         "state_officials": 0,
         "state_legislators": 0,
     }
+    category_legislation_counts = {
+        "federal_legislation": 0,
+        "state_legislation": 0,
+    }
     recent_events_by_category: dict[str, list[dict[str, object]]] = _empty_event_buckets()
     recent_legislation_by_category: dict[str, list[dict[str, object]]] = _empty_legislation_buckets()
 
@@ -64,6 +68,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
         total_sync_runs = session.scalar(select(func.count()).select_from(SyncRun)) or 0
         total_alerts = session.scalar(select(func.count()).select_from(NotificationLog)) or 0
         category_event_counts = _count_event_categories_db(session)
+        category_legislation_counts = _count_legislation_categories_db(session)
         recent_statements = (
             session.execute(
                 select(Statement)
@@ -130,7 +135,16 @@ def render(lang: str, labels: dict[str, str]) -> None:
     if total_officials == 0 and total_statements == 0:
         if _render_google_sheet_fallback(lang, labels):
             return
-        _render_metrics(labels, total_officials, total_trackers, total_statements, total_sync_runs, total_alerts, category_event_counts)
+        _render_metrics(
+            labels,
+            total_officials,
+            total_trackers,
+            total_statements,
+            total_sync_runs,
+            total_alerts,
+            category_event_counts,
+            category_legislation_counts,
+        )
         st.warning(
             "The current app instance is connected to an empty database, and Google Sheet fallback is not available."
             if lang != "zh-TW"
@@ -144,7 +158,16 @@ def render(lang: str, labels: dict[str, str]) -> None:
         render_google_sheet_fallback_diagnostic(lang)
         return
 
-    _render_metrics(labels, total_officials, total_trackers, total_statements, total_sync_runs, total_alerts, category_event_counts)
+    _render_metrics(
+        labels,
+        total_officials,
+        total_trackers,
+        total_statements,
+        total_sync_runs,
+        total_alerts,
+        category_event_counts,
+        category_legislation_counts,
+    )
     _render_database_persistence_status(lang)
     _render_overview_sections(
         recent_legislation_by_category=recent_legislation_by_category,
@@ -167,7 +190,8 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
         if item.get("person_id")
     }
     category_event_counts = _count_event_categories_sheet(events, people_category)
-    _render_metrics(labels, len(people), 0, len(events), len(legislation), 0, category_event_counts)
+    category_legislation_counts = _count_legislation_categories_sheet(legislation)
+    _render_metrics(labels, len(people), 0, len(events), len(legislation), 0, category_event_counts, category_legislation_counts)
     _render_database_persistence_status(lang)
     st.info(
         "Google Sheet fallback mode is active. The cloud app is showing exported data."
@@ -206,8 +230,10 @@ def _render_metrics(
     total_sync_runs: int,
     total_alerts: int,
     category_event_counts: dict[str, int] | None = None,
+    category_legislation_counts: dict[str, int] | None = None,
 ) -> None:
     category_event_counts = category_event_counts or {}
+    category_legislation_counts = category_legislation_counts or {}
     total_officials_label = labels.get("total_officials", "官員總數")
     total_trackers_label = labels.get("total_trackers", "追蹤器總數")
     recent_statements_label = labels.get("recent_statements", "近期聲明")
@@ -216,6 +242,8 @@ def _render_metrics(
     congress_member_events_label = labels.get("congress_member_events", "國會議員事件")
     state_official_events_label = labels.get("state_official_events", "州官員事件")
     state_legislator_events_label = labels.get("state_legislator_events", "州議員事件")
+    federal_legislation_count_label = labels.get("federal_legislation_count", "國會法案")
+    state_legislation_count_label = labels.get("state_legislation_count", "州議會法案")
     recent_alerts_label = labels.get("recent_alerts", "近期提醒")
 
     col1, col2, col3, col4 = st.columns(4)
@@ -228,6 +256,9 @@ def _render_metrics(
     row2_col2.metric(congress_member_events_label, int(category_event_counts.get("congress_members", 0)))
     row2_col3.metric(state_official_events_label, int(category_event_counts.get("state_officials", 0)))
     row2_col4.metric(state_legislator_events_label, int(category_event_counts.get("state_legislators", 0)))
+    row3_col1, row3_col2 = st.columns(2)
+    row3_col1.metric(federal_legislation_count_label, int(category_legislation_counts.get("federal_legislation", 0)))
+    row3_col2.metric(state_legislation_count_label, int(category_legislation_counts.get("state_legislation", 0)))
     st.caption(f"{recent_alerts_label}: {total_alerts}")
 
 
@@ -291,6 +322,28 @@ def _count_event_categories_db(session) -> dict[str, int]:
     return counts
 
 
+def _count_legislation_categories_db(session) -> dict[str, int]:
+    counts = {
+        "federal_legislation": 0,
+        "state_legislation": 0,
+    }
+    try:
+        rows = session.execute(
+            select(Legislation.level, func.count(Legislation.id))
+            .where(Legislation.is_taiwan_related.is_(True))
+            .group_by(Legislation.level)
+        ).all()
+    except SQLAlchemyError:
+        return counts
+    for level, total in rows:
+        normalized_level = str(level or "").strip().lower()
+        if normalized_level == "federal":
+            counts["federal_legislation"] = int(total or 0)
+        elif normalized_level == "state":
+            counts["state_legislation"] = int(total or 0)
+    return counts
+
+
 def _count_event_categories_sheet(events: list[dict[str, object]], people_category: dict[int, str | None]) -> dict[str, int]:
     counts = {
         "federal_officials": 0,
@@ -310,6 +363,26 @@ def _count_event_categories_sheet(events: list[dict[str, object]], people_catego
                 bucket_event_ids[category].add(event_id)
     for key in counts:
         counts[key] = len(bucket_event_ids[key])
+    return counts
+
+
+def _count_legislation_categories_sheet(rows: list[dict[str, object]]) -> dict[str, int]:
+    counts = {
+        "federal_legislation": 0,
+        "state_legislation": 0,
+    }
+    for item in rows:
+        level = str(item.get("level") or "").strip().lower()
+        if level == "federal":
+            counts["federal_legislation"] += 1
+        elif level == "state":
+            counts["state_legislation"] += 1
+        else:
+            jurisdiction = str(item.get("jurisdiction") or item.get("jurisdiction_name") or "").strip().lower()
+            if jurisdiction in {"united states", "us", "u.s."}:
+                counts["federal_legislation"] += 1
+            elif jurisdiction:
+                counts["state_legislation"] += 1
     return counts
 
 
