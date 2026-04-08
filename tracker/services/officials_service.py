@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from rapidfuzz import fuzz
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from tracker.models import Alias, Appointment, Jurisdiction, Office, Person
@@ -386,6 +386,24 @@ class OfficialsService:
             Appointment.start_date == payload.get("start_date"),
         )
         appointment = self.session.execute(stmt).scalars().first()
+        if not appointment and office.level == "state" and (office.branch or "").lower() == "legislative":
+            # Guard against duplicate active records across differently named state-legislative offices.
+            district_text = str(payload.get("district") or "").strip()
+            fallback_stmt = (
+                select(Appointment)
+                .join(Office, Office.id == Appointment.office_id)
+                .where(
+                    Appointment.person_id == person.id,
+                    Appointment.jurisdiction_id == jurisdiction_id,
+                    Appointment.is_current.is_(True),
+                    Office.level == "state",
+                    Office.branch == "legislative",
+                    Office.chamber == office.chamber,
+                    func.coalesce(Appointment.district, "") == district_text,
+                )
+                .order_by(Appointment.id.desc())
+            )
+            appointment = self.session.execute(fallback_stmt).scalars().first()
         if appointment:
             appointment.last_seen_at = datetime.utcnow()
             appointment.status = payload.get("status", appointment.status)
