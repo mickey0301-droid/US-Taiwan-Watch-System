@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -9,9 +8,6 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from tracker.config import get_settings
-
-
-logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -31,26 +27,8 @@ def _engine_kwargs_for(database_url: str) -> dict:
     return engine_kwargs
 
 
-def _fallback_sqlite_url() -> str:
-    fallback_path = (Path(__file__).resolve().parent.parent / "data" / "tracker.db").resolve()
-    fallback_path.parent.mkdir(parents=True, exist_ok=True)
-    return f"sqlite:///{fallback_path.as_posix()}"
-
-
 effective_database_url = settings.database_url
-try:
-    engine = create_engine(effective_database_url, **_engine_kwargs_for(effective_database_url))
-except Exception as exc:  # pragma: no cover - protects cloud startup misconfig
-    fallback_url = _fallback_sqlite_url()
-    logger.warning(
-        "Primary database init failed for %s; fallback to bundled sqlite %s (%s: %s)",
-        effective_database_url,
-        fallback_url,
-        type(exc).__name__,
-        exc,
-    )
-    effective_database_url = fallback_url
-    engine = create_engine(effective_database_url, **_engine_kwargs_for(effective_database_url))
+engine = create_engine(effective_database_url, **_engine_kwargs_for(effective_database_url))
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False, future=True)
 

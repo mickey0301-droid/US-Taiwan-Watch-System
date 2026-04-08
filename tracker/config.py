@@ -88,15 +88,7 @@ def _sqlite_data_score(path: Path) -> int:
 
 
 def _prefer_populated_sqlite_database(database_url: str) -> str:
-    if not database_url.startswith("sqlite:///"):
-        return database_url
-
-    configured_path = Path(database_url.removeprefix("sqlite:///")).resolve()
-    bundled_path = (BASE_DIR / "data" / "tracker.db").resolve()
-    configured_score = _sqlite_data_score(configured_path)
-    bundled_score = _sqlite_data_score(bundled_path)
-    if bundled_path != configured_path and bundled_score > configured_score:
-        return f"sqlite:///{bundled_path.as_posix()}"
+    # Never auto-switch database file silently. Always respect configured URL.
     return database_url
 
 
