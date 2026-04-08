@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 import re
 import pandas as pd
 import streamlit as st
@@ -350,6 +351,21 @@ def _clean_background_text(value: object) -> str:
     text = re.sub(r"\s+,", ",", text)
     text = re.sub(r",\s*", ", ", text)
     return text.strip(" ,;")
+
+
+def _coerce_payload_dict(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
 
 def _format_statement_rows(statements: list[Statement], lang: str, source_counts: dict[int, int] | None = None) -> pd.DataFrame:
@@ -1341,7 +1357,7 @@ def _executive_department_name(office_name: str | None) -> str:
 
 
 def _executive_hierarchy(office_name: str | None, appointment_payload: dict | None) -> tuple[str, str | None, str | None]:
-    payload = appointment_payload if isinstance(appointment_payload, dict) else {}
+    payload = _coerce_payload_dict(appointment_payload)
     payload_office_title = payload.get("office_title")
     department_name = payload.get("department_name")
     top_department_name = payload.get("top_department_name")
@@ -1601,8 +1617,8 @@ def _display_office_name(office_name: str | None, appointment_payload: dict | No
         value = re.sub(r"^(acting|interim)\s*[,:\-]?\s*", r"\1 ", value, flags=re.I).strip()
         return value
 
-    payload = appointment_payload or {}
-    payload_title = payload.get("office_title") if isinstance(payload, dict) else None
+    payload = _coerce_payload_dict(appointment_payload)
+    payload_title = payload.get("office_title")
     clean_title = _normalize_title(str(payload_title)) if payload_title else ""
     if clean_title:
         return clean_title
