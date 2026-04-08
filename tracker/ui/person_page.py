@@ -440,6 +440,32 @@ def _district_sort_key(value: str | None) -> tuple[int, object]:
     return (1, normalized.lower())
 
 
+def _normalize_name_tokens_for_match(name: str | None) -> list[str]:
+    text = str(name or "")
+    # Strip leadership suffixes like " -- Majority Leader".
+    text = text.split("--", 1)[0]
+    text = re.sub(r"[\"“”]", " ", text)
+    text = re.sub(r"[^A-Za-z\\s'\\-]", " ", text)
+    text = re.sub(r"\\s+", " ", text).strip().lower()
+    return [token for token in text.split(" ") if token]
+
+
+def _likely_same_legislator_name_variant(a: str | None, b: str | None) -> bool:
+    a_tokens = _normalize_name_tokens_for_match(a)
+    b_tokens = _normalize_name_tokens_for_match(b)
+    if len(a_tokens) < 2 or len(b_tokens) < 2:
+        return False
+    a_last = a_tokens[-1]
+    b_last = b_tokens[-1]
+    if not a_last or a_last != b_last:
+        return False
+    a_first = a_tokens[0]
+    b_first = b_tokens[0]
+    if a_first == b_first:
+        return True
+    return a_first[0] == b_first[0]
+
+
 def _surname_sort_key(full_name: str | None, family_name: str | None) -> tuple[str, str]:
     family = str(family_name or "").strip().lower()
     full = str(full_name or "").strip()
@@ -504,12 +530,26 @@ def _render_member_roster(
         )
 
     # Deduplicate by person and keep the highest-ranked row based on current ordering.
+    # Also suppress unspecified-district rows when a likely same person already appears with a specific district.
+    specific_district_names: list[str] = []
+    if selected_category in {"state_senate", "state_house"}:
+        for row in ordered:
+            district = str(row[7] or "").strip()
+            if district and district.lower() != "unspecified district":
+                specific_district_names.append(display_person_name(row[1], row[2], row[3]))
+
     seen_person_ids: set[int] = set()
     deduped_ordered: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]] = []
     for row in ordered:
         person_id = int(row[0])
         if person_id in seen_person_ids:
             continue
+        if selected_category in {"state_senate", "state_house"}:
+            district = str(row[7] or "").strip()
+            if not district or district.lower() == "unspecified district":
+                row_name = display_person_name(row[1], row[2], row[3])
+                if any(_likely_same_legislator_name_variant(row_name, existing_name) for existing_name in specific_district_names):
+                    continue
         seen_person_ids.add(person_id)
         deduped_ordered.append(row)
     ordered = deduped_ordered
