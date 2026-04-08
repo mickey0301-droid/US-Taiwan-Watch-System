@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+from typing import Any
+
 import streamlit as st
 
 from tracker.utils.social import social_button_label, social_display_name
 
 
-def render_social_links(profiles: dict[str, str], key_prefix: str) -> None:
-    if not profiles:
+def render_social_links(profiles: Any, key_prefix: str) -> None:
+    safe_profiles = profiles if isinstance(profiles, dict) else {}
+    if not safe_profiles:
         return
 
-    platforms = [(platform, url) for platform, url in profiles.items() if url]
+    platforms = [(str(platform), str(url)) for platform, url in safe_profiles.items() if url]
     if not platforms:
         return
 
