@@ -7,6 +7,7 @@ import streamlit as st
 from tracker.config import get_settings, use_google_sheet_primary_mode
 from tracker.database_setup import ensure_database_ready
 from tracker.ui import (
+    changelog_page,
     dashboard,
     jobs_page,
     legislation_page,
@@ -43,7 +44,7 @@ LABELS = {
         "app_title": "US Taiwan Watch",
         "dashboard": "首頁",
         "officials": "官員名單",
-        "person_detail": "人物頁面",
+        "person_detail": "人物",
         "trackers": "追蹤器",
         "review_queue": "事件",
         "state_territory": "州/海外領地",
@@ -51,11 +52,16 @@ LABELS = {
         "jobs_scheduler": "排程與工作",
         "notifications": "通知",
         "settings": "設定",
+        "changelog": "更新日誌",
         "total_officials": "官員總數",
         "total_trackers": "追蹤器總數",
         "recent_statements": "近期聲明",
         "recent_sync_runs": "近期同步",
         "recent_alerts": "近期提醒",
+        "federal_official_events": "聯邦官員事件",
+        "congress_member_events": "國會議員事件",
+        "state_official_events": "州官員事件",
+        "state_legislator_events": "州議員事件",
         "search_name": "搜尋姓名",
         "aliases": "別名",
         "office_history": "職務歷程",
@@ -152,11 +158,16 @@ LABELS = {
         "jobs_scheduler": "Jobs / Scheduler",
         "notifications": "Notifications",
         "settings": "Settings",
+        "changelog": "Changelog",
         "total_officials": "Total officials",
         "total_trackers": "Total trackers",
         "recent_statements": "Recent statements",
         "recent_sync_runs": "Recent sync runs",
         "recent_alerts": "Recent alerts",
+        "federal_official_events": "Federal official events",
+        "congress_member_events": "Congress member events",
+        "state_official_events": "State official events",
+        "state_legislator_events": "State legislator events",
         "search_name": "Search by name",
         "aliases": "Aliases",
         "office_history": "Office history",
@@ -255,6 +266,7 @@ PAGES = {
     "jobs_scheduler": jobs_page.render,
     "notifications": notifications_page.render,
     "settings": settings_page.render,
+    "changelog": changelog_page.render,
 }
 
 SIDEBAR_LOGO_PATH = Path(__file__).resolve().parent / "tracker" / "ui" / "assets" / "utw_sidebar_logo.svg"
@@ -270,6 +282,7 @@ NAV_PAGE_ORDER = [
     "jobs_scheduler",
     "notifications",
     "settings",
+    "changelog",
 ]
 
 GOOGLE_SHEET_PRIMARY_PAGES = [
@@ -279,6 +292,7 @@ GOOGLE_SHEET_PRIMARY_PAGES = [
     "review_queue",
     "legislation",
     "officials",
+    "changelog",
 ]
 
 
