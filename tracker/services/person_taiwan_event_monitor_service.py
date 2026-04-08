@@ -270,7 +270,13 @@ class PersonTaiwanEventMonitorService:
         person.last_seen_at = datetime.utcnow()
 
     def _collect_rss_items(self, client: httpx.Client, rss_url: str, domain: str) -> list[dict[str, Any]]:
-        parsed = feedparser.parse(rss_url)
+        try:
+            response = client.get(rss_url, follow_redirects=True, timeout=25.0)
+            response.raise_for_status()
+            parsed = feedparser.parse(response.text)
+        except Exception:
+            # Fallback to feedparser URL fetch if direct fetch fails.
+            parsed = feedparser.parse(rss_url)
         seen: set[str] = set()
         items: list[dict[str, Any]] = []
         for entry in parsed.entries[:50]:
