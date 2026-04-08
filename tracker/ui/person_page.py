@@ -94,6 +94,7 @@ def _get_base_people_query(category_key: str):
             Office.office_name,
             Jurisdiction.name,
             Appointment.raw_payload,
+            Appointment.role_title,
         )
         .join(Appointment, Appointment.person_id == Person.id)
         .join(Office, Office.id == Appointment.office_id)
@@ -118,7 +119,7 @@ def _get_people_for_category(
     subdepartment_filter: str | None = None,
     unit_filter: str | None = None,
     status_filter: str | None = None,
-) -> list[tuple[int, str, str | None, str | None, str, str | None, dict | None]]:
+) -> list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]]:
     stmt = _get_base_people_query(category_key)
     if state_filter:
         stmt = stmt.where(Jurisdiction.name == state_filter)
@@ -136,6 +137,86 @@ def _get_people_for_category(
 
 def _categories_with_state_filter() -> set[str]:
     return {"federal_senate", "federal_house", "state_executive", "state_senate", "state_house"}
+
+
+def _all_state_names(session) -> list[str]:
+    rows = session.execute(
+        select(Jurisdiction.name)
+        .where(Jurisdiction.type == "state")
+        .order_by(Jurisdiction.name.asc())
+    ).all()
+    return [str(row[0]).strip() for row in rows if _is_valid_state_option(row[0])]
+
+
+def _state_executive_role_key(office_name: str | None, role_title: str | None) -> str:
+    merged = f"{office_name or ''} {role_title or ''}".strip().lower()
+    if "lieutenant governor" in merged:
+        return "lieutenant_governor"
+    if "governor" in merged:
+        return "governor"
+    if "secretary of state" in merged:
+        return "secretary_of_state"
+    if "attorney general" in merged:
+        return "attorney_general"
+    if "treasurer" in merged:
+        return "treasurer"
+    if "auditor" in merged or "comptroller" in merged or "controller" in merged:
+        return "auditor"
+    return "other"
+
+
+def _state_executive_role_options(lang: str) -> list[tuple[str, str]]:
+    if lang == "zh-TW":
+        return [
+            ("all", "全部職務"),
+            ("governor", "州長/總督"),
+            ("lieutenant_governor", "副州長"),
+            ("secretary_of_state", "州務卿"),
+            ("attorney_general", "州檢察長"),
+            ("treasurer", "州財政官"),
+            ("auditor", "州審計長/主計官"),
+            ("other", "其他州政府官員"),
+        ]
+    return [
+        ("all", "All roles"),
+        ("governor", "Governor"),
+        ("lieutenant_governor", "Lieutenant Governor"),
+        ("secretary_of_state", "Secretary of State"),
+        ("attorney_general", "Attorney General"),
+        ("treasurer", "Treasurer"),
+        ("auditor", "Auditor / Comptroller"),
+        ("other", "Other state executive"),
+    ]
+
+
+def _render_state_executive_roster(
+    candidates: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]],
+    session,
+    lang: str,
+) -> None:
+    all_states = _all_state_names(session)
+    if not all_states:
+        return
+    roster_map: dict[str, list[str]] = {state: [] for state in all_states}
+    for row in candidates:
+        state_name = str(row[5] or "").strip()
+        if state_name not in roster_map:
+            continue
+        person_name = display_person_name(row[1], row[2], row[3])
+        office_name = _display_office_name(row[4], row[6])
+        label = f"{person_name} ({office_name})" if office_name else person_name
+        if label not in roster_map[state_name]:
+            roster_map[state_name].append(label)
+
+    rows = [
+        {
+            ("州" if lang == "zh-TW" else "State"): state,
+            ("官員" if lang == "zh-TW" else "Officials"): " / ".join(roster_map[state]) if roster_map[state] else "",
+        }
+        for state in all_states
+    ]
+    df = pd.DataFrame(rows)
+    st.dataframe(df, hide_index=True, use_container_width=True)
 
 
 def _categories_with_department_filter() -> set[str]:
@@ -893,6 +974,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
 
     with session_scope() as session:
         state_filter = None
+        state_executive_role_filter = "all"
         department_filter = None
         subdepartment_filter = None
         unit_filter = None
@@ -948,12 +1030,24 @@ def render(lang: str, labels: dict[str, str]) -> None:
             )
 
         if person is None and selected_category in _categories_with_state_filter():
-            state_options = _get_state_options(session, selected_category)
-            if not state_options:
-                st.info(labels["no_people_loaded"])
-                return
-            state_selection = st.selectbox(labels["state"], [labels["all"], *state_options])
-            state_filter = None if state_selection == labels["all"] else state_selection
+            if selected_category == "state_executive":
+                role_options = _state_executive_role_options(lang)
+                role_key_to_label = {key: label for key, label in role_options}
+                role_keys = [key for key, _ in role_options]
+                role_selector_label = "職務" if lang == "zh-TW" else "Role"
+                state_executive_role_filter = st.selectbox(
+                    role_selector_label,
+                    role_keys,
+                    format_func=lambda key: role_key_to_label.get(key, key),
+                    index=1,
+                )
+            else:
+                state_options = _get_state_options(session, selected_category)
+                if not state_options:
+                    st.info(labels["no_people_loaded"])
+                    return
+                state_selection = st.selectbox(labels["state"], [labels["all"], *state_options])
+                state_filter = None if state_selection == labels["all"] else state_selection
 
         if person is None:
             status_options = ["current", "former"]
@@ -982,6 +1076,12 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     row for row in candidates
                     if _is_minister_level_federal_executive(row[4], row[6])
                 ]
+            if selected_category == "state_executive" and state_executive_role_filter != "all":
+                candidates = [
+                    row
+                    for row in candidates
+                    if _state_executive_role_key(row[4], row[7]) == state_executive_role_filter
+                ]
             if not candidates:
                 st.info(labels["no_people_loaded"])
                 return
@@ -994,6 +1094,21 @@ def render(lang: str, labels: dict[str, str]) -> None:
                         display_person_name(row[1], row[2], row[3]).lower(),
                     ),
                 )
+            elif selected_category == "state_executive":
+                candidates = sorted(
+                    candidates,
+                    key=lambda row: (
+                        str(row[5] or ""),
+                        display_person_name(row[1], row[2], row[3]).lower(),
+                    ),
+                )
+                roster_label = (
+                    "州別名單（依州名 A-Z，空白代表該州目前缺資料）"
+                    if lang == "zh-TW"
+                    else "State roster (A-Z by state; blanks indicate missing records)"
+                )
+                st.caption(roster_label)
+                _render_state_executive_roster(candidates, session, lang)
 
             person_options = {
                 f"{display_person_name(row[1], row[2], row[3])} ({_display_office_name(row[4], row[6])})": row[0]
