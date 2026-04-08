@@ -1888,6 +1888,11 @@ def render(lang: str, labels: dict[str, str]) -> None:
             st.write(_clean_background_text(person_data["bio"]))
 
     with top_right:
+        alias_flash_key = f"chinese-alias-flash-{person.id}"
+        alias_flash = st.session_state.pop(alias_flash_key, None)
+        if alias_flash:
+            st.success(str(alias_flash))
+
         display_title = person_data["full_name"]
         generated_chinese_name = None
         if chinese_aliases:
@@ -1959,8 +1964,8 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     )
 
                 session.flush()
-                chinese_aliases = submitted_aliases
-                st.success("已更新中文譯名" if lang == "zh-TW" else "Chinese names updated")
+                st.session_state[alias_flash_key] = "已更新中文譯名" if lang == "zh-TW" else "Chinese names updated"
+                st.rerun()
 
         _render_db_person_highlights(
             recent_events=recent_statements,
