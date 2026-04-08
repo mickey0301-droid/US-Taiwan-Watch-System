@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import re
 import pandas as pd
 import streamlit as st
 from sqlalchemy import desc, func, select
 
-from tracker.config import use_google_sheet_primary_mode
+from tracker.config import get_settings, use_google_sheet_primary_mode
 from tracker.db import session_scope
 from tracker.models import Alias, Appointment, Jurisdiction, Legislation, LegislationSponsor, Office, Person, Statement, SyncRun, Tracker
 from tracker.services.ai_assist_service import AIAssistService
@@ -25,7 +26,6 @@ from tracker.utils.official_search import (
     build_google_official_search_url,
     build_x_search_url,
 )
-from tracker.utils.social import social_display_name
 from tracker.utils.source_types import is_government_url, source_bucket_label
 from tracker.utils.wikipedia_links import build_wikipedia_search_url, resolve_wikipedia_url
 
@@ -61,9 +61,99 @@ CABINET_DEPARTMENT_ORDER = [
 
 CABINET_DEPARTMENT_RANK = {name: index for index, name in enumerate(CABINET_DEPARTMENT_ORDER)}
 
+DEPARTMENT_LABELS_ZH = {
+    "White House": "白宮",
+    "Department of State": "國務院",
+    "Department of the Treasury": "財政部",
+    "Department of Defense": "國防部",
+    "Department of Justice": "司法部",
+    "Department of the Interior": "內政部",
+    "Department of Agriculture": "農業部",
+    "Department of Commerce": "商務部",
+    "Department of Labor": "勞工部",
+    "Department of Health and Human Services": "衛生與公共服務部",
+    "Department of Housing and Urban Development": "住房與城市發展部",
+    "Department of Transportation": "運輸部",
+    "Department of Energy": "能源部",
+    "Department of Education": "教育部",
+    "Department of Veterans Affairs": "退伍軍人事務部",
+    "Department of Homeland Security": "國土安全部",
+    "Office of the Director of National Intelligence": "國家情報總監辦公室",
+    "Office of Management and Budget": "白宮管理及預算局",
+    "Office of the United States Trade Representative": "美國貿易代表署",
+    "United States Mission to the United Nations": "美國駐聯合國代表團",
+    "Environmental Protection Agency": "環境保護署",
+    "Small Business Administration": "小企業署",
+    "Central Intelligence Agency": "中央情報局",
+    "Council of Economic Advisers": "白宮經濟顧問委員會",
+    "Other": "其他",
+}
+
+WHITE_HOUSE_SUBDEPARTMENT_LABELS_ZH = {
+    "National Security Council": "國家安全會議",
+    "White House Office": "白宮辦公室",
+    "Homeland Security Council": "國土安全會議",
+}
+
+WHITE_HOUSE_UNIT_LABELS_ZH = {
+    "Strategic Communications": "戰略溝通",
+    "Cyber": "網路安全",
+    "Asia": "亞洲事務",
+    "European Affairs": "歐洲事務",
+    "European and Russian Affairs": "歐洲與俄羅斯事務",
+    "Middle East and North Africa": "中東與北非事務",
+    "Middle East and Africa": "中東與非洲事務",
+    "South and Central Asian Affairs": "南亞與中亞事務",
+    "Western Hemisphere": "西半球事務",
+    "Intelligence": "情報事務",
+    "Defense": "國防事務",
+}
+
 
 def _category_label(category: dict, lang: str) -> str:
     return category["label_zh"] if lang == "zh-TW" else category["label_en"]
+
+
+def _department_label(department_name: str | None, lang: str) -> str:
+    label = (department_name or "").strip()
+    if not label:
+        return ""
+    if lang != "zh-TW":
+        return label
+    return DEPARTMENT_LABELS_ZH.get(label, label)
+
+
+def _subdepartment_label(subdepartment_name: str | None, lang: str, department_name: str | None = None) -> str:
+    label = (subdepartment_name or "").strip()
+    if not label:
+        return ""
+    if lang != "zh-TW":
+        return label
+    if (department_name or "").strip() == "White House":
+        return WHITE_HOUSE_SUBDEPARTMENT_LABELS_ZH.get(label, label)
+    return WHITE_HOUSE_SUBDEPARTMENT_LABELS_ZH.get(label, label)
+
+
+def _unit_label(unit_name: str | None, lang: str, department_name: str | None = None) -> str:
+    label = (unit_name or "").strip()
+    if not label:
+        return ""
+    if lang != "zh-TW":
+        return label
+    if (department_name or "").strip() == "White House":
+        return WHITE_HOUSE_UNIT_LABELS_ZH.get(label, label)
+    return WHITE_HOUSE_UNIT_LABELS_ZH.get(label, label)
+
+
+def _clean_background_text(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\[\s*\d+\s*\]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+,", ",", text)
+    text = re.sub(r",\s*", ", ", text)
+    return text.strip(" ,;")
 
 
 def _format_statement_rows(statements: list[Statement], lang: str, source_counts: dict[int, int] | None = None) -> pd.DataFrame:
@@ -94,7 +184,6 @@ def _get_base_people_query(category_key: str):
             Office.office_name,
             Jurisdiction.name,
             Appointment.raw_payload,
-            Appointment.role_title,
         )
         .join(Appointment, Appointment.person_id == Person.id)
         .join(Office, Office.id == Appointment.office_id)
@@ -119,7 +208,8 @@ def _get_people_for_category(
     subdepartment_filter: str | None = None,
     unit_filter: str | None = None,
     status_filter: str | None = None,
-) -> list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]]:
+    minister_only: bool = False,
+) -> list[tuple[int, str, str | None, str | None, str, str | None, dict | None]]:
     stmt = _get_base_people_query(category_key)
     if state_filter:
         stmt = stmt.where(Jurisdiction.name == state_filter)
@@ -132,6 +222,12 @@ def _get_people_for_category(
         rows = [row for row in rows if _executive_hierarchy(row[4], row[6])[1] == subdepartment_filter]
     if unit_filter and category_key == "federal_executive":
         rows = [row for row in rows if _executive_hierarchy(row[4], row[6])[2] == unit_filter]
+    if minister_only and category_key == "federal_executive":
+        rows = [
+            row
+            for row in rows
+            if _executive_role_rank(_display_office_name(row[4], row[6]))[0] <= 4
+        ]
     return rows
 
 
@@ -139,102 +235,13 @@ def _categories_with_state_filter() -> set[str]:
     return {"federal_senate", "federal_house", "state_executive", "state_senate", "state_house"}
 
 
-def _all_state_names(session) -> list[str]:
-    rows = session.execute(
-        select(Jurisdiction.name)
-        .where(Jurisdiction.type == "state")
-        .order_by(Jurisdiction.name.asc())
-    ).all()
-    return [str(row[0]).strip() for row in rows if _is_valid_state_option(row[0])]
-
-
-def _state_executive_role_key(office_name: str | None, role_title: str | None) -> str:
-    merged = f"{office_name or ''} {role_title or ''}".strip().lower()
-    if "lieutenant governor" in merged:
-        return "lieutenant_governor"
-    if "governor" in merged:
-        return "governor"
-    if "secretary of state" in merged:
-        return "secretary_of_state"
-    if "attorney general" in merged:
-        return "attorney_general"
-    if "treasurer" in merged:
-        return "treasurer"
-    if "auditor" in merged or "comptroller" in merged or "controller" in merged:
-        return "auditor"
-    return "other"
-
-
-def _state_executive_role_options(lang: str) -> list[tuple[str, str]]:
-    if lang == "zh-TW":
-        return [
-            ("all", "全部職務"),
-            ("governor", "州長/總督"),
-            ("lieutenant_governor", "副州長"),
-            ("secretary_of_state", "州務卿"),
-            ("attorney_general", "州檢察長"),
-            ("treasurer", "州財政官"),
-            ("auditor", "州審計長/主計官"),
-            ("other", "其他州政府官員"),
-        ]
-    return [
-        ("all", "All roles"),
-        ("governor", "Governor"),
-        ("lieutenant_governor", "Lieutenant Governor"),
-        ("secretary_of_state", "Secretary of State"),
-        ("attorney_general", "Attorney General"),
-        ("treasurer", "Treasurer"),
-        ("auditor", "Auditor / Comptroller"),
-        ("other", "Other state executive"),
-    ]
-
-
-def _render_state_executive_roster(
-    candidates: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]],
-    session,
-    lang: str,
-) -> None:
-    all_states = _all_state_names(session)
-    if not all_states:
-        return
-    roster_map: dict[str, list[str]] = {state: [] for state in all_states}
-    for row in candidates:
-        state_name = str(row[5] or "").strip()
-        if state_name not in roster_map:
-            continue
-        person_name = display_person_name(row[1], row[2], row[3])
-        office_name = _display_office_name(row[4], row[6])
-        label = f"{person_name} ({office_name})" if office_name else person_name
-        if label not in roster_map[state_name]:
-            roster_map[state_name].append(label)
-
-    rows = [
-        {
-            ("州" if lang == "zh-TW" else "State"): state,
-            ("官員" if lang == "zh-TW" else "Officials"): " / ".join(roster_map[state]) if roster_map[state] else "",
-        }
-        for state in all_states
-    ]
-    df = pd.DataFrame(rows)
-    st.dataframe(df, hide_index=True, use_container_width=True)
-
-
 def _categories_with_department_filter() -> set[str]:
     return {"federal_executive"}
 
 
-def _is_valid_state_option(value: object) -> bool:
-    text = str(value or "").strip()
-    if not text:
-        return False
-    if len(text) == 1 and text.isalpha():
-        return False
-    return True
-
-
 def _get_state_options(session, category_key: str) -> list[str]:
     rows = session.execute(_get_base_people_query(category_key)).all()
-    return sorted({str(row[5]).strip() for row in rows if _is_valid_state_option(row[5])})
+    return sorted({row[5] for row in rows if row[5]})
 
 
 def _get_department_options(session, category_key: str) -> list[str]:
@@ -243,108 +250,6 @@ def _get_department_options(session, category_key: str) -> list[str]:
         departments = {_executive_hierarchy(row[4], row[6])[0] for row in rows if row[4]}
         return sorted(departments, key=_executive_department_sort_key)
     return sorted({row[4] for row in rows if row[4]})
-
-
-DEPARTMENT_NAME_ZH = {
-    "White House": "白宮",
-    "Department of State": "國務院",
-    "Department of the Treasury": "財政部",
-    "Department of Defense": "國防部",
-    "Department of Justice": "司法部",
-    "Department of the Interior": "內政部",
-    "Department of Agriculture": "農業部",
-    "Department of Commerce": "商務部",
-    "Department of Labor": "勞工部",
-    "Department of Health and Human Services": "衛生與公共服務部",
-    "Department of Housing and Urban Development": "住房與城市發展部",
-    "Department of Transportation": "運輸部",
-    "Department of Energy": "能源部",
-    "Department of Education": "教育部",
-    "Department of Veterans Affairs": "退伍軍人事務部",
-    "Department of Homeland Security": "國土安全部",
-    "Office of the Director of National Intelligence": "國家情報總監辦公室",
-    "Environmental Protection Agency": "環境保護署",
-    "Small Business Administration": "小企業署",
-    "Office of Management and Budget": "管理及預算局",
-    "Office of the United States Trade Representative": "美國貿易代表署",
-    "United States Mission to the United Nations": "美國駐聯合國代表團",
-    "Council of Economic Advisers": "經濟顧問委員會",
-    "Central Intelligence Agency": "中央情報局",
-    "Advocacy": "倡議事務",
-    "American Institute in Taiwan": "美國在台協會",
-    "Archivist of the United States": "美國國家檔案館館長",
-    "Assistant Secretary for Congressional and Legislative Affairs": "國會與立法事務助理部長",
-    "Assistant Secretary of Defense for Indo-Pacific Security Affairs": "國防部印太安全事務助理部長",
-    "Assistant Secretary of State for East Asian and Pacific Affairs": "國務院東亞暨太平洋事務助理國務卿",
-    "Assistant Secretary of State for Political-Military Affairs": "國務院政軍事務助理國務卿",
-    "Board of Directors of the Metropolitan Washington Airports Authority": "華盛頓都會機場管理局董事會",
-    "Board of Directors of the Tennessee Valley Authority": "田納西河谷管理局董事會",
-    "Commission on Civil Rights": "民權委員會",
-    "Commodity Futures Trading Commission": "商品期貨交易委員會",
-    "Consumer Financial Protection Bureau": "消費者金融保護局",
-    "Consumer Product Safety Commission": "消費品安全委員會",
-    "Department of War": "戰爭部",
-    "Disaster Recovery and Resilience": "災後復原與韌性",
-    "Equal Employment Opportunity Commission": "平等就業機會委員會",
-    "Exportâ€“Import Bank of the United States": "美國進出口銀行",
-    "Export–Import Bank of the United States": "美國進出口銀行",
-    "Farm Credit Administration": "農業信貸管理局",
-    "Federal Communications Commission": "聯邦通訊委員會",
-    "Federal Deposit Insurance Corporation": "聯邦存款保險公司",
-    "Federal Energy Regulatory Commission": "聯邦能源監管委員會",
-    "Federal Housing Finance Agency": "聯邦住房金融局",
-    "Federal Labor Relations Authority": "聯邦勞資關係局",
-    "Federal Maritime Commission": "聯邦海事委員會",
-    "Federal Mine Safety and Health Review Commission": "聯邦礦場安全與健康審查委員會",
-    "Federal Reserve": "聯邦準備系統",
-    "Federal Reserve Board of Governors": "聯邦準備理事會",
-    "Federal Reserve for Supervision": "聯邦準備監理業務",
-    "Federal Trade Commission": "聯邦貿易委員會",
-    "General Services": "總務服務",
-    "Institute of Museum and Library Services": "博物館與圖書館服務研究所",
-    "Merit Systems Protection Board": "功績制度保護委員會",
-    "National Aeronautics and Space Administration": "國家航空暨太空總署",
-    "National Counterintelligence and Security Center": "國家反情報與安全中心",
-    "National Credit Union Administration": "國家信用合作社管理局",
-    "National Endowment for the Arts": "國家藝術基金會",
-    "National Labor Relations Board": "國家勞資關係委員會",
-    "National Railroad Passenger Corporation": "國家鐵路客運公司",
-    "National Transportation Safety Board": "國家運輸安全委員會",
-    "Nuclear Regulatory Commission": "核能管理委員會",
-    "Occupational Safety and Health Review Commission": "職業安全衛生審查委員會",
-    "Office of Government Ethics": "政府倫理辦公室",
-    "Office of Personnel Management": "人事管理局",
-    "Office of Science and Technology Policy": "科技政策辦公室",
-    "Pension Benefit Guaranty Corporation": "退休金給付擔保公司",
-    "Religious Liberty Commission": "宗教自由委員會",
-    "Securities and Exchange Commission": "證券交易委員會",
-    "Social Security Administration": "社會安全局",
-    "Surface Transportation Board": "地面運輸委員會",
-    "U.S. Agency for Global Media": "美國全球媒體總署",
-    "U.S. International Development Finance Corporation": "美國國際開發金融公司",
-    "Under Secretary of Veterans Affairs for Health": "退伍軍人事務部衛生事務次長",
-    "Under Secretary of Veterans Affairs for Memorial Affairs": "退伍軍人事務部紀念事務次長",
-    "United States": "美國",
-    "United States Ambassador to China": "美國駐中國大使",
-    "United States Ambassador to Japan": "美國駐日本大使",
-    "United States Director of the Asian Development Bank": "美國駐亞洲開發銀行理事",
-}
-
-
-def _department_label(value: str, lang: str) -> str:
-    if lang != "zh-TW":
-        return value
-    return DEPARTMENT_NAME_ZH.get(value, value)
-
-
-def _is_minister_level_federal_executive(office_name: str | None, raw_payload: dict | None) -> bool:
-    display = _display_office_name(office_name, raw_payload).lower().strip()
-    if display.startswith("secretary of ") or display.startswith("secretary,"):
-        return True
-    # Keep AG in this tier for the user's "部長級" browsing intent.
-    if "attorney general" in display:
-        return True
-    return False
 
 
 def _get_subdepartment_options(session, category_key: str, department_filter: str) -> list[str]:
@@ -900,7 +805,7 @@ def _render_statement_cards(
                         st.write(f"[{display_label}] {source.source_url}")
 
 
-def _render_manual_event_ingest_form(person_id: int, labels: dict[str, str]) -> None:
+def _render_manual_event_ingest_form(person_id: int, lang: str, labels: dict[str, str]) -> None:
     st.markdown(f"**{labels['manual_event_ingest']}**")
     flash_key = f"manual-event-ingest-flash-{person_id}"
     flash = st.session_state.pop(flash_key, None)
@@ -930,12 +835,16 @@ def _render_manual_event_ingest_form(person_id: int, labels: dict[str, str]) -> 
             with session_scope() as session:
                 ingest_service = ManualStatementIngestService(session)
                 statement, created = ingest_service.ingest_from_url(person_id=person_id, source_url=source_url.strip())
-        st.session_state[flash_key] = {
-            "level": "success" if created else "info",
-            "message": labels["manual_event_created"].format(title=statement.title)
-            if created
-            else labels["manual_event_updated"].format(title=statement.title),
-        }
+        if created:
+            st.session_state[flash_key] = {
+                "level": "success",
+                "message": labels["manual_event_created"].format(title=statement.title),
+            }
+        else:
+            st.session_state[flash_key] = {
+                "level": "info",
+                "message": labels["manual_event_updated"].format(title=statement.title),
+            }
         st.rerun()
     except Exception as exc:
         st.error(f"{labels['manual_event_failed']}: {exc}")
@@ -954,16 +863,23 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 del st.query_params["page"]
             st.rerun()
 
-    if use_google_sheet_primary_mode():
+    settings = get_settings()
+    has_sheet_config = bool(
+        settings.google_sheet_id
+        and (settings.google_service_account_json or settings.google_service_account_file)
+    )
+    prefer_sheet_person_view = use_google_sheet_primary_mode() or has_sheet_config
+
+    if prefer_sheet_person_view:
         if _render_google_sheet_fallback_v2(lang, labels, pending_person_id):
             return
-        st.info(labels["no_people_loaded"])
-        return
+        if use_google_sheet_primary_mode():
+            st.info(labels["no_people_loaded"])
+            return
 
     with session_scope() as session:
         total_people = session.scalar(select(func.count()).select_from(Person)) or 0
-    if total_people == 0:
-        st.info(labels["no_people_loaded"])
+    if total_people == 0 and _render_google_sheet_fallback_v2(lang, labels, pending_person_id):
         return
 
     selected_category = st.selectbox(
@@ -974,11 +890,10 @@ def render(lang: str, labels: dict[str, str]) -> None:
 
     with session_scope() as session:
         state_filter = None
-        state_executive_role_filter = "all"
         department_filter = None
         subdepartment_filter = None
         unit_filter = None
-        executive_rank_filter = None
+        minister_only = False
         person = None
         person_id = None
 
@@ -990,6 +905,11 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 pass
 
         if person is None and selected_category in _categories_with_department_filter():
+            if selected_category == "federal_executive":
+                role_scope_label = "職級" if lang == "zh-TW" else "Role scope"
+                role_scope_options = ["部長級", "全部"] if lang == "zh-TW" else ["Minister-level", "All"]
+                role_scope = st.selectbox(role_scope_label, role_scope_options, index=0)
+                minister_only = role_scope == ("部長級" if lang == "zh-TW" else "Minister-level")
             department_options = _get_department_options(session, selected_category)
             if not department_options:
                 st.info(labels["no_people_loaded"])
@@ -997,57 +917,35 @@ def render(lang: str, labels: dict[str, str]) -> None:
             department_filter = st.selectbox(
                 labels["department"],
                 department_options,
-                format_func=lambda value: _department_label(value, lang),
+                format_func=lambda item: _department_label(item, lang),
             )
             subdepartment_options = _get_subdepartment_options(session, selected_category, department_filter)
             if subdepartment_options:
                 subdepartment_label = "次部門" if lang == "zh-TW" else "Subdepartment"
                 sub_selection = st.selectbox(
                     subdepartment_label,
-                    ["全部", *subdepartment_options],
-                    format_func=lambda value: value if value == "全部" else _department_label(value, lang),
+                    ["__all__", *subdepartment_options],
+                    format_func=lambda item: ("全部" if item == "__all__" else _subdepartment_label(item, lang, department_filter)),
                 )
-                subdepartment_filter = None if sub_selection == "全部" else sub_selection
+                subdepartment_filter = None if sub_selection == "__all__" else sub_selection
                 if subdepartment_filter:
                     unit_options = _get_unit_options(session, selected_category, department_filter, subdepartment_filter)
                     if unit_options:
                         unit_label = "下屬部門" if lang == "zh-TW" else "Sub-unit"
                         unit_selection = st.selectbox(
                             unit_label,
-                            ["全部", *unit_options],
-                            format_func=lambda value: value if value == "全部" else _department_label(value, lang),
+                            ["__all__", *unit_options],
+                            format_func=lambda item: ("全部" if item == "__all__" else _unit_label(item, lang, department_filter)),
                         )
-                        unit_filter = None if unit_selection == "全部" else unit_selection
-            executive_rank_label = "職級" if lang == "zh-TW" else "Role tier"
-            executive_rank_options = ["minister", "all"]
-            executive_rank_filter = st.selectbox(
-                executive_rank_label,
-                executive_rank_options,
-                format_func=lambda value: (
-                    "部長級" if value == "minister" else "全部"
-                ) if lang == "zh-TW" else ("Secretary-level" if value == "minister" else "All"),
-                index=0,
-            )
+                        unit_filter = None if unit_selection == "__all__" else unit_selection
 
         if person is None and selected_category in _categories_with_state_filter():
-            if selected_category == "state_executive":
-                role_options = _state_executive_role_options(lang)
-                role_key_to_label = {key: label for key, label in role_options}
-                role_keys = [key for key, _ in role_options]
-                role_selector_label = "職務" if lang == "zh-TW" else "Role"
-                state_executive_role_filter = st.selectbox(
-                    role_selector_label,
-                    role_keys,
-                    format_func=lambda key: role_key_to_label.get(key, key),
-                    index=1,
-                )
-            else:
-                state_options = _get_state_options(session, selected_category)
-                if not state_options:
-                    st.info(labels["no_people_loaded"])
-                    return
-                state_selection = st.selectbox(labels["state"], [labels["all"], *state_options])
-                state_filter = None if state_selection == labels["all"] else state_selection
+            state_options = _get_state_options(session, selected_category)
+            if not state_options:
+                st.info(labels["no_people_loaded"])
+                return
+            state_selection = st.selectbox(labels["state"], [labels["all"], *state_options])
+            state_filter = None if state_selection == labels["all"] else state_selection
 
         if person is None:
             status_options = ["current", "former"]
@@ -1070,18 +968,8 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 subdepartment_filter=subdepartment_filter,
                 unit_filter=unit_filter,
                 status_filter=selected_status,
+                minister_only=minister_only,
             )
-            if selected_category == "federal_executive" and executive_rank_filter == "minister":
-                candidates = [
-                    row for row in candidates
-                    if _is_minister_level_federal_executive(row[4], row[6])
-                ]
-            if selected_category == "state_executive" and state_executive_role_filter != "all":
-                candidates = [
-                    row
-                    for row in candidates
-                    if _state_executive_role_key(row[4], row[7]) == state_executive_role_filter
-                ]
             if not candidates:
                 st.info(labels["no_people_loaded"])
                 return
@@ -1094,21 +982,6 @@ def render(lang: str, labels: dict[str, str]) -> None:
                         display_person_name(row[1], row[2], row[3]).lower(),
                     ),
                 )
-            elif selected_category == "state_executive":
-                candidates = sorted(
-                    candidates,
-                    key=lambda row: (
-                        str(row[5] or ""),
-                        display_person_name(row[1], row[2], row[3]).lower(),
-                    ),
-                )
-                roster_label = (
-                    "州別名單（依州名 A-Z，空白代表該州目前缺資料）"
-                    if lang == "zh-TW"
-                    else "State roster (A-Z by state; blanks indicate missing records)"
-                )
-                st.caption(roster_label)
-                _render_state_executive_roster(candidates, session, lang)
 
             person_options = {
                 f"{display_person_name(row[1], row[2], row[3])} ({_display_office_name(row[4], row[6])})": row[0]
@@ -1252,33 +1125,33 @@ def render(lang: str, labels: dict[str, str]) -> None:
             st.info(labels["no_portrait"])
         st.markdown(f"**{'背景資料' if lang == 'zh-TW' else 'Background'}**")
         if person_data["date_of_birth"]:
-            st.write(f"{labels['date_of_birth']}: {person_data['date_of_birth']}")
+            st.write(f"{labels['date_of_birth']}: {_clean_background_text(person_data['date_of_birth'])}")
             source_note = _format_background_source("date_of_birth", person_data, labels, lang)
             if source_note:
                 st.caption(source_note)
         if person_data["place_of_birth"]:
-            st.write(f"{labels['place_of_birth']}: {person_data['place_of_birth']}")
+            st.write(f"{labels['place_of_birth']}: {_clean_background_text(person_data['place_of_birth'])}")
             source_note = _format_background_source("place_of_birth", person_data, labels, lang)
             if source_note:
                 st.caption(source_note)
         if person_data["ethnicity"]:
-            st.write(f"{labels['ethnicity']}: {person_data['ethnicity']}")
+            st.write(f"{labels['ethnicity']}: {_clean_background_text(person_data['ethnicity'])}")
         if person_data["religion"]:
-            st.write(f"{labels['religion']}: {person_data['religion']}")
+            st.write(f"{labels['religion']}: {_clean_background_text(person_data['religion'])}")
         if person_data["education"]:
             st.write(labels["education"])
-            st.write(person_data["education"])
+            st.write(_clean_background_text(person_data["education"]))
             source_note = _format_background_source("education", person_data, labels, lang)
             if source_note:
                 st.caption(source_note)
         if person_data["career_history"]:
             st.write(labels["career_history"])
-            st.markdown(str(person_data["career_history"]))
+            st.write(_clean_background_text(person_data["career_history"]))
             source_note = _format_background_source("career_history", person_data, labels, lang)
             if source_note:
                 st.caption(source_note)
         if person_data["bio"]:
-            st.write(person_data["bio"])
+            st.write(_clean_background_text(person_data["bio"]))
 
     with top_right:
         display_title = person_data["full_name"]
@@ -1362,17 +1235,12 @@ def render(lang: str, labels: dict[str, str]) -> None:
         if person_data["social_profiles"]:
             st.write(labels["social_profiles"])
             render_social_links(person_data["social_profiles"], key_prefix=f"person-social-{person_id}")
-            with st.expander(labels["social_profiles"]):
-                for platform, url in person_data["social_profiles"].items():
-                    st.markdown(f"- [{social_display_name(platform)}]({url})")
 
         person_source_url = person_data["source_url"]
         official_page_url = person_data["canonical_official_url"] if is_government_url(person_data["canonical_official_url"]) else None
         if not official_page_url and is_government_url(person_source_url):
             official_page_url = person_source_url
 
-        st.write(f"{labels['profile_status']}: {person_data['profile_status'] or labels['unknown']}")
-        st.write(f"{labels['seed_source']}: {source_bucket_label(person_data['seed_source_type'], person_source_url, lang)}")
         st.write(f"{labels['primary_source']}: {source_bucket_label(person_data['source_type'], person_source_url, lang)}")
         st.write(f"{labels['official_page']}: {official_page_url or 'N/A'}")
 
@@ -1449,7 +1317,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     st.markdown(f"- [{_background_search_label(link_key, lang)}]({link_url})")
         if last_sync:
             st.caption(f"{labels['last_sync']}: {last_sync.started_at} | {last_sync.status} | {last_sync.error_message or 'OK'}")
-        _render_manual_event_ingest_form(person_id=int(person_id), labels=labels)
+        _render_manual_event_ingest_form(person_id=int(person_id), lang=lang, labels=labels)
 
     st.subheader(labels["recent_taiwan_statements"])
     overview_tab_label = "最新綜覽" if lang == "zh-TW" else "Overview"
@@ -1570,24 +1438,24 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str], pending_per
             st.image(person["portrait_url"])
         else:
             st.info(labels["no_portrait"])
+        st.markdown(f"**{'背景資料' if lang == 'zh-TW' else 'Background'}**")
+        st.write(f"{labels['date_of_birth']}: {_clean_background_text(person.get('date_of_birth') or 'N/A')}")
+        st.write(f"{labels['place_of_birth']}: {_clean_background_text(person.get('place_of_birth') or 'N/A')}")
+        if person.get("education"):
+            st.write(labels["education"])
+            st.write(_clean_background_text(person["education"]))
+        if person.get("past_experience"):
+            st.write(labels["career_history"])
+            st.write(_clean_background_text(person["past_experience"]))
+        if person.get("committees_list"):
+            committees_label = "委員會" if lang == "zh-TW" else "Committees"
+            st.write(f"{committees_label}: {' | '.join(person['committees_list'])}")
     with top_right:
         st.subheader(str(person.get("display_name_en") or person.get("full_name") or ""))
         if person.get("display_name_zh"):
             chinese_name_label = "ä¸­æ–‡è­¯å" if lang == "zh-TW" else "Chinese names"
             st.write(f"{chinese_name_label}: {person['display_name_zh']}")
-        st.write(f"{labels['profile_status']}: {person.get('status') or labels['unknown']}")
         st.write(f"{labels['official_page']}: {person.get('official_page') or 'N/A'}")
-        st.write(f"{labels['date_of_birth']}: {person.get('date_of_birth') or 'N/A'}")
-        st.write(f"{labels['place_of_birth']}: {person.get('place_of_birth') or 'N/A'}")
-        if person.get("education"):
-            st.write(labels["education"])
-            st.write(person["education"])
-        if person.get("past_experience"):
-            st.write(labels["career_history"])
-            st.write(person["past_experience"])
-        if person.get("committees_list"):
-            committees_label = "å§”å“¡æœƒ" if lang == "zh-TW" else "Committees"
-            st.write(f"{committees_label}: {' | '.join(person['committees_list'])}")
         if social_profiles:
             st.write(labels["social_profiles"])
             render_social_links(social_profiles, key_prefix=f"sheet-person-social-{person_id}")
@@ -1726,7 +1594,6 @@ def _render_google_sheet_fallback_v2(lang: str, labels: dict[str, str], pending_
         st.subheader(f"{chinese_name} ({english_name})" if chinese_name else english_name)
         if generated_name:
             st.caption("中文名由 AI 協助生成" if lang == "zh-TW" else "Chinese name generated with AI assistance")
-        st.write(f"{labels['profile_status']}: {person.get('status') or labels['unknown']}")
         st.write(f"{labels['official_page']}: {person.get('official_page') or 'N/A'}")
         if social_profiles:
             st.write(labels["social_profiles"])
