@@ -456,6 +456,14 @@ def _render_member_roster(
             candidates,
             key=lambda row: (_district_sort_key(row[7]), display_person_name(row[1], row[2], row[3]).lower()),
         )
+    elif selected_category == "state_executive":
+        ordered = sorted(
+            candidates,
+            key=lambda row: (
+                _state_executive_role_rank(_display_office_name(row[4], row[6])),
+                display_person_name(row[1], row[2], row[3]).lower(),
+            ),
+        )
     elif selected_category == "federal_executive":
         ordered = sorted(
             candidates,
@@ -1002,6 +1010,37 @@ def _executive_role_rank(office_name: str | None) -> tuple[int, str]:
     return (99, title)
 
 
+def _state_executive_role_rank(office_name: str | None) -> tuple[int, str]:
+    title = (office_name or "").lower().strip()
+    if ":" in title:
+        title = title.split(":", 1)[1].strip()
+    if "lieutenant governor" in title:
+        return (1, title)
+    if "governor" in title:
+        return (0, title)
+    if "secretary of state" in title or "secretary of the commonwealth" in title:
+        return (2, title)
+    if "attorney general" in title:
+        return (3, title)
+    if "state treasurer" in title or "treasurer" in title:
+        return (4, title)
+    if "state comptroller" in title or "comptroller" in title:
+        return (5, title)
+    if "auditor" in title:
+        return (6, title)
+    if "superintendent" in title:
+        return (7, title)
+    if "insurance commissioner" in title:
+        return (8, title)
+    if "agriculture commissioner" in title:
+        return (9, title)
+    if "commissioner" in title:
+        return (50, title)
+    if "director" in title:
+        return (60, title)
+    return (99, title)
+
+
 def _military_role_rank(office_name: str | None, appointment_payload: dict | None = None) -> tuple[int, str]:
     title = _display_office_name(office_name, appointment_payload).lower()
     if "chairman, joint chiefs of staff" in title or "chairman of the joint chiefs" in title:
@@ -1536,6 +1575,14 @@ def render(lang: str, labels: dict[str, str]) -> None:
                         display_person_name(row[1], row[2], row[3]).lower(),
                     ),
                 )
+            elif selected_category == "state_executive":
+                candidates = sorted(
+                    candidates,
+                    key=lambda row: (
+                        _state_executive_role_rank(_display_office_name(row[4], row[6])),
+                        display_person_name(row[1], row[2], row[3]).lower(),
+                    ),
+                )
 
             white_house_roster_only = (
                 selected_category == "federal_executive"
@@ -1547,6 +1594,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 return
             if selected_category in _categories_with_department_filter() or selected_category in {"state_executive", "state_senate", "state_house"}:
                 _render_member_roster(candidates, lang=lang, selected_category=selected_category)
+                return
 
             person_options = {
                 f"{display_person_name(row[1], row[2], row[3])} ({_display_office_name(row[4], row[6])})": row[0]
