@@ -1606,7 +1606,7 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str], pending_per
         key="sheet-person-status",
     )
     candidates = [person for person in people if _sheet_person_matches_category(person, selected_category) and person.get("status") == selected_status]
-    if not candidates and selected_status == "unknown":
+    if not candidates:
         candidates = [person for person in people if _sheet_person_matches_category(person, selected_category)]
     if not candidates:
         st.info(labels["no_people_loaded"])
@@ -1985,14 +1985,39 @@ def _sheet_person_matches_category(person: dict[str, object], category_key: str)
     level = str(person.get("level") or "").lower()
     branch = str(person.get("branch") or "").lower()
     office_title = str(person.get("office_title") or "").lower()
+    department_name = str(person.get("department_name") or "").lower()
     is_senate = "sen" in office_title
     is_house = any(token in office_title for token in ("rep", "house", "assembly", "delegate"))
     if category_key == "federal_executive":
-        return level == "federal" and branch == "executive"
+        if level == "federal" and branch == "executive":
+            return True
+        # Fallback when sheet rows are missing normalized level/branch.
+        return any(token in office_title for token in ("secretary", "administrator", "attorney general", "director"))
     if category_key == "federal_military":
-        if not (level == "federal" and branch == "executive"):
-            return False
-        return _is_military_role(str(person.get("office_title") or ""), {"office_title": person.get("office_title")})
+        if level == "federal" and branch == "executive":
+            return _is_military_role(str(person.get("office_title") or ""), {"office_title": person.get("office_title")})
+        # Fallback for sheet export rows that do not carry level/branch.
+        title_for_match = str(person.get("office_title") or person.get("role_title") or "")
+        payload = {"office_title": title_for_match}
+        if _is_military_role(title_for_match, payload):
+            return True
+        return any(
+            token in f"{department_name} {office_title}"
+            for token in (
+                "joint chiefs",
+                "u.s. indo-pacific command",
+                "u.s. central command",
+                "u.s. southern command",
+                "u.s. africa command",
+                "u.s. european command",
+                "u.s. strategic command",
+                "u.s. transportation command",
+                "u.s. northern command",
+                "u.s. special operations command",
+                "u.s. cyber command",
+                "u.s. space command",
+            )
+        )
     if category_key == "federal_senate":
         return level == "federal" and branch == "legislative" and is_senate
     if category_key == "federal_house":
