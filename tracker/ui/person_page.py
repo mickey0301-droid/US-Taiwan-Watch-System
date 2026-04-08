@@ -87,6 +87,14 @@ DEPARTMENT_LABELS_ZH = {
     "Small Business Administration": "小企業署",
     "Central Intelligence Agency": "中央情報局",
     "Council of Economic Advisers": "白宮經濟顧問委員會",
+    "Department of Defense Leadership": "國防部高階領導",
+    "Joint Chiefs of Staff": "參謀首長聯席會議",
+    "U.S. Army Leadership": "美國陸軍高階領導",
+    "U.S. Navy Leadership": "美國海軍高階領導",
+    "U.S. Marine Corps Leadership": "美國海軍陸戰隊高階領導",
+    "U.S. Air Force Biographies": "美國空軍高階領導",
+    "U.S. Space Force Leadership": "美國太空軍高階領導",
+    "National Guard Bureau Leadership": "國民兵局高階領導",
     "Other": "其他",
 }
 
@@ -159,6 +167,58 @@ COMBATANT_COMMAND_UNIT_MAP = {
     "transportation command": "U.S. Transportation Command",
     "transcom": "U.S. Transportation Command",
 }
+
+MILITARY_DEPARTMENT_ORDER = [
+    "Department of Defense",
+    "Department of Defense Leadership",
+    "Joint Chiefs of Staff",
+    "U.S. Army Leadership",
+    "U.S. Navy Leadership",
+    "U.S. Marine Corps Leadership",
+    "U.S. Air Force Biographies",
+    "U.S. Space Force Leadership",
+    "National Guard Bureau Leadership",
+    "U.S. Indo-Pacific Command",
+    "U.S. Central Command",
+    "U.S. European Command",
+    "U.S. Northern Command",
+    "U.S. Southern Command",
+    "U.S. Africa Command",
+    "U.S. Strategic Command",
+    "U.S. Transportation Command",
+    "U.S. Special Operations Command",
+    "U.S. Cyber Command",
+    "U.S. Space Command",
+]
+MILITARY_DEPARTMENT_RANK = {name: index for index, name in enumerate(MILITARY_DEPARTMENT_ORDER)}
+
+MILITARY_SUBDEPARTMENT_ORDER = [
+    "Joint Chiefs of Staff",
+    "Combatant Commands",
+]
+MILITARY_SUBDEPARTMENT_RANK = {name: index for index, name in enumerate(MILITARY_SUBDEPARTMENT_ORDER)}
+
+MILITARY_UNIT_ORDER = [
+    "Joint Staff",
+    "Army",
+    "Navy",
+    "Marine Corps",
+    "Air Force",
+    "Space Force",
+    "National Guard",
+    "U.S. Indo-Pacific Command",
+    "U.S. Central Command",
+    "U.S. European Command",
+    "U.S. Northern Command",
+    "U.S. Southern Command",
+    "U.S. Africa Command",
+    "U.S. Strategic Command",
+    "U.S. Transportation Command",
+    "U.S. Special Operations Command",
+    "U.S. Cyber Command",
+    "U.S. Space Command",
+]
+MILITARY_UNIT_RANK = {name: index for index, name in enumerate(MILITARY_UNIT_ORDER)}
 
 
 def _category_label(category: dict, lang: str) -> str:
@@ -322,7 +382,7 @@ def _get_department_options(session, category_key: str) -> list[str]:
         return sorted(departments, key=_executive_department_sort_key)
     if category_key == "federal_military":
         departments = {_executive_hierarchy(row[4], row[6])[0] for row in rows if row[4]}
-        return sorted(departments, key=_executive_department_sort_key)
+        return sorted(departments, key=_military_department_sort_key)
     return sorted({row[4] for row in rows if row[4]})
 
 
@@ -336,6 +396,8 @@ def _get_subdepartment_options(session, category_key: str, department_filter: st
         for hierarchy in [_executive_hierarchy(row[4], row[6])]
         if hierarchy[0] == department_filter and hierarchy[1]
     }
+    if category_key == "federal_military":
+        return sorted(options, key=_military_subdepartment_sort_key)
     return sorted(options)
 
 
@@ -349,6 +411,8 @@ def _get_unit_options(session, category_key: str, department_filter: str, subdep
         for hierarchy in [_executive_hierarchy(row[4], row[6])]
         if hierarchy[0] == department_filter and hierarchy[1] == subdepartment_filter and hierarchy[2]
     }
+    if category_key == "federal_military":
+        return sorted(options, key=_military_unit_sort_key)
     return sorted(options)
 
 
@@ -716,6 +780,35 @@ def _executive_role_rank(office_name: str | None) -> tuple[int, str]:
     return (99, title)
 
 
+def _military_role_rank(office_name: str | None, appointment_payload: dict | None = None) -> tuple[int, str]:
+    title = _display_office_name(office_name, appointment_payload).lower()
+    if "chairman, joint chiefs of staff" in title or "chairman of the joint chiefs" in title:
+        return (0, title)
+    if "vice chairman, joint chiefs of staff" in title or "vice chairman of the joint chiefs" in title:
+        return (1, title)
+    if any(
+        phrase in title
+        for phrase in [
+            "chief of staff of the army",
+            "chief of naval operations",
+            "chief of staff of the air force",
+            "commandant of the marine corps",
+            "chief of space operations",
+            "chief of the national guard bureau",
+        ]
+    ):
+        return (2, title)
+    if "commander" in title and "deputy commander" not in title and "vice commander" not in title:
+        return (3, title)
+    if "deputy commander" in title or "vice commander" in title:
+        return (4, title)
+    if "chief of staff" in title:
+        return (5, title)
+    if "command senior enlisted leader" in title or "senior enlisted advisor" in title or "sergeant major" in title:
+        return (6, title)
+    return (99, title)
+
+
 def _executive_department_sort_key(department_name: str | None) -> tuple[int, str]:
     department = (department_name or "").strip()
     if not department:
@@ -723,6 +816,33 @@ def _executive_department_sort_key(department_name: str | None) -> tuple[int, st
     if department in CABINET_DEPARTMENT_RANK:
         return (CABINET_DEPARTMENT_RANK[department], department.lower())
     return (100 + len(CABINET_DEPARTMENT_RANK), department.lower())
+
+
+def _military_department_sort_key(department_name: str | None) -> tuple[int, str]:
+    department = (department_name or "").strip()
+    if not department:
+        return (999, "")
+    if department in MILITARY_DEPARTMENT_RANK:
+        return (MILITARY_DEPARTMENT_RANK[department], department.lower())
+    return (200 + len(MILITARY_DEPARTMENT_RANK), department.lower())
+
+
+def _military_subdepartment_sort_key(name: str | None) -> tuple[int, str]:
+    subdepartment = (name or "").strip()
+    if not subdepartment:
+        return (999, "")
+    if subdepartment in MILITARY_SUBDEPARTMENT_RANK:
+        return (MILITARY_SUBDEPARTMENT_RANK[subdepartment], subdepartment.lower())
+    return (200 + len(MILITARY_SUBDEPARTMENT_RANK), subdepartment.lower())
+
+
+def _military_unit_sort_key(name: str | None) -> tuple[int, str]:
+    unit = (name or "").strip()
+    if not unit:
+        return (999, "")
+    if unit in MILITARY_UNIT_RANK:
+        return (MILITARY_UNIT_RANK[unit], unit.lower())
+    return (200 + len(MILITARY_UNIT_RANK), unit.lower())
 
 
 def _display_office_name(office_name: str | None, appointment_payload: dict | None = None) -> str:
@@ -1177,6 +1297,17 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     candidates,
                     key=lambda row: (
                         _executive_role_rank(_display_office_name(row[4], row[6])),
+                        display_person_name(row[1], row[2], row[3]).lower(),
+                    ),
+                )
+            elif selected_category == "federal_military":
+                candidates = sorted(
+                    candidates,
+                    key=lambda row: (
+                        _military_department_sort_key(_executive_hierarchy(row[4], row[6])[0]),
+                        _military_subdepartment_sort_key(_executive_hierarchy(row[4], row[6])[1]),
+                        _military_unit_sort_key(_executive_hierarchy(row[4], row[6])[2]),
+                        _military_role_rank(row[4], row[6]),
                         display_person_name(row[1], row[2], row[3]).lower(),
                     ),
                 )
