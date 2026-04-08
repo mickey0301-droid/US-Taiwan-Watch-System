@@ -65,8 +65,12 @@ class PersonTaiwanEventMonitorService:
             "runs": [],
         }
 
+    @staticmethod
+    def _person_payload(person: Person) -> dict[str, Any]:
+        return dict(person.raw_payload) if isinstance(person.raw_payload, dict) else {}
+
     def get_person_monitor_config(self, person: Person, chinese_aliases: list[str] | None = None) -> dict[str, Any]:
-        payload = dict(person.raw_payload or {})
+        payload = self._person_payload(person)
         config = payload.get(MONITOR_KEY)
         if not isinstance(config, dict):
             config = self.default_config_for_person(person, chinese_aliases=chinese_aliases)
@@ -91,7 +95,7 @@ class PersonTaiwanEventMonitorService:
         daily_time: str,
         lookback_days: int | None = None,
     ) -> dict[str, Any]:
-        payload = dict(person.raw_payload or {})
+        payload = self._person_payload(person)
         config = self.get_person_monitor_config(person)
         config["enabled"] = bool(enabled)
         config["person_keywords"] = self._clean_keywords(person_keywords)
@@ -337,7 +341,7 @@ class PersonTaiwanEventMonitorService:
         )
 
     def _save_run_record(self, person: Person, run_record: dict[str, Any]) -> None:
-        payload = dict(person.raw_payload or {})
+        payload = self._person_payload(person)
         config = self.get_person_monitor_config(person)
         runs = list(config.get("runs") or [])
         runs.insert(0, run_record)
