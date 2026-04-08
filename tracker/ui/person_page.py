@@ -456,6 +456,26 @@ def _render_member_roster(
             candidates,
             key=lambda row: (_district_sort_key(row[7]), display_person_name(row[1], row[2], row[3]).lower()),
         )
+    elif selected_category == "federal_executive":
+        ordered = sorted(
+            candidates,
+            key=lambda row: (
+                _executive_department_sort_key(_executive_hierarchy(row[4], row[6])[0]),
+                (_executive_hierarchy(row[4], row[6])[1] or "").lower(),
+                _executive_role_rank(_display_office_name(row[4], row[6])),
+                display_person_name(row[1], row[2], row[3]).lower(),
+            ),
+        )
+    elif selected_category == "federal_military":
+        ordered = sorted(
+            candidates,
+            key=lambda row: (
+                _military_department_sort_key(_executive_hierarchy(row[4], row[6])[0]),
+                (_executive_hierarchy(row[4], row[6])[1] or "").lower(),
+                _military_role_rank(row[4], row[6]),
+                display_person_name(row[1], row[2], row[3]).lower(),
+            ),
+        )
 
     headers = ("姓名", "部門", "職位") if lang == "zh-TW" else ("Name", "Department", "Position")
     lines: list[str] = [f"| {headers[0]} | {headers[1]} | {headers[2]} |", "|---|---|---|"]
@@ -471,10 +491,17 @@ def _render_member_roster(
 
         hierarchy = _executive_hierarchy(row[4], row[6])
         if selected_category in {"federal_executive", "federal_military"}:
-            department_en = hierarchy[0] or (row[5] or "")
+            top_department = hierarchy[0] or (row[5] or "")
+            if top_department == "White House":
+                department_en = hierarchy[1] or "White House Office"
+                department_zh = _subdepartment_label(department_en, "zh-TW", "White House")
+            else:
+                department_en = top_department
+                department_zh = _department_label(top_department, "zh-TW")
         else:
             department_en = str(row[5] or "")
-        department = _bilingual_text(department_en, _department_label(department_en, "zh-TW"))
+            department_zh = _department_label(department_en, "zh-TW")
+        department = _bilingual_text(department_en, department_zh)
 
         office_zh = _position_label_zh(office)
         office_bilingual = _bilingual_text(office, office_zh)
