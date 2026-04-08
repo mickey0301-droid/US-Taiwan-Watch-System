@@ -1849,7 +1849,13 @@ def render(lang: str, labels: dict[str, str]) -> None:
             if white_house_roster_only:
                 _render_white_house_roster(candidates, lang=lang)
                 return
-            if selected_category in _categories_with_department_filter() or selected_category in {"state_executive", "state_senate", "state_house"}:
+            if selected_category in _categories_with_department_filter() or selected_category in {
+                "state_executive",
+                "state_senate",
+                "state_house",
+                "federal_senate",
+                "federal_house",
+            }:
                 _render_member_roster(candidates, lang=lang, selected_category=selected_category)
                 return
 
