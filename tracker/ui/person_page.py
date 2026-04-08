@@ -704,9 +704,14 @@ def _render_member_roster(
 
     ordered = candidates
     if selected_category == "state_senate":
+        multi_state = len({str(row[5] or "").strip() for row in candidates if str(row[5] or "").strip()}) > 1
         ordered = sorted(
             candidates,
-            key=lambda row: (_district_sort_key(row[7]), display_person_name(row[1], row[2], row[3]).lower()),
+            key=lambda row: (
+                _state_sort_key(row[5]) if multi_state else (0, ""),
+                _district_sort_key(row[7]),
+                display_person_name(row[1], row[2], row[3]).lower(),
+            ),
         )
     elif selected_category == "federal_senate":
         ordered = sorted(
@@ -721,8 +726,8 @@ def _render_member_roster(
         ordered = sorted(
             candidates,
             key=lambda row: (
-                _legislative_chamber_rank(row[4], row[6]),
                 _state_sort_key(row[5]),
+                _legislative_chamber_rank(row[4], row[6]),
                 _district_sort_key(row[7]),
                 _surname_sort_key(display_person_name(row[1], row[2], row[3]), row[3]),
                 display_person_name(row[1], row[2], row[3]).lower(),
@@ -733,8 +738,8 @@ def _render_member_roster(
         ordered = sorted(
             candidates,
             key=lambda row: (
-                _legislative_chamber_rank(row[4], row[6]),
                 _state_sort_key(row[5]) if multi_state else (0, ""),
+                _legislative_chamber_rank(row[4], row[6]),
                 _district_sort_key(row[7]),
                 _surname_sort_key(display_person_name(row[1], row[2], row[3]), row[3]),
                 display_person_name(row[1], row[2], row[3]).lower(),
@@ -761,9 +766,11 @@ def _render_member_roster(
             ),
         )
     elif selected_category == "state_executive":
+        multi_state = len({str(row[5] or "").strip() for row in candidates if str(row[5] or "").strip()}) > 1
         ordered = sorted(
             candidates,
             key=lambda row: (
+                _state_sort_key(row[5]) if multi_state else (0, ""),
                 _state_executive_role_rank(_display_office_name(row[4], row[6])),
                 display_person_name(row[1], row[2], row[3]).lower(),
             ),
