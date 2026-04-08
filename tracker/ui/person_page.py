@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import re
+from urllib.parse import quote_plus
 import pandas as pd
 import streamlit as st
 from sqlalchemy import case, desc, func, select
@@ -714,47 +715,17 @@ def _legislative_chamber_rank(office_name: str | None, appointment_payload: dict
     return 2
 
 
-def _render_selectable_roster_table(
-    table_df: pd.DataFrame,
-    *,
-    person_id_column: str,
-    key: str,
-    name_column: str | None = None,
-    name_sort_column: str | None = None,
-) -> None:
-    display_df = table_df.copy()
-    if name_column and name_sort_column and name_column in display_df.columns and name_sort_column in display_df.columns:
-        pairs = (
-            display_df[[name_column, name_sort_column]]
-            .drop_duplicates()
-            .sort_values([name_sort_column, name_column], kind="stable")
-        )
-        ordered_categories = [str(item) for item in pairs[name_column].tolist()]
-        display_df[name_column] = pd.Categorical(
-            display_df[name_column].astype(str),
-            categories=ordered_categories,
-            ordered=True,
-        )
-
-    display_df = display_df.drop(columns=[person_id_column, (name_sort_column or "")], errors="ignore")
-    event = st.dataframe(
-        display_df,
-        use_container_width=True,
-        hide_index=True,
-        on_select="rerun",
-        selection_mode="single-row",
-        key=key,
-    )
-    selected_rows = list((event.selection or {}).get("rows", [])) if event else []
-    if not selected_rows:
-        return
-    row_idx = int(selected_rows[0])
-    if row_idx < 0 or row_idx >= len(table_df):
-        return
-    target_person_id = int(table_df.iloc[row_idx][person_id_column])
-    st.query_params["page"] = "person_detail"
-    st.query_params["person_id"] = str(target_person_id)
-    st.rerun()
+def _person_link_value_for_table(
+    person_id: int,
+    display_name: str,
+    family_name: str | None,
+    given_name: str | None,
+) -> str:
+    family_sort, _full_sort = _surname_sort_key(display_name, family_name)
+    given_sort = str(given_name or "").strip().lower()
+    sort_name = " ".join(part for part in [family_sort, given_sort, display_name.lower()] if part)
+    safe_name = str(display_name or "").replace("#", " ").strip()
+    return f"?page=person_detail&person_id={int(person_id)}&name_sort={quote_plus(sort_name)}#{safe_name}"
 
 
 def _render_member_roster(
@@ -899,8 +870,7 @@ def _render_member_roster(
     )
     name_header = "姓名" if lang == "zh-TW" else "Name"
     position_header = "職位" if lang == "zh-TW" else "Position"
-    person_id_header = "__person_id__"
-    name_sort_header = "__name_sort__"
+    link_name_header = "__name_link__"
     table_rows: list[dict[str, str]] = []
 
     for row in ordered:
@@ -942,15 +912,7 @@ def _render_member_roster(
 
         table_rows.append(
             {
-                person_id_header: str(person_id),
-                name_sort_header: " ".join(
-                    [
-                        _surname_sort_key(name, row[3])[0],
-                        str(row[2] or "").strip().lower(),
-                        name.lower(),
-                    ]
-                ).strip(),
-                name_header: name,
+                link_name_header: _person_link_value_for_table(person_id, name, row[3], row[2]),
                 department_header_text: department,
                 position_header: position,
             }
@@ -960,12 +922,17 @@ def _render_member_roster(
         st.caption("目前無資料" if lang == "zh-TW" else "No data yet")
         return
 
-    _render_selectable_roster_table(
-        pd.DataFrame(table_rows),
-        person_id_column=person_id_header,
-        key=f"member-roster-table-{selected_category}",
-        name_column=name_header,
-        name_sort_column=name_sort_header,
+    roster_df = pd.DataFrame(table_rows).rename(columns={link_name_header: name_header})
+    st.dataframe(
+        roster_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            name_header: st.column_config.LinkColumn(
+                name_header,
+                display_text=r"#(.*)$",
+            ),
+        },
     )
 
 
@@ -1021,8 +988,7 @@ def _render_white_house_roster(
             ),
         )
         headers = ("姓名", "部門", "職位") if lang == "zh-TW" else ("Name", "Department", "Position")
-        person_id_header = "__person_id__"
-        name_sort_header = "__name_sort__"
+        link_name_header = "__name_link__"
         table_rows: list[dict[str, str]] = []
         for row in ordered:
             person_id = int(row[0])
@@ -1036,15 +1002,7 @@ def _render_white_house_roster(
             subdepartment = _bilingual_text(subdepartment_en, _subdepartment_label(subdepartment_en, "zh-TW", "White House"))
             table_rows.append(
                 {
-                    person_id_header: str(person_id),
-                    name_sort_header: " ".join(
-                        [
-                            _surname_sort_key(name, row[3])[0],
-                            str(row[2] or "").strip().lower(),
-                            name.lower(),
-                        ]
-                    ).strip(),
-                    headers[0]: name,
+                    link_name_header: _person_link_value_for_table(person_id, name, row[3], row[2]),
                     headers[1]: subdepartment,
                     headers[2]: office_bilingual,
                 }
@@ -1052,12 +1010,17 @@ def _render_white_house_roster(
         if not table_rows:
             st.caption("目前無資料" if lang == "zh-TW" else "No data yet")
             return
-        _render_selectable_roster_table(
-            pd.DataFrame(table_rows),
-            person_id_column=person_id_header,
-            key=f"white-house-roster-table-{heading_en}",
-            name_column=headers[0],
-            name_sort_column=name_sort_header,
+        table_df = pd.DataFrame(table_rows).rename(columns={link_name_header: headers[0]})
+        st.dataframe(
+            table_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                headers[0]: st.column_config.LinkColumn(
+                    headers[0],
+                    display_text=r"#(.*)$",
+                ),
+            },
         )
 
     _render_table("白宮辦公室", "White House Office", office_rows)
