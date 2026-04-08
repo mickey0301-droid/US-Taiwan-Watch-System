@@ -409,17 +409,34 @@ def _render_member_roster(
             key=lambda row: (_district_sort_key(row[7]), display_person_name(row[1], row[2], row[3]).lower()),
         )
 
-    lines: list[str] = []
+    headers = ("姓名", "部門", "職位") if lang == "zh-TW" else ("Name", "Department", "Position")
+    lines: list[str] = [f"| {headers[0]} | {headers[1]} | {headers[2]} |", "|---|---|---|"]
+
+    def _clean_cell(text: str) -> str:
+        return str(text or "").replace("|", "\\|").replace("\n", " ").strip()
+
     for row in ordered:
         person_id = int(row[0])
         name = display_person_name(row[1], row[2], row[3])
         office = _display_office_name(row[4], row[6])
         district = str(row[7] or "").strip()
-        if selected_category in {"state_senate", "state_house"}:
-            district_label = district or ("未填" if lang == "zh-TW" else "Unspecified")
-            lines.append(f"- `{district_label}` [{name}]({person_detail_href(person_id)})")
+
+        hierarchy = _executive_hierarchy(row[4], row[6])
+        if selected_category in {"federal_executive", "federal_military"}:
+            department = hierarchy[0] or (row[5] or "")
+            department = _department_label(department, lang)
         else:
-            lines.append(f"- [{name}]({person_detail_href(person_id)}) · {office}")
+            department = str(row[5] or "")
+
+        if selected_category in {"state_senate", "state_house"}:
+            district_label = district or ("未填選區" if lang == "zh-TW" else "Unspecified district")
+            position = f"{office} ({district_label})"
+        else:
+            position = office
+
+        name_link = f"[{_clean_cell(name)}]({person_detail_href(person_id)})"
+        lines.append(f"| {name_link} | {_clean_cell(department)} | {_clean_cell(position)} |")
+
     st.markdown("\n".join(lines))
 
 

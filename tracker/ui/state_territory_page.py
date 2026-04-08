@@ -603,26 +603,40 @@ def _render_state_legislature_roster(container, legislature_roster: dict[str, li
     senate_rows = legislature_roster.get("senate", [])
     house_rows = legislature_roster.get("house", [])
 
-    def _render_chamber(title: str, rows: list[dict[str, str]], key: str) -> None:
+    def _render_chamber(title: str, rows: list[dict[str, str]], position_label: str) -> None:
         container.markdown(f"_{title}_")
         if not rows:
             container.caption("目前無資料" if lang == "zh-TW" else "No data yet")
             return
-        lines = []
+        headers = ("姓名", "部門", "職位") if lang == "zh-TW" else ("Name", "Department", "Position")
+        lines = [f"| {headers[0]} | {headers[1]} | {headers[2]} |", "|---|---|---|"]
+
+        def _clean_cell(text: str) -> str:
+            return str(text or "").replace("|", "\\|").replace("\n", " ").strip()
+
         for item in rows:
             district = item.get("district") or ""
             name = item.get("name") or ""
-            party = item.get("party") or ""
             person_id = str(item.get("person_id") or "").strip()
             if name and person_id:
-                member = f"[{name}]({person_detail_href(int(person_id))})"
+                member = f"[{_clean_cell(name)}]({person_detail_href(int(person_id))})"
             else:
-                member = name
-            lines.append(f"- `{district}` {member} {f'· {party}' if party else ''}".strip())
+                member = _clean_cell(name)
+            district_text = district or ("未填選區" if lang == "zh-TW" else "Unspecified district")
+            position = f"{position_label} ({district_text})"
+            lines.append(f"| {member} | {_clean_cell(title)} | {_clean_cell(position)} |")
         container.markdown("\n".join(lines))
 
-    _render_chamber("州參議院" if lang == "zh-TW" else "State Senate", senate_rows, "senate")
-    _render_chamber("州眾議院" if lang == "zh-TW" else "State House", house_rows, "house")
+    _render_chamber(
+        "州參議院" if lang == "zh-TW" else "State Senate",
+        senate_rows,
+        "州參議員" if lang == "zh-TW" else "State Senator",
+    )
+    _render_chamber(
+        "州眾議院" if lang == "zh-TW" else "State House",
+        house_rows,
+        "州眾議員" if lang == "zh-TW" else "State Representative",
+    )
 
 
 def _render_state_executive_roster(container, executive_roster: list[dict[str, str]], lang: str) -> None:
@@ -630,15 +644,21 @@ def _render_state_executive_roster(container, executive_roster: list[dict[str, s
     if not executive_roster:
         container.caption("目前無資料" if lang == "zh-TW" else "No data yet")
         return
-    lines = []
+
+    headers = ("姓名", "部門", "職位") if lang == "zh-TW" else ("Name", "Department", "Position")
+    lines = [f"| {headers[0]} | {headers[1]} | {headers[2]} |", "|---|---|---|"]
+
+    def _clean_cell(text: str) -> str:
+        return str(text or "").replace("|", "\\|").replace("\n", " ").strip()
+
     for item in executive_roster:
         role = item.get("role") or ""
         name = item.get("name") or ""
-        party = item.get("party") or ""
         person_id = str(item.get("person_id") or "").strip()
         if name and person_id:
-            official = f"[{name}]({person_detail_href(int(person_id))})"
+            official = f"[{_clean_cell(name)}]({person_detail_href(int(person_id))})"
         else:
-            official = name
-        lines.append(f"- `{role}` {official} {f'· {party}' if party else ''}".strip())
+            official = _clean_cell(name)
+        department = "州政府" if lang == "zh-TW" else "State Government"
+        lines.append(f"| {official} | {_clean_cell(department)} | {_clean_cell(role)} |")
     container.markdown("\n".join(lines))
