@@ -1547,6 +1547,8 @@ def render(lang: str, labels: dict[str, str]) -> None:
         include_military_roles = False
         person = None
         person_id = None
+        select_prompt_value = "__select__"
+        select_prompt_label = "請選擇" if lang == "zh-TW" else "Please select"
 
         if pending_person_id:
             person = session.get(Person, int(pending_person_id))
@@ -1572,9 +1574,12 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 return
             department_filter = st.selectbox(
                 labels["department"],
-                department_options,
-                format_func=lambda item: _department_label(item, lang),
+                [select_prompt_value, *department_options],
+                format_func=lambda item: (select_prompt_label if item == select_prompt_value else _department_label(item, lang)),
             )
+            if department_filter == select_prompt_value:
+                st.info(select_prompt_label)
+                return
             subdepartment_options = _get_subdepartment_options(session, selected_category, department_filter)
             if subdepartment_options:
                 subdepartment_label = "次部門" if lang == "zh-TW" else "Subdepartment"
@@ -1600,7 +1605,10 @@ def render(lang: str, labels: dict[str, str]) -> None:
             if not state_options:
                 st.info(labels["no_people_loaded"])
                 return
-            state_selection = st.selectbox(labels["state"], [labels["all"], *state_options])
+            state_selection = st.selectbox(labels["state"], [select_prompt_value, labels["all"], *state_options], format_func=lambda item: select_prompt_label if item == select_prompt_value else item)
+            if state_selection == select_prompt_value:
+                st.info(select_prompt_label)
+                return
             state_filter = None if state_selection == labels["all"] else state_selection
 
         if person is None:
