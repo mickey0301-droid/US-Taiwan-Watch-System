@@ -5,7 +5,8 @@ import json
 import re
 import pandas as pd
 import streamlit as st
-from sqlalchemy import case, desc, func, select
+from sqlalchemy import case, desc, func, select, text
+from sqlalchemy.exc import IntegrityError
 
 from tracker.config import get_settings, use_google_sheet_primary_mode
 from tracker.db import session_scope
@@ -2565,28 +2566,60 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     seen_aliases.add(alias_text)
                     submitted_aliases.append(alias_text)
 
-                existing_alias_rows = session.execute(
-                    select(Alias).where(
-                        Alias.person_id == person.id,
-                        Alias.alias_type == "chinese_name",
-                        Alias.is_current.is_(True),
-                    )
-                ).scalars().all()
-                for alias_row in existing_alias_rows:
-                    alias_row.is_current = False
-                    alias_row.last_seen_at = datetime.utcnow()
+                def _apply_alias_changes() -> None:
+                    existing_alias_rows = session.execute(
+                        select(Alias).where(
+                            Alias.person_id == person.id,
+                            Alias.alias_type == "chinese_name",
+                            Alias.is_current.is_(True),
+                        )
+                    ).scalars().all()
+                    for alias_row in existing_alias_rows:
+                        alias_row.is_current = False
+                        alias_row.last_seen_at = datetime.utcnow()
 
-                for alias_text in submitted_aliases:
-                    officials_service.ensure_alias(
-                        person.id,
-                        alias_text,
-                        source_url="manual://person_page",
-                        source_type="manual",
-                        alias_type="chinese_name",
-                    )
+                    for alias_text in submitted_aliases:
+                        officials_service.ensure_alias(
+                            person.id,
+                            alias_text,
+                            source_url="manual://person_page",
+                            source_type="manual",
+                            alias_type="chinese_name",
+                        )
 
-                session.flush()
-                session.commit()
+                try:
+                    _apply_alias_changes()
+                    session.flush()
+                    session.commit()
+                except IntegrityError:
+                    session.rollback()
+                    repaired = False
+                    if str(session.bind.url).startswith("postgresql"):
+                        try:
+                            session.execute(
+                                text(
+                                    "SELECT setval(pg_get_serial_sequence('aliases', 'id'), "
+                                    "GREATEST(COALESCE((SELECT MAX(id) FROM aliases), 0), 1), true)"
+                                )
+                            )
+                            session.commit()
+                            repaired = True
+                        except Exception:
+                            session.rollback()
+
+                    if repaired:
+                        try:
+                            _apply_alias_changes()
+                            session.flush()
+                            session.commit()
+                        except IntegrityError:
+                            session.rollback()
+                            st.error("儲存中文譯名失敗：資料重複或鍵值衝突，請稍後再試。")
+                            return
+                    else:
+                        st.error("儲存中文譯名失敗：資料庫鍵值衝突。")
+                        return
+
                 st.session_state[alias_flash_key] = "已更新中文譯名" if lang == "zh-TW" else "Chinese names updated"
                 st.rerun()
 
