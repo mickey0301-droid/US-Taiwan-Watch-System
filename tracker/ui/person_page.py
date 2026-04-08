@@ -682,6 +682,15 @@ def _state_sort_key(value: str | None) -> tuple[int, str]:
     return (0, text.lower())
 
 
+def _legislative_chamber_rank(office_name: str | None, appointment_payload: dict | None = None) -> int:
+    title = _display_office_name(office_name, appointment_payload).lower()
+    if "senat" in title:
+        return 0
+    if any(token in title for token in ("representative", "house", "assembly", "delegate")):
+        return 1
+    return 2
+
+
 def _render_member_roster(
     candidates: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]],
     lang: str,
@@ -712,6 +721,7 @@ def _render_member_roster(
         ordered = sorted(
             candidates,
             key=lambda row: (
+                _legislative_chamber_rank(row[4], row[6]),
                 _state_sort_key(row[5]),
                 _district_sort_key(row[7]),
                 _surname_sort_key(display_person_name(row[1], row[2], row[3]), row[3]),
@@ -723,6 +733,7 @@ def _render_member_roster(
         ordered = sorted(
             candidates,
             key=lambda row: (
+                _legislative_chamber_rank(row[4], row[6]),
                 _state_sort_key(row[5]) if multi_state else (0, ""),
                 _district_sort_key(row[7]),
                 _surname_sort_key(display_person_name(row[1], row[2], row[3]), row[3]),
