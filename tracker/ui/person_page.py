@@ -827,6 +827,65 @@ def _render_member_roster(
         deduped_ordered.append(row)
     ordered = deduped_ordered
 
+    sort_field_state_key = f"member-roster-sort-field-{selected_category}"
+    sort_asc_state_key = f"member-roster-sort-asc-{selected_category}"
+    if sort_field_state_key not in st.session_state:
+        st.session_state[sort_field_state_key] = "default"
+    if sort_asc_state_key not in st.session_state:
+        st.session_state[sort_asc_state_key] = True
+
+    sort_columns = st.columns(3)
+    sort_candidates = [
+        ("name", "姓名" if lang == "zh-TW" else "Name"),
+        ("department", "部門" if lang == "zh-TW" else "Department"),
+        ("position", "職位" if lang == "zh-TW" else "Position"),
+    ]
+    for idx, (sort_field, sort_label) in enumerate(sort_candidates):
+        active = st.session_state[sort_field_state_key] == sort_field
+        arrow = ""
+        if active:
+            arrow = " ▲" if st.session_state[sort_asc_state_key] else " ▼"
+        if sort_columns[idx].button(
+            f"{sort_label}{arrow}",
+            key=f"member-roster-sort-button-{selected_category}-{sort_field}",
+            use_container_width=True,
+        ):
+            if active:
+                st.session_state[sort_asc_state_key] = not st.session_state[sort_asc_state_key]
+            else:
+                st.session_state[sort_field_state_key] = sort_field
+                st.session_state[sort_asc_state_key] = True
+            st.rerun()
+
+    def _row_name_for_sort(row: tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]) -> str:
+        value = display_person_name(row[1], row[2], row[3])
+        if selected_category in {"state_legislative", "state_senate", "state_house"}:
+            value = _strip_legislative_name_suffix(value)
+        return value.lower()
+
+    def _row_department_for_sort(row: tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]) -> str:
+        return str(row[5] or "").lower()
+
+    def _row_position_for_sort(row: tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]) -> str:
+        office = _display_office_name(row[4], row[6])
+        district = str(row[7] or "").strip()
+        if selected_category in {"state_legislative", "state_senate", "state_house"}:
+            return f"{office} {district}".strip().lower()
+        return office.lower()
+
+    sort_field = str(st.session_state[sort_field_state_key] or "default")
+    if sort_field in {"name", "department", "position"}:
+        sort_map = {
+            "name": _row_name_for_sort,
+            "department": _row_department_for_sort,
+            "position": _row_position_for_sort,
+        }
+        ordered = sorted(
+            ordered,
+            key=sort_map[sort_field],
+            reverse=not bool(st.session_state[sort_asc_state_key]),
+        )
+
     department_header = (
         ("州" if lang == "zh-TW" else "State")
         if selected_category in {"federal_legislative", "federal_senate", "federal_house", "state_legislative", "state_senate", "state_house"}
@@ -934,6 +993,60 @@ def _render_white_house_roster(
                 display_person_name(row[1], row[2], row[3]).lower(),
             ),
         )
+        table_key = re.sub(r"[^a-z0-9]+", "-", heading_en.lower()).strip("-") or "white-house"
+        sort_field_state_key = f"member-roster-sort-field-white-house-{table_key}"
+        sort_asc_state_key = f"member-roster-sort-asc-white-house-{table_key}"
+        if sort_field_state_key not in st.session_state:
+            st.session_state[sort_field_state_key] = "default"
+        if sort_asc_state_key not in st.session_state:
+            st.session_state[sort_asc_state_key] = True
+
+        sort_columns = st.columns(3)
+        sort_candidates = [
+            ("name", "姓名" if lang == "zh-TW" else "Name"),
+            ("department", "部門" if lang == "zh-TW" else "Department"),
+            ("position", "職位" if lang == "zh-TW" else "Position"),
+        ]
+        for idx, (sort_field, sort_label) in enumerate(sort_candidates):
+            active = st.session_state[sort_field_state_key] == sort_field
+            arrow = ""
+            if active:
+                arrow = " ▲" if st.session_state[sort_asc_state_key] else " ▼"
+            if sort_columns[idx].button(
+                f"{sort_label}{arrow}",
+                key=f"member-roster-sort-button-white-house-{table_key}-{sort_field}",
+                use_container_width=True,
+            ):
+                if active:
+                    st.session_state[sort_asc_state_key] = not st.session_state[sort_asc_state_key]
+                else:
+                    st.session_state[sort_field_state_key] = sort_field
+                    st.session_state[sort_asc_state_key] = True
+                st.rerun()
+
+        sort_field = str(st.session_state[sort_field_state_key] or "default")
+        if sort_field in {"name", "department", "position"}:
+            def _row_name_for_sort(row: tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]) -> str:
+                return display_person_name(row[1], row[2], row[3]).lower()
+
+            def _row_department_for_sort(row: tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]) -> str:
+                hierarchy = _executive_hierarchy(row[4], row[6])
+                return str(hierarchy[1] or "White House Office").strip().lower()
+
+            def _row_position_for_sort(row: tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]) -> str:
+                return _display_office_name(row[4], row[6]).lower()
+
+            sort_map = {
+                "name": _row_name_for_sort,
+                "department": _row_department_for_sort,
+                "position": _row_position_for_sort,
+            }
+            ordered = sorted(
+                ordered,
+                key=sort_map[sort_field],
+                reverse=not bool(st.session_state[sort_asc_state_key]),
+            )
+
         headers = ("姓名", "部門", "職位") if lang == "zh-TW" else ("Name", "Department", "Position")
         lines = [f"| {headers[0]} | {headers[1]} | {headers[2]} |", "|---|---|---|"]
         for row in ordered:
