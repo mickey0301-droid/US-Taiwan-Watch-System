@@ -6,6 +6,7 @@ import re
 
 import streamlit as st
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from tracker.config import get_settings, use_google_sheet_primary_mode
 from tracker.db import session_scope
@@ -258,17 +259,20 @@ def _count_event_categories_db(session) -> dict[str, int]:
         "state_officials": 0,
         "state_legislators": 0,
     }
-    participant_rows = session.execute(
-        select(StatementParticipant.statement_id, Office.level, Office.branch)
-        .join(Appointment, Appointment.person_id == StatementParticipant.person_id)
-        .join(Office, Office.id == Appointment.office_id)
-    ).all()
-    owner_rows = session.execute(
-        select(Statement.id, Office.level, Office.branch)
-        .join(Appointment, Appointment.person_id == Statement.person_id)
-        .join(Office, Office.id == Appointment.office_id)
-        .where(Statement.person_id.is_not(None))
-    ).all()
+    try:
+        participant_rows = session.execute(
+            select(StatementParticipant.statement_id, Office.level, Office.branch)
+            .join(Appointment, Appointment.person_id == StatementParticipant.person_id)
+            .join(Office, Office.id == Appointment.office_id)
+        ).all()
+        owner_rows = session.execute(
+            select(Statement.id, Office.level, Office.branch)
+            .join(Appointment, Appointment.person_id == Statement.person_id)
+            .join(Office, Office.id == Appointment.office_id)
+            .where(Statement.person_id.is_not(None))
+        ).all()
+    except SQLAlchemyError:
+        return counts
     bucket_statement_ids: dict[str, set[int]] = {key: set() for key in counts}
     for statement_id, level, branch in [*participant_rows, *owner_rows]:
         category = None
