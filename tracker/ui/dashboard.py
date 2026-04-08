@@ -7,7 +7,7 @@ import re
 import streamlit as st
 from sqlalchemy import func, select
 
-from tracker.config import use_google_sheet_primary_mode
+from tracker.config import get_settings, use_google_sheet_primary_mode
 from tracker.db import session_scope
 from tracker.models import (
     Alias,
@@ -33,17 +33,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
     if use_google_sheet_primary_mode():
         if _render_google_sheet_fallback(lang, labels):
             return
-        _render_metrics(
-            {
-                "federal_officials": 0,
-                "congress_members": 0,
-                "state_officials": 0,
-                "state_legislators": 0,
-                "federal_legislation": 0,
-                "state_legislation": 0,
-            },
-            lang,
-        )
+        _render_metrics(labels, 0, 0, 0, 0, 0, category_event_counts)
         st.warning(
             "Google Sheet primary mode is enabled, but no sheet data could be loaded."
             if lang != "zh-TW"
@@ -51,22 +41,28 @@ def render(lang: str, labels: dict[str, str]) -> None:
         )
         render_google_sheet_fallback_diagnostic(lang)
         return
-    dashboard_counts = {
+    total_officials = 0
+    total_trackers = 0
+    total_statements = 0
+    total_sync_runs = 0
+    total_alerts = 0
+    category_event_counts = {
         "federal_officials": 0,
         "congress_members": 0,
         "state_officials": 0,
         "state_legislators": 0,
-        "federal_legislation": 0,
-        "state_legislation": 0,
     }
-    total_statements = 0
     recent_events_by_category: dict[str, list[dict[str, object]]] = _empty_event_buckets()
     recent_legislation_by_category: dict[str, list[dict[str, object]]] = _empty_legislation_buckets()
 
     with session_scope() as session:
         statements_service = StatementsService(session)
-        dashboard_counts = _collect_dashboard_counts_db(session)
+        total_officials = session.scalar(select(func.count()).select_from(Person)) or 0
+        total_trackers = session.scalar(select(func.count()).select_from(Tracker)) or 0
         total_statements = session.scalar(select(func.count()).select_from(Statement)) or 0
+        total_sync_runs = session.scalar(select(func.count()).select_from(SyncRun)) or 0
+        total_alerts = session.scalar(select(func.count()).select_from(NotificationLog)) or 0
+        category_event_counts = _count_event_categories_db(session)
         recent_statements = (
             session.execute(
                 select(Statement)
@@ -130,21 +126,25 @@ def render(lang: str, labels: dict[str, str]) -> None:
         )
         recent_legislation_by_category = _bucket_recent_legislation_db(legislation_rows, session=session, lang=lang)
 
-    if sum(dashboard_counts.values()) == 0 and total_statements == 0:
-        _render_metrics(dashboard_counts, lang)
+    if total_officials == 0 and total_statements == 0:
+        if _render_google_sheet_fallback(lang, labels):
+            return
+        _render_metrics(labels, total_officials, total_trackers, total_statements, total_sync_runs, total_alerts, category_event_counts)
         st.warning(
-            "The current app instance is connected to an empty database."
+            "The current app instance is connected to an empty database, and Google Sheet fallback is not available."
             if lang != "zh-TW"
-            else "目前這個 app 讀到的是空資料庫，所以首頁會先顯示 0。"
+            else "目前這個 app 讀到的是空資料庫，而且 Google Sheet fallback 也還沒有成功接上，所以首頁會先顯示 0。"
         )
         st.info(
-            "Check whether this is the cloud app, and confirm TRACKER_DATABASE_URL points to the correct database."
+            "Check whether this is the cloud app, and confirm GOOGLE_SHEET_ID / GOOGLE_SERVICE_ACCOUNT_JSON are configured."
             if lang != "zh-TW"
-            else "如果這是雲端版，請確認 TRACKER_DATABASE_URL 指向正確資料庫；如果這是本機版，請確認目前 app 指向的是正確的 tracker.db。"
+            else "如果這是雲端版，請確認已設定 GOOGLE_SHEET_ID 與 GOOGLE_SERVICE_ACCOUNT_JSON；如果這是本機版，請確認目前 app 指向的是正確的 tracker.db。"
         )
+        render_google_sheet_fallback_diagnostic(lang)
         return
 
-    _render_metrics(dashboard_counts, lang)
+    _render_metrics(labels, total_officials, total_trackers, total_statements, total_sync_runs, total_alerts, category_event_counts)
+    _render_database_persistence_status(lang)
     _render_overview_sections(
         recent_legislation_by_category=recent_legislation_by_category,
         recent_events_by_category=recent_events_by_category,
@@ -160,15 +160,20 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
     if not (people or events or legislation):
         return False
 
-    dashboard_counts = _collect_dashboard_counts_sheet(people, events, legislation)
-    _render_metrics(dashboard_counts, lang)
+    people_category = {
+        int(item.get("person_id") or 0): _sheet_person_category(item)
+        for item in people
+        if item.get("person_id")
+    }
+    category_event_counts = _count_event_categories_sheet(events, people_category)
+    _render_metrics(labels, len(people), 0, len(events), len(legislation), 0, category_event_counts)
+    _render_database_persistence_status(lang)
     st.info(
         "Google Sheet fallback mode is active. The cloud app is showing exported data."
         if lang != "zh-TW"
         else "目前使用 Google Sheet fallback 模式，雲端版先顯示已匯出的資料。"
     )
     people_by_id = {int(item.get("person_id") or 0): item for item in people if item.get("person_id")}
-    people_category = {pid: _sheet_person_category(item) for pid, item in people_by_id.items()}
     recent_events_by_category = _bucket_recent_events_sheet(events, people_by_id, people_category, lang=lang)
     recent_legislation_by_category = _bucket_recent_legislation_sheet(legislation, lang=lang)
     _render_overview_sections(
@@ -192,176 +197,95 @@ def render_google_sheet_fallback_diagnostic(lang: str) -> None:
     )
 
 
-def _render_metrics(counts: dict[str, int], lang: str) -> None:
-    if lang == "zh-TW":
-        top_labels = [
-            ("聯邦官員", "federal_officials"),
-            ("國會議員", "congress_members"),
-            ("州政府官員", "state_officials"),
-            ("州議員", "state_legislators"),
-        ]
-        middle_labels = [
-            ("聯邦官員事件", "federal_official_events"),
-            ("國會議員事件", "congress_member_events"),
-            ("州官員事件", "state_official_events"),
-            ("州議員事件", "state_legislator_events"),
-        ]
-        bottom_labels = [
-            ("國會法案", "federal_legislation"),
-            ("州議會法案", "state_legislation"),
-        ]
+def _render_metrics(
+    labels: dict[str, str],
+    total_officials: int,
+    total_trackers: int,
+    total_statements: int,
+    total_sync_runs: int,
+    total_alerts: int,
+    category_event_counts: dict[str, int] | None = None,
+) -> None:
+    category_event_counts = category_event_counts or {}
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric(labels["total_officials"], total_officials)
+    col2.metric(labels["total_trackers"], total_trackers)
+    col3.metric(labels["recent_statements"], total_statements)
+    col4.metric(labels["recent_sync_runs"], total_sync_runs)
+    row2_col1, row2_col2, row2_col3, row2_col4 = st.columns(4)
+    row2_col1.metric(labels["federal_official_events"], int(category_event_counts.get("federal_officials", 0)))
+    row2_col2.metric(labels["congress_member_events"], int(category_event_counts.get("congress_members", 0)))
+    row2_col3.metric(labels["state_official_events"], int(category_event_counts.get("state_officials", 0)))
+    row2_col4.metric(labels["state_legislator_events"], int(category_event_counts.get("state_legislators", 0)))
+    st.caption(f"{labels['recent_alerts']}: {total_alerts}")
+
+
+def _render_database_persistence_status(lang: str) -> None:
+    database_url = get_settings().database_url
+    if database_url.startswith("postgresql+psycopg://"):
+        st.caption(
+            "資料庫模式：PostgreSQL（持久化，重新部署後資料會保留）"
+            if lang == "zh-TW"
+            else "Database mode: PostgreSQL (persistent across redeploys)."
+        )
     else:
-        top_labels = [
-            ("Federal Officials", "federal_officials"),
-            ("Members of Congress", "congress_members"),
-            ("State Officials", "state_officials"),
-            ("State Legislators", "state_legislators"),
-        ]
-        middle_labels = [
-            ("Federal Official Events", "federal_official_events"),
-            ("Congress Member Events", "congress_member_events"),
-            ("State Official Events", "state_official_events"),
-            ("State Legislator Events", "state_legislator_events"),
-        ]
-        bottom_labels = [
-            ("Congressional Bills", "federal_legislation"),
-            ("State Bills", "state_legislation"),
-        ]
-    row1 = st.columns(4)
-    for column, (title, key) in zip(row1, top_labels):
-        column.metric(title, int(counts.get(key) or 0))
-    row2 = st.columns(4)
-    for column, (title, key) in zip(row2, middle_labels):
-        column.metric(title, int(counts.get(key) or 0))
-    row3 = st.columns(2)
-    for column, (title, key) in zip(row3, bottom_labels):
-        column.metric(title, int(counts.get(key) or 0))
-
-
-def _collect_dashboard_counts_db(session) -> dict[str, int]:
-    def _count_people(level: str, branch: str) -> int:
-        return int(
-            session.scalar(
-                select(func.count(func.distinct(Appointment.person_id)))
-                .join(Office, Office.id == Appointment.office_id)
-                .where(
-                    Appointment.is_current.is_(True),
-                    Office.level == level,
-                    Office.branch == branch,
-                )
-            )
-            or 0
+        st.warning(
+            "目前資料庫是 SQLite。重新部署或系統更新後，新增資料可能遺失。請設定 TRACKER_DATABASE_URL 使用 PostgreSQL。"
+            if lang == "zh-TW"
+            else "Current database is SQLite. Data may be lost after redeploy/update. Set TRACKER_DATABASE_URL to PostgreSQL."
         )
 
-    event_rows = session.execute(
-        select(StatementParticipant.statement_id, Office.level, Office.branch)
-        .join(Appointment, Appointment.person_id == StatementParticipant.person_id)
-        .join(Office, Office.id == Appointment.office_id)
-        .where(Appointment.is_current.is_(True))
-    ).all()
 
-    event_sets = {
-        "federal_official_events": set(),
-        "congress_member_events": set(),
-        "state_official_events": set(),
-        "state_legislator_events": set(),
-    }
-    for statement_id, level, branch in event_rows:
-        if level == "federal" and branch == "executive":
-            event_sets["federal_official_events"].add(int(statement_id))
-        elif level == "federal" and branch == "legislative":
-            event_sets["congress_member_events"].add(int(statement_id))
-        elif level == "state" and branch == "executive":
-            event_sets["state_official_events"].add(int(statement_id))
-        elif level == "state" and branch == "legislative":
-            event_sets["state_legislator_events"].add(int(statement_id))
-
-    return {
-        "federal_officials": _count_people("federal", "executive"),
-        "congress_members": _count_people("federal", "legislative"),
-        "state_officials": _count_people("state", "executive"),
-        "state_legislators": _count_people("state", "legislative"),
-        "federal_official_events": len(event_sets["federal_official_events"]),
-        "congress_member_events": len(event_sets["congress_member_events"]),
-        "state_official_events": len(event_sets["state_official_events"]),
-        "state_legislator_events": len(event_sets["state_legislator_events"]),
-        "federal_legislation": int(
-            session.scalar(
-                select(func.count())
-                .select_from(Legislation)
-                .where(Legislation.is_taiwan_related.is_(True), Legislation.level == "federal")
-            )
-            or 0
-        ),
-        "state_legislation": int(
-            session.scalar(
-                select(func.count())
-                .select_from(Legislation)
-                .where(Legislation.is_taiwan_related.is_(True), Legislation.level == "state")
-            )
-            or 0
-        ),
-    }
-
-
-def _collect_dashboard_counts_sheet(people: list[dict[str, object]], events: list[dict[str, object]], legislation: list[dict[str, object]]) -> dict[str, int]:
+def _count_event_categories_db(session) -> dict[str, int]:
     counts = {
         "federal_officials": 0,
         "congress_members": 0,
         "state_officials": 0,
         "state_legislators": 0,
-        "federal_official_events": 0,
-        "congress_member_events": 0,
-        "state_official_events": 0,
-        "state_legislator_events": 0,
-        "federal_legislation": 0,
-        "state_legislation": 0,
     }
-    for person in people:
-        category = _sheet_person_category(person)
-        if category in counts:
-            counts[category] += 1
+    rows = session.execute(
+        select(StatementParticipant.statement_id, Office.level, Office.branch)
+        .join(Appointment, Appointment.person_id == StatementParticipant.person_id)
+        .join(Office, Office.id == Appointment.office_id)
+        .where(Appointment.is_current.is_(True))
+    ).all()
+    bucket_statement_ids: dict[str, set[int]] = {key: set() for key in counts}
+    for statement_id, level, branch in rows:
+        category = None
+        if level == "federal" and branch == "executive":
+            category = "federal_officials"
+        elif level == "federal" and branch == "legislative":
+            category = "congress_members"
+        elif level == "state" and branch == "executive":
+            category = "state_officials"
+        elif level == "state" and branch == "legislative":
+            category = "state_legislators"
+        if category:
+            bucket_statement_ids[category].add(int(statement_id))
+    for key in counts:
+        counts[key] = len(bucket_statement_ids[key])
+    return counts
 
-    people_category = {
-        int(item.get("person_id") or 0): _sheet_person_category(item)
-        for item in people
-        if item.get("person_id")
+
+def _count_event_categories_sheet(events: list[dict[str, object]], people_category: dict[int, str | None]) -> dict[str, int]:
+    counts = {
+        "federal_officials": 0,
+        "congress_members": 0,
+        "state_officials": 0,
+        "state_legislators": 0,
     }
-    event_sets = {
-        "federal_official_events": set(),
-        "congress_member_events": set(),
-        "state_official_events": set(),
-        "state_legislator_events": set(),
-    }
-    for idx, event in enumerate(events, start=1):
-        participant_ids = [
-            int(pid)
-            for pid in (event.get("participant_ids_list") or [])
-            if str(pid).strip()
-        ]
+    bucket_event_ids: dict[str, set[str]] = {key: set() for key in counts}
+    for index, event in enumerate(events, start=1):
+        participant_ids = [int(pid) for pid in (event.get("participant_ids_list") or []) if str(pid).strip()]
         categories = {people_category.get(pid) for pid in participant_ids if people_category.get(pid)}
         if not categories:
             categories = _infer_categories_from_sheet_event(event)
-        event_id = str(event.get("event_id") or f"sheet-{idx}")
+        event_id = str(event.get("event_id") or f"sheet-{index}")
         for category in categories:
-            if category == "federal_officials":
-                event_sets["federal_official_events"].add(event_id)
-            elif category == "congress_members":
-                event_sets["congress_member_events"].add(event_id)
-            elif category == "state_officials":
-                event_sets["state_official_events"].add(event_id)
-            elif category == "state_legislators":
-                event_sets["state_legislator_events"].add(event_id)
-    counts["federal_official_events"] = len(event_sets["federal_official_events"])
-    counts["congress_member_events"] = len(event_sets["congress_member_events"])
-    counts["state_official_events"] = len(event_sets["state_official_events"])
-    counts["state_legislator_events"] = len(event_sets["state_legislator_events"])
-    for item in legislation:
-        level = str(item.get("level") or "").strip().lower()
-        if level == "federal":
-            counts["federal_legislation"] += 1
-        elif level == "state":
-            counts["state_legislation"] += 1
+            if category in bucket_event_ids:
+                bucket_event_ids[category].add(event_id)
+    for key in counts:
+        counts[key] = len(bucket_event_ids[key])
     return counts
 
 
@@ -930,44 +854,36 @@ def _render_event_column(
             st.caption(empty_label)
             return
         for index, event in enumerate(entries, start=1):
-            _render_event_card(index=index, event=event, lang=lang)
-
-
-def _render_event_card(index: int, event: dict[str, object], lang: str) -> None:
-    time_label = "時間" if lang == "zh-TW" else "Time"
-    description_label = "事件描述" if lang == "zh-TW" else "Description"
-    participants_label = "參與人" if lang == "zh-TW" else "Participants"
-    quoted_sources_label = "引述來源" if lang == "zh-TW" else "Quoted sources"
-    with st.container(border=True):
-        localized_title = _localize_event_text(
-            title=str(event.get("title") or ""),
-            description=str(event.get("description") or ""),
-            lang=lang,
-            is_title=True,
-        )
-        localized_description = _localize_event_text(
-            title=str(event.get("title") or ""),
-            description=str(event.get("description") or ""),
-            lang=lang,
-            is_title=False,
-        )
-        localized_description = _annotate_event_description_names(
-            localized_description,
-            list(event.get("participants") or []),
-            lang,
-        )
-        st.markdown(f"**{index}. {localized_title}**")
-        st.markdown(f"`{time_label}`：{_format_event_time(event.get('event_time'), lang)}")
-        st.markdown(f"`{description_label}`：{localized_description}")
-        participants = list(event.get("participants") or [])
-        participants_text = _format_people_inline(participants, lang)
-        st.markdown(f"`{participants_label}`：{participants_text}")
-        sources = event.get("sources") or []
-        formatted_sources = _format_event_sources(sources, lang)
-        if formatted_sources:
-            st.markdown(f"`{quoted_sources_label}`：{formatted_sources}")
-        elif event.get("representative_source_url"):
-            st.markdown(f"`{quoted_sources_label}`：[link]({event['representative_source_url']})")
+            with st.container(border=True):
+                localized_title = _localize_event_text(
+                    title=str(event.get("title") or ""),
+                    description=str(event.get("description") or ""),
+                    lang=lang,
+                    is_title=True,
+                )
+                localized_description = _localize_event_text(
+                    title=str(event.get("title") or ""),
+                    description=str(event.get("description") or ""),
+                    lang=lang,
+                    is_title=False,
+                )
+                localized_description = _annotate_event_description_names(
+                    localized_description,
+                    list(event.get("participants") or []),
+                    lang,
+                )
+                st.markdown(f"**{index}. {localized_title}**")
+                st.markdown(f"`{time_label}`：{_format_event_time(event.get('event_time'), lang)}")
+                st.markdown(f"`{description_label}`：{localized_description}")
+                participants = list(event.get("participants") or [])
+                participants_text = _format_people_inline(participants, lang)
+                st.markdown(f"`{participants_label}`：{participants_text}")
+                sources = event.get("sources") or []
+                formatted_sources = _format_event_sources(sources, lang)
+                if formatted_sources:
+                    st.markdown(f"`{quoted_sources_label}`：{formatted_sources}")
+                elif event.get("representative_source_url"):
+                    st.markdown(f"`{quoted_sources_label}`：[link]({event['representative_source_url']})")
 
 
 def _format_people_inline(people: list[dict[str, object]], lang: str) -> str:

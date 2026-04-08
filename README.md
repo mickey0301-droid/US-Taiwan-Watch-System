@@ -116,6 +116,30 @@ Current environment override:
 - `GOOGLE_SERVICE_ACCOUNT_JSON`
 - `GOOGLE_SHEET_ID`
 
+## PostgreSQL persistent storage (recommended for cloud)
+
+To prevent data loss after Streamlit redeploys, use PostgreSQL as the main database.
+
+1. Set Streamlit Secrets:
+
+```toml
+TRACKER_DATABASE_URL = "postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME?sslmode=require"
+```
+
+2. Restart the Streamlit app once.
+
+3. Migrate existing local SQLite data to PostgreSQL:
+
+```bash
+python -m scripts.migrate_sqlite_to_postgres \
+  --source-sqlite data/tracker.db \
+  --target-url "postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME?sslmode=require" \
+  --truncate-target
+```
+
+After migration, the dashboard will show:
+- `Database mode: PostgreSQL (persistent across redeploys).`
+
 ## Google Sheet integration
 
 The system can be connected to a Google Sheet for `People`, `Events`, and `Legislation` tabs.
