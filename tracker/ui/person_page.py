@@ -1669,15 +1669,10 @@ def render(lang: str, labels: dict[str, str]) -> None:
 
         if person is None and selected_category in _categories_with_department_filter():
             if selected_category == "federal_executive":
-                role_scope_label = "職級" if lang == "zh-TW" else "Role scope"
-                role_scope_options = (
-                    ["部長級與軍職", "部長級", "全部"]
-                    if lang == "zh-TW"
-                    else ["Minister-level + Military", "Minister-level", "All"]
-                )
-                role_scope = st.selectbox(role_scope_label, role_scope_options, index=2)
-                minister_only = role_scope in {"部長級與軍職", "部長級", "Minister-level + Military", "Minister-level"}
-                include_military_roles = role_scope in {"部長級與軍職", "全部", "Minister-level + Military", "All"}
+                # Keep existing default behavior (equivalent to previous "All")
+                # while removing the role-scope selector from UI.
+                minister_only = False
+                include_military_roles = True
             department_options = _get_department_options(session, selected_category)
             if not department_options:
                 st.info(labels["no_people_loaded"])
