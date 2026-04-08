@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import streamlit as st
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -183,12 +185,16 @@ def _render_database_view(selected_region: str, lang: str) -> None:
 
         federal_legislation = dashboard._bucket_recent_legislation_db(federal_legislation_rows, session=session, lang=lang).get("federal_legislation", [])
         state_legislation = dashboard._bucket_recent_legislation_db(state_legislation_rows, session=session, lang=lang).get("state_legislation", [])
+        legislature_roster = _build_state_legislature_roster_db(session, jurisdiction_ids)
+        executive_roster = _build_state_executive_roster_db(session, jurisdiction_ids)
 
     _render_sections(
         lang=lang,
         federal_legislation=federal_legislation,
         state_legislation=state_legislation,
         event_buckets=event_buckets,
+        legislature_roster=legislature_roster,
+        executive_roster=executive_roster,
     )
 
 
@@ -376,6 +382,8 @@ def _render_sections(
     federal_legislation: list[dict[str, object]],
     state_legislation: list[dict[str, object]],
     event_buckets: dict[str, list[dict[str, object]]],
+    legislature_roster: dict[str, list[dict[str, str]]],
+    executive_roster: list[dict[str, str]],
 ) -> None:
     st.subheader("法案" if lang == "zh-TW" else "Legislation")
     legislation_columns = st.columns(2)
@@ -423,3 +431,205 @@ def _render_sections(
         lang,
         "state-territory-state-legislators",
     )
+
+    st.subheader("名單" if lang == "zh-TW" else "Roster")
+    roster_cols = st.columns(2)
+    _render_state_legislature_roster(roster_cols[0], legislature_roster, lang)
+    _render_state_executive_roster(roster_cols[1], executive_roster, lang)
+
+
+def _build_state_legislature_roster_db(session, jurisdiction_ids: set[int]) -> dict[str, list[dict[str, str]]]:
+    if not jurisdiction_ids:
+        return {"senate": [], "house": []}
+    rows = session.execute(
+        select(
+            Appointment.district,
+            Person.full_name,
+            Appointment.party,
+            Office.chamber,
+        )
+        .join(Office, Office.id == Appointment.office_id)
+        .join(Person, Person.id == Appointment.person_id)
+        .where(
+            Appointment.is_current.is_(True),
+            Office.level == "state",
+            Office.branch == "legislative",
+            Appointment.jurisdiction_id.in_(jurisdiction_ids),
+        )
+    ).all()
+
+    buckets: dict[str, dict[str, dict[str, str]]] = {"senate": {}, "house": {}}
+    for district, full_name, party, chamber in rows:
+        chamber_key = str(chamber or "house").strip().lower()
+        if chamber_key not in buckets:
+            chamber_key = "house"
+        district_text = str(district or "").strip()
+        normalized_district = _normalize_district_sort_key(district_text)
+        if normalized_district not in buckets[chamber_key]:
+            buckets[chamber_key][normalized_district] = {
+                "district": district_text or normalized_district,
+                "name": str(full_name or "").strip(),
+                "party": str(party or "").strip(),
+            }
+
+    result: dict[str, list[dict[str, str]]] = {}
+    for chamber_key, by_district in buckets.items():
+        result[chamber_key] = _expand_and_sort_district_rows(by_district)
+    return result
+
+
+def _build_state_executive_roster_db(session, jurisdiction_ids: set[int]) -> list[dict[str, str]]:
+    if not jurisdiction_ids:
+        return []
+    rows = session.execute(
+        select(
+            Appointment.role_title,
+            Office.office_name,
+            Person.full_name,
+            Appointment.party,
+        )
+        .join(Office, Office.id == Appointment.office_id)
+        .join(Person, Person.id == Appointment.person_id)
+        .where(
+            Appointment.is_current.is_(True),
+            Office.level == "state",
+            Office.branch == "executive",
+            Appointment.jurisdiction_id.in_(jurisdiction_ids),
+        )
+    ).all()
+
+    role_order = [
+        ("governor", "Governor"),
+        ("lieutenant_governor", "Lieutenant Governor"),
+        ("secretary_of_state", "Secretary of State"),
+        ("attorney_general", "Attorney General"),
+        ("treasurer", "Treasurer"),
+        ("comptroller", "Comptroller"),
+        ("auditor", "Auditor"),
+        ("superintendent", "Superintendent"),
+        ("insurance_commissioner", "Insurance Commissioner"),
+        ("agriculture_commissioner", "Agriculture Commissioner"),
+    ]
+    role_map: dict[str, dict[str, str]] = {}
+    for role_title, office_name, full_name, party in rows:
+        detected = _match_executive_role(str(role_title or ""), str(office_name or ""))
+        if not detected or detected in role_map:
+            continue
+        role_map[detected] = {
+            "role": dict(role_order).get(detected, str(role_title or office_name or "").strip()),
+            "name": str(full_name or "").strip(),
+            "party": str(party or "").strip(),
+        }
+
+    result: list[dict[str, str]] = []
+    for key, label in role_order:
+        item = role_map.get(key)
+        if item:
+            result.append(item)
+        else:
+            result.append({"role": label, "name": "", "party": ""})
+    return result
+
+
+def _match_executive_role(role_title: str, office_name: str) -> str | None:
+    text = f"{role_title} {office_name}".lower()
+    if "lieutenant governor" in text:
+        return "lieutenant_governor"
+    if "governor" in text:
+        return "governor"
+    if "secretary of state" in text or "secretary of the commonwealth" in text:
+        return "secretary_of_state"
+    if "attorney general" in text:
+        return "attorney_general"
+    if "treasurer" in text:
+        return "treasurer"
+    if "comptroller" in text:
+        return "comptroller"
+    if "auditor" in text:
+        return "auditor"
+    if "superintendent" in text:
+        return "superintendent"
+    if "insurance commissioner" in text:
+        return "insurance_commissioner"
+    if "agriculture commissioner" in text:
+        return "agriculture_commissioner"
+    return None
+
+
+def _normalize_district_sort_key(raw: str) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    match = re.search(r"district\s*([0-9A-Za-z-]+)", text, flags=re.I)
+    if match:
+        return match.group(1).strip()
+    return text
+
+
+def _expand_and_sort_district_rows(by_district: dict[str, dict[str, str]]) -> list[dict[str, str]]:
+    keys = [k for k in by_district.keys() if k]
+    numeric = [int(k) for k in keys if k.isdigit()]
+    has_only_numeric = bool(keys) and len(numeric) == len(keys)
+
+    rows: list[dict[str, str]] = []
+    if has_only_numeric:
+        max_num = max(numeric) if numeric else 0
+        for number in range(1, max_num + 1):
+            key = str(number)
+            item = by_district.get(key)
+            if item:
+                rows.append(item)
+            else:
+                rows.append({"district": key, "name": "", "party": ""})
+        return rows
+
+    def _sort_key(item: str) -> tuple[int, object]:
+        if item.isdigit():
+            return (0, int(item))
+        return (1, item.lower())
+
+    for key in sorted(keys, key=_sort_key):
+        rows.append(by_district[key])
+    return rows
+
+
+def _render_state_legislature_roster(container, legislature_roster: dict[str, list[dict[str, str]]], lang: str) -> None:
+    container.markdown("**州議會名單**" if lang == "zh-TW" else "**State Legislature Roster**")
+    senate_rows = legislature_roster.get("senate", [])
+    house_rows = legislature_roster.get("house", [])
+
+    def _render_chamber(title: str, rows: list[dict[str, str]], key: str) -> None:
+        container.markdown(f"_{title}_")
+        if not rows:
+            container.caption("目前無資料" if lang == "zh-TW" else "No data yet")
+            return
+        table_rows = []
+        for item in rows:
+            table_rows.append(
+                {
+                    "選區" if lang == "zh-TW" else "District": item.get("district") or "",
+                    "議員" if lang == "zh-TW" else "Member": item.get("name") or "",
+                    "黨籍" if lang == "zh-TW" else "Party": item.get("party") or "",
+                }
+            )
+        container.dataframe(table_rows, use_container_width=True, hide_index=True)
+
+    _render_chamber("州參議院" if lang == "zh-TW" else "State Senate", senate_rows, "senate")
+    _render_chamber("州眾議院" if lang == "zh-TW" else "State House", house_rows, "house")
+
+
+def _render_state_executive_roster(container, executive_roster: list[dict[str, str]], lang: str) -> None:
+    container.markdown("**州政府名單**" if lang == "zh-TW" else "**State Executive Roster**")
+    if not executive_roster:
+        container.caption("目前無資料" if lang == "zh-TW" else "No data yet")
+        return
+    table_rows = []
+    for item in executive_roster:
+        table_rows.append(
+            {
+                "職務" if lang == "zh-TW" else "Office": item.get("role") or "",
+                "官員" if lang == "zh-TW" else "Official": item.get("name") or "",
+                "黨籍" if lang == "zh-TW" else "Party": item.get("party") or "",
+            }
+        )
+    container.dataframe(table_rows, use_container_width=True, hide_index=True)
