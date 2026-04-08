@@ -467,10 +467,7 @@ def _render_member_roster(
     if selected_category == "state_senate":
         ordered = sorted(
             candidates,
-            key=lambda row: (
-                _surname_sort_key(display_person_name(row[1], row[2], row[3]), row[3]),
-                display_person_name(row[1], row[2], row[3]).lower(),
-            ),
+            key=lambda row: (_district_sort_key(row[7]), display_person_name(row[1], row[2], row[3]).lower()),
         )
     elif selected_category == "state_house":
         ordered = sorted(
