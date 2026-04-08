@@ -995,29 +995,28 @@ def _render_white_house_roster(
         st.caption("目前無資料" if lang == "zh-TW" else "No data yet")
         return None
 
-    # Deduplicate people appearing in multiple White House subdepartments.
-    sorted_candidates = sorted(
-        candidates,
-        key=lambda row: (
-            _executive_role_rank(_display_office_name(row[4], row[6])),
-            display_person_name(row[1], row[2], row[3]).lower(),
-        ),
-    )
-    best_row_by_person: dict[int, tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]] = {}
-    for row in sorted_candidates:
-        person_id = int(row[0])
-        if person_id not in best_row_by_person:
-            best_row_by_person[person_id] = row
-
     office_rows: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]] = []
     nsc_rows: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]] = []
-    for row in best_row_by_person.values():
-        hierarchy = _executive_hierarchy(row[4], row[6])
-        subdepartment = (hierarchy[1] or "").strip()
-        if subdepartment == "National Security Council":
-            nsc_rows.append(row)
-        else:
-            office_rows.append(row)
+    rows_by_person: dict[int, list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]]] = {}
+    for row in candidates:
+        rows_by_person.setdefault(int(row[0]), []).append(row)
+
+    # Keep each person only once across the two tables:
+    # if they have NSC roles, prefer showing the best NSC role;
+    # otherwise show the best White House Office role.
+    for person_rows in rows_by_person.values():
+        ordered_rows = sorted(
+            person_rows,
+            key=lambda row: (
+                _executive_role_rank(_display_office_name(row[4], row[6])),
+                display_person_name(row[1], row[2], row[3]).lower(),
+            ),
+        )
+        nsc_candidates = [row for row in ordered_rows if (_executive_hierarchy(row[4], row[6])[1] or "").strip() == "National Security Council"]
+        if nsc_candidates:
+            nsc_rows.append(nsc_candidates[0])
+        elif ordered_rows:
+            office_rows.append(ordered_rows[0])
 
     def _render_table(
         heading_zh: str,
