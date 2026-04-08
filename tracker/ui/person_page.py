@@ -2594,6 +2594,14 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 value=str(monitor_config.get("daily_time") or "09:00"),
                 key=f"person-monitor-daily-time-{person.id}",
             )
+            lookback_days = st.number_input(
+                "搜尋回溯天數" if lang == "zh-TW" else "Lookback days",
+                min_value=1,
+                max_value=3650,
+                value=int(monitor_config.get("lookback_days") or 30),
+                step=1,
+                key=f"person-monitor-lookback-days-{person.id}",
+            )
             col_save, col_run = st.columns(2)
             with col_save:
                 save_monitor = st.button("儲存監測設定" if lang == "zh-TW" else "Save monitor settings", key=f"save-monitor-{person.id}")
@@ -2611,6 +2619,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     taiwan_keywords=taiwan_keywords,
                     domains=domains,
                     daily_time=daily_time,
+                    lookback_days=int(lookback_days),
                 )
                 session.flush()
                 st.session_state[monitor_flash_key] = "已儲存監測設定" if lang == "zh-TW" else "Monitor settings saved"
@@ -2627,6 +2636,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     taiwan_keywords=taiwan_keywords,
                     domains=domains,
                     daily_time=daily_time,
+                    lookback_days=int(lookback_days),
                 )
                 with st.spinner("監測執行中..." if lang == "zh-TW" else "Running monitor..."):
                     run_result = monitor_service.run_for_person(person.id, trigger="manual")

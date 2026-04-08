@@ -20,6 +20,7 @@ from tracker.utils.web import build_google_news_rss_url, domain_from_url, parse_
 DEFAULT_DOMAINS = ["cna.com.tw", "president.gov.tw", "mofa.gov.tw"]
 DEFAULT_TAIWAN_KEYWORDS = ["台灣", "臺灣", "Taiwan"]
 DEFAULT_DAILY_TIME = "09:00"
+DEFAULT_LOOKBACK_DAYS = 30
 MONITOR_KEY = "taiwan_event_monitor"
 PARSER_IDENTITY = "person_taiwan_monitor_v1"
 
@@ -57,6 +58,7 @@ class PersonTaiwanEventMonitorService:
             "taiwan_keywords": list(DEFAULT_TAIWAN_KEYWORDS),
             "domains": list(DEFAULT_DOMAINS),
             "daily_time": DEFAULT_DAILY_TIME,
+            "lookback_days": DEFAULT_LOOKBACK_DAYS,
             "last_run_at": None,
             "last_result": None,
             "runs": [],
@@ -72,6 +74,7 @@ class PersonTaiwanEventMonitorService:
         config.setdefault("taiwan_keywords", list(DEFAULT_TAIWAN_KEYWORDS))
         config.setdefault("domains", list(DEFAULT_DOMAINS))
         config.setdefault("daily_time", DEFAULT_DAILY_TIME)
+        config.setdefault("lookback_days", DEFAULT_LOOKBACK_DAYS)
         config.setdefault("runs", [])
         return config
 
@@ -84,6 +87,7 @@ class PersonTaiwanEventMonitorService:
         taiwan_keywords: list[str],
         domains: list[str],
         daily_time: str,
+        lookback_days: int | None = None,
     ) -> dict[str, Any]:
         payload = dict(person.raw_payload or {})
         config = self.get_person_monitor_config(person)
@@ -92,6 +96,7 @@ class PersonTaiwanEventMonitorService:
         config["taiwan_keywords"] = self._clean_keywords(taiwan_keywords) or list(DEFAULT_TAIWAN_KEYWORDS)
         config["domains"] = self._clean_domains(domains) or list(DEFAULT_DOMAINS)
         config["daily_time"] = self._normalize_daily_time(daily_time)
+        config["lookback_days"] = self._normalize_lookback_days(lookback_days)
         payload[MONITOR_KEY] = config
         person.raw_payload = payload
         person.last_seen_at = datetime.utcnow()
@@ -135,6 +140,7 @@ class PersonTaiwanEventMonitorService:
         person_keywords = self._clean_keywords(config.get("person_keywords") or [])
         taiwan_keywords = self._clean_keywords(config.get("taiwan_keywords") or [])
         domains = self._clean_domains(config.get("domains") or [])
+        lookback_days = self._normalize_lookback_days(config.get("lookback_days"))
         if not person_keywords:
             return MonitorRunResult(person_id=person.id, person_name=person.full_name, ok=False, error="Missing person keywords")
         if not taiwan_keywords:
@@ -157,6 +163,8 @@ class PersonTaiwanEventMonitorService:
                 created = 0
                 updated = 0
                 for item in items:
+                    if not self._within_lookback(item.get("published_at"), lookback_days):
+                        continue
                     text = self._merge_text(item.get("title"), item.get("summary"))
                     matched_person = self._matched_keywords(text, person_keywords)
                     matched_taiwan = self._matched_keywords(text, taiwan_keywords)
@@ -189,6 +197,7 @@ class PersonTaiwanEventMonitorService:
                             "monitor_trigger": trigger,
                             "monitor_domain": domain,
                             "monitor_query": query,
+                            "monitor_lookback_days": lookback_days,
                             "matched_person_keywords": matched_person,
                             "matched_taiwan_keywords": matched_taiwan,
                         },
@@ -206,6 +215,7 @@ class PersonTaiwanEventMonitorService:
                     {
                         "domain": domain,
                         "query": query,
+                        "lookback_days": lookback_days,
                         "items_found": found,
                         "items_added": created,
                         "items_updated": updated,
@@ -332,6 +342,23 @@ class PersonTaiwanEventMonitorService:
         minute = max(0, min(59, int(match.group(2))))
         return f"{hour:02d}:{minute:02d}"
 
+    def _normalize_lookback_days(self, value: Any) -> int:
+        try:
+            days = int(value)
+        except Exception:
+            days = DEFAULT_LOOKBACK_DAYS
+        return max(1, min(3650, days))
+
+    def _within_lookback(self, published_at: datetime | None, lookback_days: int) -> bool:
+        if not published_at:
+            return True
+        now_utc = datetime.utcnow().replace(tzinfo=ZoneInfo("UTC"))
+        published = published_at
+        if published.tzinfo is None:
+            published = published.replace(tzinfo=ZoneInfo("UTC"))
+        cutoff = now_utc.timestamp() - float(lookback_days) * 86400.0
+        return published.timestamp() >= cutoff
+
     def _clean_keywords(self, values: list[str]) -> list[str]:
         output: list[str] = []
         seen: set[str] = set()
@@ -401,4 +428,3 @@ class PersonTaiwanEventMonitorService:
         if " " in value:
             return f"\"{value}\""
         return value
-
