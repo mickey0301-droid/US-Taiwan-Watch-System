@@ -413,35 +413,65 @@ class PersonTaiwanEventMonitorService:
         hits = []
         try:
             if domain == "cna.com.tw":
-                hits = discover_cna(
-                    client,
-                    client,
-                    person_terms=person_keywords,
-                    start=start,
-                    end=end,
-                    require_taiwan_keyword=False,
-                    require_dated_url=False,
-                )
+                try:
+                    hits = discover_cna(
+                        client,
+                        client,
+                        person_terms=person_keywords,
+                        start=start,
+                        end=end,
+                        require_taiwan_keyword=False,
+                        require_dated_url=False,
+                    )
+                except TypeError:
+                    hits = discover_cna(
+                        client,
+                        client,
+                        person_terms=person_keywords,
+                        start=start,
+                        end=end,
+                        limit=120,
+                    )
             elif domain == "mofa.gov.tw":
-                hits = discover_mofa(
-                    client,
-                    client,
-                    person_terms=person_keywords,
-                    start=start,
-                    end=end,
-                    max_pages=40,
-                    require_taiwan_keyword=False,
-                )
+                try:
+                    hits = discover_mofa(
+                        client,
+                        client,
+                        person_terms=person_keywords,
+                        start=start,
+                        end=end,
+                        max_pages=40,
+                        require_taiwan_keyword=False,
+                    )
+                except TypeError:
+                    hits = discover_mofa(
+                        client,
+                        client,
+                        person_terms=person_keywords,
+                        start=start,
+                        end=end,
+                        max_pages=40,
+                    )
             elif domain == "president.gov.tw":
-                hits = discover_president(
-                    client,
-                    client,
-                    person_terms=person_keywords,
-                    start=start,
-                    end=end,
-                    max_pages=40,
-                    require_taiwan_keyword=False,
-                )
+                try:
+                    hits = discover_president(
+                        client,
+                        client,
+                        person_terms=person_keywords,
+                        start=start,
+                        end=end,
+                        max_pages=40,
+                        require_taiwan_keyword=False,
+                    )
+                except TypeError:
+                    hits = discover_president(
+                        client,
+                        client,
+                        person_terms=person_keywords,
+                        start=start,
+                        end=end,
+                        max_pages=40,
+                    )
         except Exception:
             hits = []
 
