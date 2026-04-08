@@ -65,8 +65,12 @@ def _fetch_html(url: str, max_attempts: int = 4) -> str:
                     "Accept-Language": "en-US,en;q=0.9",
                     "Referer": "https://ballotpedia.org/",
                 },
+                trust_env=False,
             )
-            response.raise_for_status()
+            if response.status_code != 200:
+                raise RuntimeError(f"Unexpected HTTP status {response.status_code} for {url}")
+            if not response.text or len(response.text) < 1000:
+                raise RuntimeError(f"Empty/short response body for {url} (len={len(response.text)})")
             return response.text
         except Exception as exc:
             last_error = exc
