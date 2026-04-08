@@ -76,6 +76,7 @@ class PersonTaiwanEventMonitorService:
         config.setdefault("domains", list(DEFAULT_DOMAINS))
         config.setdefault("daily_time", DEFAULT_DAILY_TIME)
         config.setdefault("lookback_days", DEFAULT_LOOKBACK_DAYS)
+        config.setdefault("include_global_news", True)
         config.setdefault("runs", [])
         return config
 
@@ -142,6 +143,7 @@ class PersonTaiwanEventMonitorService:
         taiwan_keywords = self._clean_keywords(config.get("taiwan_keywords") or [])
         domains = self._clean_domains(config.get("domains") or [])
         lookback_days = self._normalize_lookback_days(config.get("lookback_days"))
+        include_global_news = bool(config.get("include_global_news", True))
         if not person_keywords:
             return MonitorRunResult(person_id=person.id, person_name=person.full_name, ok=False, error="Missing person keywords")
         if not taiwan_keywords:
@@ -176,7 +178,13 @@ class PersonTaiwanEventMonitorService:
                     matched_person = self._matched_keywords(text, person_keywords)
                     matched_taiwan = self._matched_keywords(text, taiwan_keywords)
                     if not matched_person or not matched_taiwan:
-                        continue
+                        if bool(item.get("query_enforced_match")):
+                            if not matched_person and person_keywords:
+                                matched_person = [person_keywords[0]]
+                            if not matched_taiwan and taiwan_keywords:
+                                matched_taiwan = [taiwan_keywords[0]]
+                        else:
+                            continue
                     found += 1
 
                     source_url = str(item.get("url") or "").strip()
@@ -225,6 +233,76 @@ class PersonTaiwanEventMonitorService:
                     {
                         "domain": domain,
                         "query": query,
+                        "lookback_days": lookback_days,
+                        "items_found": found,
+                        "items_added": created,
+                        "items_updated": updated,
+                        "items_skipped_existing": skipped_existing,
+                    }
+                )
+
+            if include_global_news:
+                global_query = self.build_query(person_keywords, taiwan_keywords, domain=None)
+                global_items = self._collect_rss_items(
+                    client,
+                    rss_url=build_google_news_rss_url(query=global_query, hl="zh-TW", gl="TW", ceid="TW:zh-Hant"),
+                    domain="",
+                )
+                found = 0
+                created = 0
+                updated = 0
+                skipped_existing = 0
+                for item in global_items:
+                    if not self._within_lookback(item.get("published_at"), lookback_days):
+                        continue
+                    source_url = str(item.get("url") or "").strip()
+                    if not source_url:
+                        continue
+                    if self._has_existing_person_source_url(person.id, source_url):
+                        skipped_existing += 1
+                        continue
+                    text = self._merge_text(item.get("title"), item.get("summary"))
+                    matched_person = self._matched_keywords(text, person_keywords) or ([person_keywords[0]] if person_keywords else [])
+                    matched_taiwan = self._matched_keywords(text, taiwan_keywords) or ([taiwan_keywords[0]] if taiwan_keywords else [])
+                    found += 1
+                    source_domain = domain_from_url(source_url)
+                    source_type = "official" if source_domain in {"president.gov.tw", "mofa.gov.tw"} else "media"
+                    payload = {
+                        "person_id": person.id,
+                        "participant_ids": [person.id],
+                        "title": str(item.get("title") or source_url),
+                        "source_title": str(item.get("title") or source_url),
+                        "date_published": item.get("published_at"),
+                        "source_url": source_url,
+                        "source_type": source_type,
+                        "statement_type": "statement",
+                        "excerpt": str(item.get("summary") or "")[:1000],
+                        "full_text": str(item.get("summary") or "")[:5000],
+                        "raw_text": str(item.get("summary") or ""),
+                        "is_primary_source": source_type == "official",
+                        "parser_identity": PARSER_IDENTITY,
+                        "raw_payload": {
+                            "seeded_from": PARSER_IDENTITY,
+                            "monitor_trigger": trigger,
+                            "monitor_domain": "__all__",
+                            "monitor_query": global_query,
+                            "monitor_lookback_days": lookback_days,
+                            "matched_person_keywords": matched_person,
+                            "matched_taiwan_keywords": matched_taiwan,
+                        },
+                    }
+                    _, is_created = self.statements_service.ingest_statement(payload)
+                    if is_created:
+                        created += 1
+                    else:
+                        updated += 1
+                total_found += found
+                total_created += created
+                total_updated += updated
+                query_logs.append(
+                    {
+                        "domain": "__all__",
+                        "query": global_query,
                         "lookback_days": lookback_days,
                         "items_found": found,
                         "items_added": created,
@@ -304,6 +382,7 @@ class PersonTaiwanEventMonitorService:
                     "title": title,
                     "summary": self._strip_html(summary),
                     "published_at": published_at,
+                    "query_enforced_match": True,
                 }
             )
         return items
@@ -390,6 +469,7 @@ class PersonTaiwanEventMonitorService:
                     "title": str(getattr(hit, "title", "") or url),
                     "summary": str(getattr(hit, "excerpt", "") or ""),
                     "published_at": published_at,
+                    "query_enforced_match": False,
                 }
             )
         return items
