@@ -2264,16 +2264,17 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     st.info(labels["person_not_found"])
                     return
 
-            person_options = {
-                f"{display_person_name(row[1], row[2], row[3])} ({_display_office_name(row[4], row[6])})": row[0]
-                for row in candidates
-            }
-            selected_person_label = st.selectbox(labels["select_person"], list(person_options.keys()))
-            person_id = person_options[selected_person_label]
-            person = session.get(Person, int(person_id))
-            if not person:
-                st.info(labels["person_not_found"])
-                return
+            if person is None:
+                person_options = {
+                    f"{display_person_name(row[1], row[2], row[3])} ({_display_office_name(row[4], row[6])})": row[0]
+                    for row in candidates
+                }
+                selected_person_label = st.selectbox(labels["select_person"], list(person_options.keys()))
+                person_id = person_options[selected_person_label]
+                person = session.get(Person, int(person_id))
+                if not person:
+                    st.info(labels["person_not_found"])
+                    return
 
         person_data = {
             "full_name": display_person_name(person.full_name, person.given_name, person.family_name),
