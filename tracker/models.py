@@ -408,3 +408,22 @@ class LegislationSource(Base, TimestampMixin):
     raw_payload: Mapped[Optional[dict]] = mapped_column(JSON)
 
     legislation: Mapped["Legislation"] = relationship(back_populates="sources")
+
+
+class CollectionSchedule(Base, TimestampMixin):
+    __tablename__ = "collection_schedules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    entity_scope: Mapped[str] = mapped_column(String(100), nullable=False, default="all")
+    person_scope: Mapped[str] = mapped_column(String(100), nullable=False, default="all_federal")
+    year: Mapped[Optional[int]] = mapped_column(Integer)
+    months_csv: Mapped[Optional[str]] = mapped_column(String(100))
+    interval_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=1440)
+    max_people: Mapped[Optional[int]] = mapped_column(Integer)
+    next_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    last_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    last_status: Mapped[Optional[str]] = mapped_column(String(50))
+    last_message: Mapped[Optional[str]] = mapped_column(Text)
+    raw_payload: Mapped[Optional[dict]] = mapped_column(JSON)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from importlib import import_module
+from typing import Callable
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -10,8 +11,20 @@ from tracker.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
-# Keep scheduler resilient on cloud: missing optional job modules should not crash app startup.
-JOB_REGISTRY: dict[str, tuple[str, str]] = {
+def _lazy_job(module_name: str, function_name: str, job_name: str) -> Callable[[], dict]:
+    def _runner() -> dict:
+        try:
+            module = import_module(module_name)
+            handler = getattr(module, function_name)
+            return handler()
+        except Exception as exc:
+            logger.exception("Job %s failed during dynamic import/execute", job_name)
+            return {"status": "failed", "job_name": job_name, "error": f"{type(exc).__name__}: {exc}"}
+
+    return _runner
+
+
+JOB_TARGETS: dict[str, tuple[str, str]] = {
     "sync_congress_taiwan": ("tracker.jobs.sync_congress_taiwan", "run_sync_congress_taiwan"),
     "sync_officials": ("tracker.jobs.sync_officials", "run_sync_officials"),
     "sync_officials_wikipedia_only": ("tracker.jobs.sync_officials_wikipedia_only", "run_sync_officials_wikipedia_only"),
@@ -54,37 +67,35 @@ JOB_REGISTRY: dict[str, tuple[str, str]] = {
     "sync_media": ("tracker.jobs.sync_media", "run_sync_media"),
     "cleanup": ("tracker.jobs.cleanup", "run_cleanup"),
     "cleanup_malformed_legislation_people": ("tracker.jobs.cleanup_malformed_legislation_people", "run_cleanup_malformed_legislation_people"),
+    "run_scheduled_collections": ("tracker.jobs.run_scheduled_collections", "run_scheduled_collections"),
+    "dedupe_records_by_url": ("tracker.jobs.dedupe_records_by_url", "run_dedupe_records_by_url"),
 }
 
-
-def _resolve_job_callable(job_id: str):
-    module_name, func_name = JOB_REGISTRY[job_id]
-    module = import_module(module_name)
-    return getattr(module, func_name)
+JOB_REGISTRY = {job_name: _lazy_job(module_name, function_name, job_name) for job_name, (module_name, function_name) in JOB_TARGETS.items()}
 
 
 def build_scheduler() -> BackgroundScheduler:
     settings = get_settings()
     scheduler = BackgroundScheduler(timezone=settings.scheduler_timezone)
-
     for job_id, job_settings in settings.scheduler_jobs.items():
         if not job_settings.get("enabled", False):
             continue
         if job_id not in JOB_REGISTRY:
             logger.warning("Skipping unknown scheduler job: %s", job_id)
             continue
-
-        try:
-            job_callable = _resolve_job_callable(job_id)
-        except Exception as exc:
-            logger.warning("Skipping scheduler job %s due to import error: %s", job_id, exc)
-            continue
-
         scheduler.add_job(
-            job_callable,
+            JOB_REGISTRY[job_id],
             trigger="interval",
             minutes=job_settings.get("minutes", 60),
             id=job_id,
+            replace_existing=True,
+        )
+    if settings.scheduler_enabled:
+        scheduler.add_job(
+            JOB_REGISTRY["run_scheduled_collections"],
+            trigger="interval",
+            minutes=10,
+            id="run_scheduled_collections",
             replace_existing=True,
         )
     return scheduler

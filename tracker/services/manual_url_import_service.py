@@ -1,0 +1,722 @@
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
+from urllib.parse import unquote, urlparse
+
+import httpx
+from bs4 import BeautifulSoup
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from tracker.models import Alias, Appointment, Office, Person
+from tracker.models import Legislation, LegislationSource, Statement, StatementParticipant, StatementSource
+from tracker.services.legislation_service import LegislationService
+from tracker.services.officials_service import InvalidPersonNameError, OfficialsService
+from tracker.services.statements_service import StatementsService
+from tracker.utils.source_types import is_government_url
+from tracker.utils.text import compact_whitespace
+from tracker.utils.web import parse_datetime
+
+
+@dataclass
+class ManualImportResult:
+    created: int = 0
+    updated: int = 0
+    failed: int = 0
+    items: list[dict[str, Any]] | None = None
+
+
+class ManualUrlImportService:
+    http_headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+
+    PERSON_TYPE_CONFIG: dict[str, dict[str, str | None]] = {
+        "federal_official": {
+            "office_name": "Federal Executive Official",
+            "level": "federal",
+            "branch": "executive",
+            "chamber": None,
+            "role_title": "Federal Official",
+            "jurisdiction_name": "United States",
+            "jurisdiction_type": "country",
+        },
+        "federal_senator": {
+            "office_name": "United States Senate",
+            "level": "federal",
+            "branch": "legislative",
+            "chamber": "senate",
+            "role_title": "United States Senator",
+            "jurisdiction_name": "United States",
+            "jurisdiction_type": "country",
+        },
+        "federal_house": {
+            "office_name": "United States House of Representatives",
+            "level": "federal",
+            "branch": "legislative",
+            "chamber": "house",
+            "role_title": "United States Representative",
+            "jurisdiction_name": "United States",
+            "jurisdiction_type": "country",
+        },
+        "state_official": {
+            "office_name": "State Executive Official",
+            "level": "state",
+            "branch": "executive",
+            "chamber": None,
+            "role_title": "State Official",
+            "jurisdiction_name": None,
+            "jurisdiction_type": "state",
+        },
+        "state_legislator": {
+            "office_name": "State Legislature",
+            "level": "state",
+            "branch": "legislative",
+            "chamber": None,
+            "role_title": "State Legislator",
+            "jurisdiction_name": None,
+            "jurisdiction_type": "state",
+        },
+    }
+
+    CONGRESS_BILL_PATTERN = re.compile(r"/bill/(?P<congress>\d+)-congress/(?P<bill_type>[^/]+)/(?P<number>\d+)", re.I)
+    BILL_TYPE_INFO = {
+        "house-bill": ("H.R.", "house", "bill"),
+        "senate-bill": ("S.", "senate", "bill"),
+        "house-resolution": ("H.Res.", "house", "resolution"),
+        "senate-resolution": ("S.Res.", "senate", "resolution"),
+        "house-concurrent-resolution": ("H.Con.Res.", "house", "concurrent_resolution"),
+        "senate-concurrent-resolution": ("S.Con.Res.", "senate", "concurrent_resolution"),
+        "house-joint-resolution": ("H.J.Res.", "house", "joint_resolution"),
+        "senate-joint-resolution": ("S.J.Res.", "senate", "joint_resolution"),
+    }
+    STATE_NAMES = [
+        "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", "Connecticut", "Delaware",
+        "Florida", "Georgia", "Hawaii", "Idaho", "Illinois", "Indiana", "Iowa", "Kansas", "Kentucky",
+        "Louisiana", "Maine", "Maryland", "Massachusetts", "Michigan", "Minnesota", "Mississippi",
+        "Missouri", "Montana", "Nebraska", "Nevada", "New Hampshire", "New Jersey", "New Mexico",
+        "New York", "North Carolina", "North Dakota", "Ohio", "Oklahoma", "Oregon", "Pennsylvania",
+        "Rhode Island", "South Carolina", "South Dakota", "Tennessee", "Texas", "Utah", "Vermont",
+        "Virginia", "Washington", "West Virginia", "Wisconsin", "Wyoming", "District of Columbia",
+        "Guam", "Puerto Rico", "American Samoa", "Northern Mariana Islands", "U.S. Virgin Islands",
+    ]
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+        self.officials_service = OfficialsService(session)
+        self.statements_service = StatementsService(session)
+        self.legislation_service = LegislationService(session)
+        self._people_search_index: list[tuple[int, str]] | None = None
+
+    def parse_urls(self, raw_text: str) -> list[str]:
+        parts = re.split(r"[\n,\s]+", str(raw_text or ""))
+        urls: list[str] = []
+        seen: set[str] = set()
+        for part in parts:
+            value = part.strip()
+            if not value:
+                continue
+            normalized = self._normalize_url(value)
+            key = normalized.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            urls.append(normalized)
+        return urls
+
+    def import_people_from_urls(
+        self,
+        raw_urls: str,
+        person_type: str,
+        state_name: str | None = None,
+        chamber_hint: str | None = None,
+    ) -> ManualImportResult:
+        urls = self.parse_urls(raw_urls)
+        config = dict(self.PERSON_TYPE_CONFIG.get(person_type) or self.PERSON_TYPE_CONFIG["federal_official"])
+        if person_type.startswith("state_"):
+            config["jurisdiction_name"] = (state_name or "").strip() or "Unknown State"
+            if person_type == "state_legislator":
+                normalized_hint = str(chamber_hint or "").strip().lower()
+                if normalized_hint in {"senate", "house"}:
+                    config["chamber"] = normalized_hint
+                    config["office_name"] = f"{config['jurisdiction_name']} {normalized_hint.title()}"
+                    config["role_title"] = "State Senator" if normalized_hint == "senate" else "State Representative"
+                else:
+                    config["office_name"] = f"{config['jurisdiction_name']} Legislature"
+
+        result = ManualImportResult(items=[])
+        jurisdiction = self.officials_service.get_or_create_jurisdiction(
+            name=str(config["jurisdiction_name"]),
+            jurisdiction_type=str(config["jurisdiction_type"]),
+        )
+        office = self.officials_service.get_or_create_office(
+            office_name=str(config["office_name"]),
+            level=str(config["level"]),
+            branch=(str(config["branch"]) if config["branch"] else None),
+            chamber=(str(config["chamber"]) if config["chamber"] else None),
+            jurisdiction_id=jurisdiction.id,
+            source_url="manual://url-batch",
+            source_type="manual",
+        )
+
+        for url in urls:
+            try:
+                page = self._fetch_page(url)
+                final_url = str(page.get("final_url") or url)
+                existing_person = self._find_person_by_url(final_url)
+                full_name = existing_person.full_name if existing_person else self._infer_person_name(url=final_url, title=str(page.get("title") or ""))
+                person, created = self.officials_service.upsert_person(
+                    {
+                        "full_name": full_name,
+                        "source_url": final_url,
+                        "source_type": self._source_type(final_url),
+                        "seed_source_type": "manual_url",
+                        "profile_status": "seeded",
+                        "parser_identity": "manual_url_people_batch_v1",
+                        "verification_status": "unverified",
+                        "raw_payload": {
+                            "seeded_from": "manual_url_people_batch_v1",
+                            "manual_input_url": url,
+                            "fetched_url": final_url,
+                            "fetched_title": str(page.get("title") or ""),
+                        },
+                    }
+                )
+                appointment_created = self.officials_service.upsert_appointment(
+                    person=person,
+                    office=office,
+                    jurisdiction_id=jurisdiction.id,
+                    payload={
+                        "role_title": str(config["role_title"]),
+                        "status": "current",
+                        "source_url": final_url,
+                        "source_type": self._source_type(final_url),
+                        "parser_identity": "manual_url_people_batch_v1",
+                        "verification_status": "unverified",
+                        "is_current": True,
+                        "raw_payload": {"manual_input_url": url, "fetched_title": str(page.get("title") or "")},
+                    },
+                )
+                if created:
+                    result.created += 1
+                else:
+                    result.updated += 1
+                if appointment_created and not created:
+                    result.updated += 1
+                result.items.append(
+                    {
+                        "status": "ok",
+                        "url": url,
+                        "name": full_name,
+                        "person_id": person.id,
+                        "created": bool(created),
+                    }
+                )
+            except (InvalidPersonNameError, ValueError) as exc:
+                result.failed += 1
+                result.items.append({"status": "failed", "url": url, "error": f"{type(exc).__name__}: {exc}"})
+            except Exception as exc:
+                result.failed += 1
+                result.items.append({"status": "failed", "url": url, "error": f"{type(exc).__name__}: {exc}"})
+        return result
+
+    def import_events_from_urls(self, raw_urls: str) -> ManualImportResult:
+        urls = self.parse_urls(raw_urls)
+        result = ManualImportResult(items=[])
+        for url in urls:
+            try:
+                page = self._fetch_page(url)
+                final_url = str(page.get("final_url") or url)
+                source_type = self._source_type(final_url)
+                full_text = str(page.get("body") or "")
+                title = str(page.get("title") or final_url)
+                participant_ids = self._match_people(f"{title}\n{full_text}")
+                primary_person_id = participant_ids[0] if participant_ids else None
+                statement_type = self._statement_type(source_type)
+                existing_statement = self._find_statement_by_url(final_url)
+                if existing_statement:
+                    statement = existing_statement
+                    statement.title = statement.title or title
+                    if len(full_text) > len(statement.full_text or ""):
+                        statement.full_text = full_text[:5000]
+                    if len(full_text) > len(statement.excerpt or ""):
+                        statement.excerpt = full_text[:1200]
+                    if not statement.date_published and isinstance(page.get("published_at"), datetime):
+                        statement.date_published = page.get("published_at")
+                    if not statement.person_id and primary_person_id:
+                        statement.person_id = primary_person_id
+                    if not self.session.execute(
+                        select(StatementSource.id).where(
+                            StatementSource.statement_id == statement.id,
+                            StatementSource.source_url == final_url,
+                        )
+                    ).scalar_one_or_none():
+                        self.session.add(
+                            StatementSource(
+                                statement_id=statement.id,
+                                source_url=final_url,
+                                source_type=source_type,
+                                source_title=title,
+                                parser_identity="manual_url_events_batch_v1",
+                                is_primary=source_type == "official",
+                                raw_payload={"manual_input_url": url},
+                            )
+                        )
+                    for person_id in participant_ids:
+                        exists = self.session.execute(
+                            select(StatementParticipant.id).where(
+                                StatementParticipant.statement_id == statement.id,
+                                StatementParticipant.person_id == person_id,
+                            )
+                        ).scalar_one_or_none()
+                        if not exists:
+                            self.session.add(
+                                StatementParticipant(
+                                    statement_id=statement.id,
+                                    person_id=person_id,
+                                    source_url=final_url,
+                                    source_type=source_type,
+                                )
+                            )
+                    created = False
+                else:
+                    statement, created = self.statements_service.ingest_statement(
+                        {
+                            "person_id": primary_person_id,
+                            "participant_ids": participant_ids,
+                            "title": title,
+                            "source_title": title,
+                            "date_published": page.get("published_at") if isinstance(page.get("published_at"), datetime) else None,
+                            "source_url": final_url,
+                            "source_type": source_type,
+                            "statement_type": statement_type,
+                            "excerpt": full_text[:1200],
+                            "full_text": full_text[:5000],
+                            "raw_text": full_text,
+                            "is_primary_source": source_type == "official",
+                            "parser_identity": "manual_url_events_batch_v1",
+                            "raw_payload": {
+                                "seeded_from": "manual_url_events_batch_v1",
+                                "manual_input_url": url,
+                                "matched_person_ids": participant_ids,
+                                "auto_category": self._infer_event_category(primary_person_id),
+                            },
+                        }
+                    )
+                if created:
+                    result.created += 1
+                else:
+                    result.updated += 1
+                result.items.append(
+                    {
+                        "status": "ok",
+                        "url": url,
+                        "statement_id": statement.id,
+                        "title": statement.title,
+                        "created": bool(created),
+                        "matched_people": len(participant_ids),
+                    }
+                )
+            except Exception as exc:
+                result.failed += 1
+                result.items.append({"status": "failed", "url": url, "error": f"{type(exc).__name__}: {exc}"})
+        return result
+
+    def import_legislation_from_urls(self, raw_urls: str) -> ManualImportResult:
+        urls = self.parse_urls(raw_urls)
+        result = ManualImportResult(items=[])
+        for url in urls:
+            try:
+                page = self._fetch_page(url)
+                final_url = str(page.get("final_url") or url)
+                title = str(page.get("title") or final_url)
+                body = str(page.get("body") or "")
+                meta = self._classify_legislation(final_url, title, body)
+                existing_legislation = self._find_legislation_by_url(final_url)
+                payload = {
+                    "title": meta["title"],
+                    "bill_number": meta.get("bill_number"),
+                    "bill_slug": existing_legislation.bill_slug if existing_legislation else meta.get("bill_slug"),
+                    "legislation_type": meta.get("legislation_type"),
+                    "level": meta.get("level", "other"),
+                    "jurisdiction_name": meta.get("jurisdiction_name"),
+                    "chamber": meta.get("chamber"),
+                    "summary": body[:1800] or None,
+                    "status_text": None,
+                    "introduced_date": page.get("published_at").date() if isinstance(page.get("published_at"), datetime) else None,
+                    "last_action_date": page.get("published_at").date() if isinstance(page.get("published_at"), datetime) else None,
+                    "source_url": final_url,
+                    "source_type": self._source_type(final_url),
+                    "parser_identity": "manual_url_legislation_batch_v1",
+                    "relevance_score": 1.0 if self._is_taiwan_related(f"{title} {body}") else 0.0,
+                    "is_taiwan_related": self._is_taiwan_related(f"{title} {body}"),
+                    "raw_payload": {
+                        "seeded_from": "manual_url_legislation_batch_v1",
+                        "manual_input_url": url,
+                        "auto_classification": meta,
+                    },
+                    "sources": [
+                        {
+                            "source_url": final_url,
+                            "source_type": self._source_type(final_url),
+                            "source_title": title,
+                            "parser_identity": "manual_url_legislation_batch_v1",
+                            "raw_payload": {"manual_input_url": url},
+                        }
+                    ],
+                    "sponsors": [],
+                }
+                legislation, created = self.legislation_service.upsert_legislation(payload)
+                if created:
+                    result.created += 1
+                else:
+                    result.updated += 1
+                result.items.append(
+                    {
+                        "status": "ok",
+                        "url": url,
+                        "legislation_id": legislation.id,
+                        "title": legislation.title,
+                        "bill_number": legislation.bill_number,
+                        "created": bool(created),
+                    }
+                )
+            except Exception as exc:
+                result.failed += 1
+                result.items.append({"status": "failed", "url": url, "error": f"{type(exc).__name__}: {exc}"})
+        return result
+
+    def _normalize_url(self, source_url: str) -> str:
+        value = str(source_url or "").strip()
+        if not value:
+            raise ValueError("URL is required.")
+        parsed = urlparse(value)
+        if not parsed.scheme:
+            value = f"https://{value}"
+            parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"}:
+            raise ValueError("Only http/https URLs are supported.")
+        if not parsed.netloc:
+            raise ValueError("Invalid URL.")
+        return value
+
+    def _fetch_page(self, source_url: str) -> dict[str, object]:
+        response = httpx.get(
+            source_url,
+            timeout=25.0,
+            follow_redirects=True,
+            trust_env=False,
+            headers=self.http_headers,
+        )
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        title = self._extract_title(soup, fallback=str(response.url))
+        published_at = self._extract_published_at(soup)
+        body = self._extract_body_text(soup)
+        return {
+            "final_url": str(response.url),
+            "title": title,
+            "published_at": published_at,
+            "body": body,
+        }
+
+    def _extract_title(self, soup: BeautifulSoup, fallback: str) -> str:
+        meta_candidates = [
+            ("meta", {"property": "og:title"}, "content"),
+            ("meta", {"name": "twitter:title"}, "content"),
+            ("meta", {"name": "title"}, "content"),
+            ("meta", {"name": "headline"}, "content"),
+        ]
+        for tag_name, attrs, key in meta_candidates:
+            tag = soup.find(tag_name, attrs=attrs)
+            if tag and tag.get(key):
+                text = compact_whitespace(str(tag.get(key)))
+                if text:
+                    return text
+        for selector in ("h1", "title", "h2"):
+            node = soup.select_one(selector)
+            if node:
+                text = compact_whitespace(node.get_text(" ", strip=True))
+                if text:
+                    return text
+        return fallback
+
+    def _extract_published_at(self, soup: BeautifulSoup) -> datetime | None:
+        selectors = [
+            ("meta", {"property": "article:published_time"}, "content"),
+            ("meta", {"name": "article:published_time"}, "content"),
+            ("meta", {"property": "og:published_time"}, "content"),
+            ("meta", {"name": "pubdate"}, "content"),
+            ("meta", {"name": "date"}, "content"),
+            ("time", {}, "datetime"),
+        ]
+        for tag_name, attrs, attr in selectors:
+            tag = soup.find(tag_name, attrs=attrs) if attrs else soup.find(tag_name)
+            if tag and tag.get(attr):
+                parsed = parse_datetime(str(tag.get(attr)))
+                if parsed:
+                    return parsed
+        for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+            text = script.get_text(strip=True)
+            if not text:
+                continue
+            try:
+                payload = json.loads(text)
+            except Exception:
+                continue
+            for key in ("datePublished", "dateCreated", "uploadDate"):
+                value = self._json_find(payload, key)
+                if value:
+                    parsed = parse_datetime(str(value))
+                    if parsed:
+                        return parsed
+        return None
+
+    def _extract_body_text(self, soup: BeautifulSoup) -> str:
+        selector_groups = [
+            "article p",
+            "main p",
+            ".entry-content p",
+            ".post-content p",
+            ".news p",
+            ".content p",
+            ".article p",
+        ]
+        lines: list[str] = []
+        for selector in selector_groups:
+            for node in soup.select(selector):
+                text = compact_whitespace(node.get_text(" ", strip=True))
+                if text:
+                    lines.append(text)
+            if lines:
+                break
+        if not lines:
+            text = compact_whitespace(soup.get_text(" ", strip=True))
+            text = re.sub(r"\s+", " ", text).strip()
+            return text[:5000]
+        merged = compact_whitespace(" ".join(lines))
+        return merged[:5000]
+
+    def _infer_person_name(self, url: str, title: str) -> str:
+        parsed = urlparse(url)
+        if "wikipedia.org" in parsed.netloc and "/wiki/" in parsed.path:
+            slug = unquote(parsed.path.split("/wiki/", 1)[1]).replace("_", " ")
+            slug = re.sub(r"\s*\([^)]*\)\s*$", "", slug).strip()
+            if slug:
+                return slug
+
+        candidate = title
+        for marker in (" | ", " - ", " — ", " – ", "｜"):
+            if marker in candidate:
+                candidate = candidate.split(marker, 1)[0].strip()
+        candidate = re.sub(r"\b(official|biography|profile|news|home page)\b", "", candidate, flags=re.I)
+        candidate = re.sub(r"\s+", " ", candidate).strip(" ,.-")
+        if len(candidate.split()) >= 2:
+            return candidate
+
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if path_parts:
+            fallback = unquote(path_parts[-1]).replace("-", " ").replace("_", " ").strip()
+            fallback = re.sub(r"\s*\([^)]*\)\s*$", "", fallback).strip()
+            if len(fallback.split()) >= 2:
+                return fallback
+        raise ValueError(f"Cannot infer person name from URL/title: {url}")
+
+    def _source_type(self, source_url: str) -> str:
+        domain = (urlparse(source_url).netloc or "").lower()
+        if "wikipedia.org" in domain:
+            return "wikipedia"
+        if any(item in domain for item in ("x.com", "twitter.com", "facebook.com", "instagram.com", "youtube.com", "tiktok.com")):
+            return "social"
+        if is_government_url(source_url):
+            return "official"
+        return "media"
+
+    def _statement_type(self, source_type: str) -> str:
+        if source_type == "social":
+            return "social_post"
+        if source_type == "official":
+            return "official_release"
+        if source_type == "media":
+            return "media_report"
+        return "statement"
+
+    def _find_person_by_url(self, source_url: str) -> Person | None:
+        normalized = self._normalize_url(source_url)
+        if not normalized:
+            return None
+        rows = self.session.execute(select(Person).where(Person.source_url.is_not(None))).scalars().all()
+        for person in rows:
+            if self._normalize_url(person.source_url) == normalized or self._normalize_url(person.canonical_official_url) == normalized:
+                return person
+        return None
+
+    def _find_statement_by_url(self, source_url: str) -> Statement | None:
+        normalized = self._normalize_url(source_url)
+        if not normalized:
+            return None
+        rows = self.session.execute(select(Statement).where(Statement.source_url.is_not(None))).scalars().all()
+        for item in rows:
+            if self._normalize_url(item.source_url) == normalized:
+                return item
+        source_rows = self.session.execute(select(StatementSource).where(StatementSource.source_url.is_not(None))).scalars().all()
+        for source in source_rows:
+            if self._normalize_url(source.source_url) == normalized:
+                statement = self.session.get(Statement, source.statement_id)
+                if statement:
+                    return statement
+        return None
+
+    def _find_legislation_by_url(self, source_url: str) -> Legislation | None:
+        normalized = self._normalize_url(source_url)
+        if not normalized:
+            return None
+        rows = self.session.execute(select(Legislation).where(Legislation.source_url.is_not(None))).scalars().all()
+        for item in rows:
+            if self._normalize_url(item.source_url) == normalized:
+                return item
+        source_rows = self.session.execute(select(LegislationSource).where(LegislationSource.source_url.is_not(None))).scalars().all()
+        for source in source_rows:
+            if self._normalize_url(source.source_url) == normalized:
+                bill = self.session.get(Legislation, source.legislation_id)
+                if bill:
+                    return bill
+        return None
+
+    def _build_people_search_index(self) -> list[tuple[int, str]]:
+        rows = self.session.execute(select(Person.id, Person.full_name)).all()
+        alias_rows = self.session.execute(select(Alias.person_id, Alias.alias)).all()
+        index: list[tuple[int, str]] = []
+        for person_id, full_name in rows:
+            if full_name:
+                index.append((int(person_id), str(full_name).strip()))
+        for person_id, alias in alias_rows:
+            alias_text = str(alias or "").strip()
+            if alias_text:
+                index.append((int(person_id), alias_text))
+        index = [(person_id, token) for person_id, token in index if token and len(token) >= 2]
+        index.sort(key=lambda item: len(item[1]), reverse=True)
+        return index
+
+    def _match_people(self, text: str, limit: int = 5) -> list[int]:
+        if self._people_search_index is None:
+            self._people_search_index = self._build_people_search_index()
+        lowered = str(text or "").casefold()
+        found: list[int] = []
+        for person_id, token in self._people_search_index:
+            if token.casefold() in lowered and person_id not in found:
+                found.append(person_id)
+                if len(found) >= limit:
+                    break
+        return found
+
+    def _infer_event_category(self, person_id: int | None) -> str:
+        if not person_id:
+            return "unknown"
+        row = self.session.execute(
+            select(Office.level, Office.branch, Office.chamber)
+            .join(Appointment, Appointment.office_id == Office.id)
+            .where(Appointment.person_id == person_id)
+            .order_by(Appointment.id.desc())
+        ).first()
+        if not row:
+            return "unknown"
+        level, branch, chamber = row
+        if level == "federal" and branch == "executive":
+            return "federal_official"
+        if level == "federal" and branch == "legislative":
+            if chamber == "senate":
+                return "federal_senator"
+            if chamber == "house":
+                return "federal_house"
+            return "congress_member"
+        if level == "state" and branch == "executive":
+            return "state_official"
+        if level == "state" and branch == "legislative":
+            return "state_legislator"
+        return "other"
+
+    def _classify_legislation(self, source_url: str, title: str, body: str) -> dict[str, Any]:
+        parsed = urlparse(source_url)
+        path = parsed.path
+        congress_match = self.CONGRESS_BILL_PATTERN.search(path)
+        if congress_match:
+            bill_type = congress_match.group("bill_type").lower()
+            number = congress_match.group("number")
+            congress = congress_match.group("congress")
+            prefix, chamber, legislation_type = self.BILL_TYPE_INFO.get(bill_type, ("Bill", None, "bill"))
+            bill_number = f"{prefix} {number}".strip()
+            return {
+                "title": title,
+                "bill_number": bill_number,
+                "bill_slug": f"{congress}-{bill_type}-{number}",
+                "legislation_type": legislation_type,
+                "level": "federal",
+                "jurisdiction_name": "United States",
+                "chamber": chamber,
+            }
+
+        merged_text = f"{title} {body} {source_url}"
+        lower = merged_text.lower()
+        level = "state" if any(token in lower for token in ("state senate", "state house", "general assembly", "legislature")) else "other"
+        chamber = None
+        if "senate" in lower:
+            chamber = "senate"
+        elif "house" in lower or "assembly" in lower:
+            chamber = "house"
+        jurisdiction = self._extract_state_name(merged_text)
+        bill_slug = re.sub(r"[^a-z0-9]+", "-", f"{jurisdiction or 'unknown'}-{title}".lower()).strip("-")
+        return {
+            "title": title,
+            "bill_number": self._extract_bill_number(title, body),
+            "bill_slug": bill_slug[:240] if bill_slug else None,
+            "legislation_type": "resolution" if "resolution" in lower else "bill",
+            "level": level,
+            "jurisdiction_name": jurisdiction,
+            "chamber": chamber,
+        }
+
+    def _extract_state_name(self, text: str) -> str | None:
+        for state in self.STATE_NAMES:
+            if re.search(rf"\b{re.escape(state)}\b", text, flags=re.I):
+                return state
+        return None
+
+    def _extract_bill_number(self, title: str, body: str) -> str | None:
+        text = f"{title} {body}"
+        patterns = [
+            r"\b(H\.?\s*R\.?\s*\d+)\b",
+            r"\b(S\.?\s*\d+)\b",
+            r"\b(H\.?\s*Res\.?\s*\d+)\b",
+            r"\b(S\.?\s*Res\.?\s*\d+)\b",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.I)
+            if match:
+                normalized = re.sub(r"\s+", " ", match.group(1)).replace(" .", ".").strip()
+                return normalized
+        return None
+
+    def _is_taiwan_related(self, text: str) -> bool:
+        lowered = str(text or "").lower()
+        return any(keyword in lowered for keyword in ("taiwan", "台灣", "臺灣", "台海"))
+
+    def _json_find(self, payload: object, target_key: str) -> str | None:
+        if isinstance(payload, dict):
+            for key, value in payload.items():
+                if str(key) == target_key and isinstance(value, (str, int, float)):
+                    return str(value)
+                nested = self._json_find(value, target_key)
+                if nested:
+                    return nested
+        elif isinstance(payload, list):
+            for item in payload:
+                nested = self._json_find(item, target_key)
+                if nested:
+                    return nested
+        return None
