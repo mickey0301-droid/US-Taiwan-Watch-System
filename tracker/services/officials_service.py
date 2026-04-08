@@ -350,7 +350,9 @@ class OfficialsService:
         alias = self.session.execute(stmt).scalars().first()
         if alias:
             alias.last_seen_at = datetime.utcnow()
-            alias.alias_type = alias.alias_type or alias_type
+            alias.is_current = True
+            if alias_type and alias.alias_type != alias_type:
+                alias.alias_type = alias_type
             alias.source_url = source_url or alias.source_url
             alias.source_type = source_type or alias.source_type
             return

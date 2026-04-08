@@ -87,7 +87,7 @@ class ManualStatementIngestService:
             "is_primary_source": source_type != "media",
             "parser_identity": "manual_url_ingest_v1",
             "raw_payload": {
-                "seeded_from": "manual_url_ingest_v1",
+                "seeded_from": "manual_taiwan_url_ingest_v1",
                 "manual_input_url": source_url,
                 "fetched_url": final_url,
                 "fetched_at": datetime.utcnow().isoformat(),
@@ -198,4 +198,3 @@ class ManualStatementIngestService:
                 if nested:
                     return nested
         return None
-

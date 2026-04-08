@@ -23,8 +23,10 @@ class StatementsService:
         if (statement.relevance_score or 0) > 0:
             return True
         payload = statement.raw_payload or {}
-        if isinstance(payload, dict) and str(payload.get("seeded_from", "")).startswith("manual_taiwan_"):
-            return True
+        if isinstance(payload, dict):
+            seeded_from = str(payload.get("seeded_from", ""))
+            if seeded_from.startswith("manual_taiwan_") or seeded_from == "manual_url_ingest_v1":
+                return True
         text = "\n".join(
             [
                 statement.title or "",
