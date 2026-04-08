@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime
 import re
-from urllib.parse import urlencode
 import pandas as pd
 import streamlit as st
 from sqlalchemy import case, desc, func, select
@@ -828,75 +827,16 @@ def _render_member_roster(
         deduped_ordered.append(row)
     ordered = deduped_ordered
 
-    sort_scope = f"member-roster-{selected_category}"
-    qp_scope = str(st.query_params.get("roster_sort_scope", ""))
-    qp_field = str(st.query_params.get("roster_sort_field", "default"))
-    qp_dir = str(st.query_params.get("roster_sort_dir", "asc")).lower()
-    sort_field = qp_field if qp_scope == sort_scope else "default"
-    sort_asc = qp_dir != "desc"
-
-    def _row_name_for_sort(row: tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]) -> str:
-        value = display_person_name(row[1], row[2], row[3])
-        if selected_category in {"state_legislative", "state_senate", "state_house"}:
-            value = _strip_legislative_name_suffix(value)
-        return value.lower()
-
-    def _row_department_for_sort(row: tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]) -> str:
-        return str(row[5] or "").lower()
-
-    def _row_position_for_sort(row: tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]) -> str:
-        office = _display_office_name(row[4], row[6])
-        district = str(row[7] or "").strip()
-        if selected_category in {"state_legislative", "state_senate", "state_house"}:
-            return f"{office} {district}".strip().lower()
-        return office.lower()
-
-    if sort_field in {"name", "department", "position"}:
-        sort_map = {
-            "name": _row_name_for_sort,
-            "department": _row_department_for_sort,
-            "position": _row_position_for_sort,
-        }
-        ordered = sorted(
-            ordered,
-            key=sort_map[sort_field],
-            reverse=not sort_asc,
-        )
-
-    def _sortable_header(label: str, field: str) -> str:
-        next_dir = "asc"
-        if sort_field == field:
-            next_dir = "desc" if sort_asc else "asc"
-        arrow = ""
-        if sort_field == field:
-            arrow = " ▲" if sort_asc else " ▼"
-        params: dict[str, object] = {}
-        for key in st.query_params.keys():
-            if key in {"roster_sort_scope", "roster_sort_field", "roster_sort_dir"}:
-                continue
-            params[key] = st.query_params.get_all(key)
-        params["roster_sort_scope"] = sort_scope
-        params["roster_sort_field"] = field
-        params["roster_sort_dir"] = next_dir
-        return f"[{label}{arrow}](?{urlencode(params, doseq=True)})"
-
     department_header_text = (
         ("州" if lang == "zh-TW" else "State")
         if selected_category in {"federal_legislative", "federal_senate", "federal_house", "state_legislative", "state_senate", "state_house"}
         else ("部門" if lang == "zh-TW" else "Department")
     )
-    headers = (
-        _sortable_header("姓名" if lang == "zh-TW" else "Name", "name"),
-        _sortable_header(department_header_text, "department"),
-        _sortable_header("職位" if lang == "zh-TW" else "Position", "position"),
-    )
-    lines: list[str] = [f"| {headers[0]} | {headers[1]} | {headers[2]} |", "|---|---|---|"]
-
-    def _clean_cell(text: str) -> str:
-        return str(text or "").replace("|", "\\|").replace("\n", " ").strip()
+    name_header = "姓名" if lang == "zh-TW" else "Name"
+    position_header = "職位" if lang == "zh-TW" else "Position"
+    table_rows: list[dict[str, str]] = []
 
     for row in ordered:
-        person_id = int(row[0])
         name = display_person_name(row[1], row[2], row[3])
         if _is_invalid_person_name(name):
             continue
@@ -931,10 +871,20 @@ def _render_member_roster(
         else:
             position = office_bilingual
 
-        name_link = person_detail_anchor_html(_clean_cell(name), person_id)
-        lines.append(f"| {name_link} | {_clean_cell(department)} | {_clean_cell(position)} |")
+        table_rows.append(
+            {
+                name_header: name,
+                department_header_text: department,
+                position_header: position,
+            }
+        )
 
-    st.markdown("\n".join(lines), unsafe_allow_html=True)
+    if not table_rows:
+        st.caption("目前無資料" if lang == "zh-TW" else "No data yet")
+        return
+
+    # Streamlit native dataframe supports clicking header cells for immediate sort.
+    st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
 
 
 def _render_white_house_roster(
@@ -946,9 +896,6 @@ def _render_white_house_roster(
     if not candidates:
         st.caption("目前無資料" if lang == "zh-TW" else "No data yet")
         return
-
-    def _clean_cell(text: str) -> str:
-        return str(text or "").replace("|", "\\|").replace("\n", " ").strip()
 
     # Deduplicate people appearing in multiple White House subdepartments.
     sorted_candidates = sorted(
@@ -991,69 +938,29 @@ def _render_white_house_roster(
                 display_person_name(row[1], row[2], row[3]).lower(),
             ),
         )
-        table_key = re.sub(r"[^a-z0-9]+", "-", heading_en.lower()).strip("-") or "white-house"
-        sort_scope = f"white-house-roster-{table_key}"
-        qp_scope = str(st.query_params.get("roster_sort_scope", ""))
-        qp_field = str(st.query_params.get("roster_sort_field", "default"))
-        qp_dir = str(st.query_params.get("roster_sort_dir", "asc")).lower()
-        sort_field = qp_field if qp_scope == sort_scope else "default"
-        sort_asc = qp_dir != "desc"
-        if sort_field in {"name", "department", "position"}:
-            def _row_name_for_sort(row: tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]) -> str:
-                return display_person_name(row[1], row[2], row[3]).lower()
-
-            def _row_department_for_sort(row: tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]) -> str:
-                hierarchy = _executive_hierarchy(row[4], row[6])
-                return str(hierarchy[1] or "White House Office").strip().lower()
-
-            def _row_position_for_sort(row: tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]) -> str:
-                return _display_office_name(row[4], row[6]).lower()
-
-            sort_map = {
-                "name": _row_name_for_sort,
-                "department": _row_department_for_sort,
-                "position": _row_position_for_sort,
-            }
-            ordered = sorted(
-                ordered,
-                key=sort_map[sort_field],
-                reverse=not sort_asc,
-            )
-
-        def _sortable_header(label: str, field: str) -> str:
-            next_dir = "asc"
-            if sort_field == field:
-                next_dir = "desc" if sort_asc else "asc"
-            arrow = ""
-            if sort_field == field:
-                arrow = " ▲" if sort_asc else " ▼"
-            params: dict[str, object] = {}
-            for key in st.query_params.keys():
-                if key in {"roster_sort_scope", "roster_sort_field", "roster_sort_dir"}:
-                    continue
-                params[key] = st.query_params.get_all(key)
-            params["roster_sort_scope"] = sort_scope
-            params["roster_sort_field"] = field
-            params["roster_sort_dir"] = next_dir
-            return f"[{label}{arrow}](?{urlencode(params, doseq=True)})"
-
-        headers = (
-            _sortable_header("姓名" if lang == "zh-TW" else "Name", "name"),
-            _sortable_header("部門" if lang == "zh-TW" else "Department", "department"),
-            _sortable_header("職位" if lang == "zh-TW" else "Position", "position"),
-        )
-        lines = [f"| {headers[0]} | {headers[1]} | {headers[2]} |", "|---|---|---|"]
+        headers = ("姓名", "部門", "職位") if lang == "zh-TW" else ("Name", "Department", "Position")
+        table_rows: list[dict[str, str]] = []
         for row in ordered:
-            person_id = int(row[0])
             name = display_person_name(row[1], row[2], row[3])
+            if _is_invalid_person_name(name):
+                continue
             office = _display_office_name(row[4], row[6])
             office_bilingual = _bilingual_text(office, _position_label_zh(office))
             hierarchy = _executive_hierarchy(row[4], row[6])
             subdepartment_en = (hierarchy[1] or "White House Office").strip()
             subdepartment = _bilingual_text(subdepartment_en, _subdepartment_label(subdepartment_en, "zh-TW", "White House"))
-            name_link = person_detail_anchor_html(_clean_cell(name), person_id)
-            lines.append(f"| {name_link} | {_clean_cell(subdepartment)} | {_clean_cell(office_bilingual)} |")
-        st.markdown("\n".join(lines), unsafe_allow_html=True)
+            table_rows.append(
+                {
+                    headers[0]: name,
+                    headers[1]: subdepartment,
+                    headers[2]: office_bilingual,
+                }
+            )
+        if not table_rows:
+            st.caption("目前無資料" if lang == "zh-TW" else "No data yet")
+            return
+        # Streamlit native dataframe supports clicking header cells for immediate sort.
+        st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
 
     _render_table("白宮辦公室", "White House Office", office_rows)
     _render_table("國家安全會議", "National Security Council", nsc_rows)
