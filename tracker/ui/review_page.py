@@ -141,24 +141,19 @@ def render(lang: str, labels: dict[str, str]) -> None:
             event_payload = {
                 "title": selected.title,
                 "description": selected.excerpt or selected.title or selected.source_url,
-                "event_time": selected.date_published or selected.date_collected,
+                "event_time": selected.date_published,
                 "participants": participants,
                 "sources": sources,
                 "representative_source_url": selected.source_url,
             }
             dashboard._render_event_card(index=1, event=event_payload, lang=lang)
 
-            st.write(f"{labels['attached_sources']}: {service.get_source_count(selected.id)}")
-            st.write(f"{labels['keywords']}: {', '.join(_matched_hits(selected.matched_keywords)) or labels['unknown']}")
-
         rows = [
             {
-                "event_time": item.date_published or item.date_collected,
+                "event_time": item.date_published,
                 "title": item.title,
                 "review_status": item.review_status,
                 "event_source_preference": statement_source_label(item, lang, str(localize_value(item.event_source_preference, lang))),
-                "source_count": service.get_source_count(item.id),
-                "matched_keywords": ", ".join(_matched_hits(item.matched_keywords)),
             }
             for item in filtered_events
         ]
@@ -251,8 +246,6 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
             "representative_source_url": None,
         }
         dashboard._render_event_card(index=1, event=event_payload, lang=lang)
-        st.write(f"{labels['attached_sources']}: {selected.get('source_count_int') or 0}")
-        st.write(f"{labels['keywords']}: {selected.get('taiwan_keywords') or labels['unknown']}")
 
     summary_df = localize_dataframe(
         pd.DataFrame(
@@ -262,8 +255,6 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
                     "title": item.get("title"),
                     "review_status": item.get("review_status"),
                     "event_source_preference": item.get("primary_source_type"),
-                    "source_count": item.get("source_count_int"),
-                    "matched_keywords": item.get("taiwan_keywords"),
                 }
                 for item in filtered_events
             ]
