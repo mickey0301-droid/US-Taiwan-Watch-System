@@ -721,7 +721,7 @@ def _render_selectable_roster_table(
     key: str,
     name_column: str | None = None,
     name_sort_column: str | None = None,
-) -> None:
+) -> int | None:
     display_df = table_df.copy()
     if name_column and name_sort_column and name_column in display_df.columns and name_sort_column in display_df.columns:
         pairs = (
@@ -746,26 +746,24 @@ def _render_selectable_roster_table(
     )
     selected_rows = list((event.selection or {}).get("rows", [])) if event else []
     if not selected_rows:
-        return
+        return None
     row_idx = int(selected_rows[0])
     if row_idx < 0 or row_idx >= len(table_df):
-        return
+        return None
     target_person_id = int(table_df.iloc[row_idx][person_id_column])
-    st.query_params["page"] = "person_detail"
-    st.query_params["person_id"] = str(target_person_id)
-    st.rerun()
+    return target_person_id
 
 
 def _render_member_roster(
     candidates: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]],
     lang: str,
     selected_category: str,
-) -> None:
+) -> int | None:
     title = "成員名單" if lang == "zh-TW" else "Member roster"
     st.markdown(f"**{title}**")
     if not candidates:
         st.caption("目前無資料" if lang == "zh-TW" else "No data yet")
-        return
+        return None
 
     ordered = candidates
     if selected_category == "state_senate":
@@ -957,9 +955,9 @@ def _render_member_roster(
 
     if not table_rows:
         st.caption("目前無資料" if lang == "zh-TW" else "No data yet")
-        return
+        return None
 
-    _render_selectable_roster_table(
+    return _render_selectable_roster_table(
         pd.DataFrame(table_rows),
         person_id_column=person_id_header,
         key=f"member-roster-table-{selected_category}",
@@ -971,12 +969,12 @@ def _render_member_roster(
 def _render_white_house_roster(
     candidates: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]],
     lang: str,
-) -> None:
+) -> int | None:
     title = "白宮成員名單" if lang == "zh-TW" else "White House roster"
     st.markdown(f"**{title}**")
     if not candidates:
         st.caption("目前無資料" if lang == "zh-TW" else "No data yet")
-        return
+        return None
 
     # Deduplicate people appearing in multiple White House subdepartments.
     sorted_candidates = sorted(
@@ -1006,12 +1004,12 @@ def _render_white_house_roster(
         heading_zh: str,
         heading_en: str,
         rows: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]],
-    ) -> None:
+    ) -> int | None:
         heading = _bilingual_text(heading_en, heading_zh)
         st.markdown(f"_{heading}_")
         if not rows:
             st.caption("目前無資料" if lang == "zh-TW" else "No data yet")
-            return
+            return None
         ordered = sorted(
             rows,
             key=lambda row: (
@@ -1050,8 +1048,8 @@ def _render_white_house_roster(
             )
         if not table_rows:
             st.caption("目前無資料" if lang == "zh-TW" else "No data yet")
-            return
-        _render_selectable_roster_table(
+            return None
+        return _render_selectable_roster_table(
             pd.DataFrame(table_rows),
             person_id_column=person_id_header,
             key=f"white-house-roster-table-{heading_en}",
@@ -1059,8 +1057,10 @@ def _render_white_house_roster(
             name_sort_column=name_sort_header,
         )
 
-    _render_table("白宮辦公室", "White House Office", office_rows)
-    _render_table("國家安全會議", "National Security Council", nsc_rows)
+    selected_person_id = _render_table("白宮辦公室", "White House Office", office_rows)
+    if selected_person_id:
+        return selected_person_id
+    return _render_table("國家安全會議", "National Security Council", nsc_rows)
 
 
 def _get_state_options(session, category_key: str) -> list[str]:
@@ -2238,9 +2238,15 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 and pending_person_id is None
             )
             if white_house_roster_only:
-                _render_white_house_roster(candidates, lang=lang)
-                return
-            if selected_category in _categories_with_department_filter() or selected_category in {
+                selected_person_id = _render_white_house_roster(candidates, lang=lang)
+                if not selected_person_id:
+                    return
+                person_id = int(selected_person_id)
+                person = session.get(Person, person_id)
+                if not person:
+                    st.info(labels["person_not_found"])
+                    return
+            elif selected_category in _categories_with_department_filter() or selected_category in {
                 "state_executive",
                 "state_legislative",
                 "state_senate",
@@ -2249,8 +2255,14 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 "federal_senate",
                 "federal_house",
             }:
-                _render_member_roster(candidates, lang=lang, selected_category=selected_category)
-                return
+                selected_person_id = _render_member_roster(candidates, lang=lang, selected_category=selected_category)
+                if not selected_person_id:
+                    return
+                person_id = int(selected_person_id)
+                person = session.get(Person, person_id)
+                if not person:
+                    st.info(labels["person_not_found"])
+                    return
 
             person_options = {
                 f"{display_person_name(row[1], row[2], row[3])} ({_display_office_name(row[4], row[6])})": row[0]
