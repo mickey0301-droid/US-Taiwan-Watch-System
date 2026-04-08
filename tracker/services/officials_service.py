@@ -95,6 +95,17 @@ class OfficialsService:
         for person in candidates:
             if person.official_slug == normalized_name:
                 return person
+        alias_person_id = self.session.execute(
+            select(Alias.person_id).where(
+                func.lower(Alias.alias) == full_name.lower(),
+                Alias.is_current.is_(True),
+            )
+        ).scalars().first()
+        if alias_person_id:
+            alias_person = self.session.get(Person, int(alias_person_id))
+            if alias_person:
+                return alias_person
+        for person in candidates:
             if fuzz.token_sort_ratio(person.full_name.lower(), full_name.lower()) >= 97:
                 return person
         return None
@@ -155,6 +166,7 @@ class OfficialsService:
             self.session.add(person)
             self.session.flush()
             created = True
+            self._append_person_source_link(person, payload)
         else:
             person.last_seen_at = datetime.utcnow()
             incoming_rank = self.source_sort_key(payload.get("source_type"), payload.get("source_url"))
@@ -180,7 +192,42 @@ class OfficialsService:
                 person.social_profiles = merged_profiles
             person.parser_identity = payload.get("parser_identity") or person.parser_identity
             person.raw_payload = self._merge_raw_payload(person.raw_payload, payload.get("raw_payload"))
+            self._append_person_source_link(person, payload)
+            if validated_name != person.full_name:
+                self.ensure_alias(
+                    person_id=person.id,
+                    alias_text=validated_name,
+                    source_url=payload.get("source_url"),
+                    source_type=payload.get("source_type"),
+                    alias_type="alternate_name",
+                )
         return person, created
+
+    def _append_person_source_link(self, person: Person, payload: dict[str, Any]) -> None:
+        raw_payload = dict(person.raw_payload or {})
+        links = list(raw_payload.get("source_links") or [])
+        seen_urls = {
+            str(item.get("url") or "").strip()
+            for item in links
+            if isinstance(item, dict)
+        }
+        parser_identity = str(payload.get("parser_identity") or "").strip() or None
+        source_type = str(payload.get("source_type") or "").strip() or None
+        for url in [payload.get("source_url"), payload.get("canonical_official_url")]:
+            url_text = str(url or "").strip()
+            if not url_text or url_text in seen_urls:
+                continue
+            links.append(
+                {
+                    "url": url_text,
+                    "source_type": source_type,
+                    "parser_identity": parser_identity,
+                }
+            )
+            seen_urls.add(url_text)
+        if links:
+            raw_payload["source_links"] = links[-80:]
+            person.raw_payload = raw_payload
 
     def enrich_person_profile(
         self,
