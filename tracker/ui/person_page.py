@@ -485,6 +485,17 @@ def _render_member_roster(
             ),
         )
 
+    # Deduplicate by person and keep the highest-ranked row based on current ordering.
+    seen_person_ids: set[int] = set()
+    deduped_ordered: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]] = []
+    for row in ordered:
+        person_id = int(row[0])
+        if person_id in seen_person_ids:
+            continue
+        seen_person_ids.add(person_id)
+        deduped_ordered.append(row)
+    ordered = deduped_ordered
+
     headers = ("姓名", "部門", "職位") if lang == "zh-TW" else ("Name", "Department", "Position")
     lines: list[str] = [f"| {headers[0]} | {headers[1]} | {headers[2]} |", "|---|---|---|"]
 
