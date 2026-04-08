@@ -386,7 +386,6 @@ def _get_base_people_query(category_key: str):
         .join(Office, Office.id == Appointment.office_id)
         .outerjoin(Jurisdiction, Jurisdiction.id == Office.jurisdiction_id)
         .order_by(Person.full_name.asc())
-        .distinct()
     )
     if category["level"]:
         stmt = stmt.where(Office.level == category["level"])
@@ -395,6 +394,25 @@ def _get_base_people_query(category_key: str):
     if category["chamber"]:
         stmt = stmt.where(Office.chamber == category["chamber"])
     return stmt
+
+
+def _dedupe_people_rows(
+    rows: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]]
+) -> list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]]:
+    output: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]] = []
+    seen: set[tuple[object, ...]] = set()
+    for row in rows:
+        key = (
+            int(row[0]),
+            str(row[4] or "").strip(),
+            str(row[5] or "").strip(),
+            str(row[7] or "").strip(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(row)
+    return output
 
 
 def _get_people_for_category(
@@ -413,7 +431,7 @@ def _get_people_for_category(
         stmt = stmt.where(Jurisdiction.name == state_filter)
     if status_filter:
         stmt = stmt.where(Appointment.status == status_filter)
-    rows = session.execute(stmt).all()
+    rows = _dedupe_people_rows(session.execute(stmt).all())
     if category_key == "federal_military":
         rows = [row for row in rows if _is_military_role(row[4], row[6])]
     if department_filter and category_key == "federal_executive":
@@ -1065,12 +1083,12 @@ def _render_white_house_roster(
 
 
 def _get_state_options(session, category_key: str) -> list[str]:
-    rows = session.execute(_get_base_people_query(category_key)).all()
+    rows = _dedupe_people_rows(session.execute(_get_base_people_query(category_key)).all())
     return sorted({row[5] for row in rows if row[5]})
 
 
 def _get_department_options(session, category_key: str) -> list[str]:
-    rows = session.execute(_get_base_people_query(category_key)).all()
+    rows = _dedupe_people_rows(session.execute(_get_base_people_query(category_key)).all())
     if category_key == "federal_military":
         rows = [row for row in rows if _is_military_role(row[4], row[6])]
     if category_key == "federal_executive":
@@ -1083,7 +1101,7 @@ def _get_department_options(session, category_key: str) -> list[str]:
 
 
 def _get_subdepartment_options(session, category_key: str, department_filter: str) -> list[str]:
-    rows = session.execute(_get_base_people_query(category_key)).all()
+    rows = _dedupe_people_rows(session.execute(_get_base_people_query(category_key)).all())
     if category_key == "federal_military":
         rows = [row for row in rows if _is_military_role(row[4], row[6])]
     options = {
@@ -1098,7 +1116,7 @@ def _get_subdepartment_options(session, category_key: str, department_filter: st
 
 
 def _get_unit_options(session, category_key: str, department_filter: str, subdepartment_filter: str) -> list[str]:
-    rows = session.execute(_get_base_people_query(category_key)).all()
+    rows = _dedupe_people_rows(session.execute(_get_base_people_query(category_key)).all())
     if category_key == "federal_military":
         rows = [row for row in rows if _is_military_role(row[4], row[6])]
     options = {
