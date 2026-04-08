@@ -75,6 +75,7 @@ class ScheduledCollectionService:
         run_at: datetime,
         max_people: int | None = None,
         one_shot: bool = True,
+        interval_minutes: int | None = None,
     ) -> CollectionSchedule:
         normalized_keywords = self._normalize_keywords(taiwan_keywords)
         normalized_domains = self._normalize_domains(domains)
@@ -85,7 +86,7 @@ class ScheduledCollectionService:
             person_scope=person_scope or "all_current",
             year=None,
             months_csv=None,
-            interval_minutes=1440,
+            interval_minutes=max(5, int(interval_minutes or 1440)),
             max_people=max_people if max_people and max_people > 0 else None,
             next_run_at=run_at,
             raw_payload={
@@ -97,6 +98,7 @@ class ScheduledCollectionService:
                 "taiwan_keywords": normalized_keywords,
                 "domains": normalized_domains,
                 "one_shot": bool(one_shot),
+                "interval_minutes": max(5, int(interval_minutes or 1440)),
             },
         )
         self.session.add(task)
@@ -112,6 +114,7 @@ class ScheduledCollectionService:
         taiwan_keywords: list[str],
         run_at: datetime,
         one_shot: bool = True,
+        interval_minutes: int | None = None,
     ) -> CollectionSchedule:
         normalized_keywords = self._normalize_keywords(taiwan_keywords)
         task = CollectionSchedule(
@@ -121,7 +124,7 @@ class ScheduledCollectionService:
             person_scope="all_current",
             year=None,
             months_csv=None,
-            interval_minutes=1440,
+            interval_minutes=max(5, int(interval_minutes or 1440)),
             max_people=None,
             next_run_at=run_at,
             raw_payload={
@@ -131,6 +134,7 @@ class ScheduledCollectionService:
                 "end_at": end_at.isoformat(),
                 "taiwan_keywords": normalized_keywords,
                 "one_shot": bool(one_shot),
+                "interval_minutes": max(5, int(interval_minutes or 1440)),
             },
         )
         self.session.add(task)
@@ -279,6 +283,7 @@ class ScheduledCollectionService:
         updated = 0
         skipped_existing = 0
         found = 0
+        result_items: list[dict[str, Any]] = []
         query_counters = {domain: {"domain": domain, "found": 0, "created": 0, "updated": 0, "skipped_existing": 0} for domain in domains}
 
         headers = {"User-Agent": USER_AGENT}
@@ -307,6 +312,18 @@ class ScheduledCollectionService:
                             counter = query_counters.get(hit.source)
                             if counter:
                                 counter["skipped_existing"] += 1
+                            if len(result_items) < 300:
+                                result_items.append(
+                                    {
+                                        "person_id": person_id,
+                                        "person_name": full_name,
+                                        "source": hit.source,
+                                        "title": (hit.title or hit.url).strip(),
+                                        "url": hit.url,
+                                        "published_date": hit.published_date,
+                                        "status": "skipped_existing",
+                                    }
+                                )
                             continue
                         statement_payload = {
                             "person_id": person_id,
@@ -338,10 +355,24 @@ class ScheduledCollectionService:
                             created += 1
                             if counter:
                                 counter["created"] += 1
+                            status_text = "created"
                         else:
                             updated += 1
                             if counter:
                                 counter["updated"] += 1
+                            status_text = "updated"
+                        if len(result_items) < 300:
+                            result_items.append(
+                                {
+                                    "person_id": person_id,
+                                    "person_name": full_name,
+                                    "source": hit.source,
+                                    "title": (hit.title or hit.url).strip(),
+                                    "url": hit.url,
+                                    "published_date": hit.published_date,
+                                    "status": status_text,
+                                }
+                            )
 
         return {
             "status": "success",
@@ -356,6 +387,7 @@ class ScheduledCollectionService:
             "taiwan_keywords": taiwan_keywords,
             "domains": domains,
             "queries": list(query_counters.values()),
+            "items": result_items,
         }
 
     def _run_congress_taiwan_legislation_search(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -378,6 +410,7 @@ class ScheduledCollectionService:
         taiwan_keywords = self._normalize_keywords(payload.get("taiwan_keywords"))
 
         all_bills: list[dict[str, Any]] = []
+        result_items: list[dict[str, Any]] = []
         scan_meta: list[dict[str, Any]] = []
         for congress in CONGRESSES:
             bills = asyncio.run(_fetch_congress_bills(congress, settings.congress_api_key))
@@ -395,6 +428,17 @@ class ScheduledCollectionService:
                 if updated_at and not (start_at.date() <= updated_at <= end_at.date()):
                     continue
                 filtered.append(item)
+                if len(result_items) < 300:
+                    result_items.append(
+                        {
+                            "congress": int(item.get("congress") or congress),
+                            "bill_type": str(item.get("type") or ""),
+                            "bill_number": str(item.get("number") or ""),
+                            "title": str(item.get("title") or ""),
+                            "update_date": str(item.get("updateDate") or ""),
+                            "url": f"https://www.congress.gov/bill/{int(item.get('congress') or congress)}th-congress/{str(item.get('type') or '').lower()}-bill/{str(item.get('number') or '')}",
+                        }
+                    )
             all_bills.extend(filtered)
             scan_meta.append({"congress": congress, "fetched": len(filtered)})
 
@@ -411,6 +455,7 @@ class ScheduledCollectionService:
                 "scans": scan_meta,
                 "detail_enriched": int(db_result.get("detail_ok", 0)),
             },
+            "items": result_items,
             "errors": list(db_result.get("errors") or [])[:20],
         }
 

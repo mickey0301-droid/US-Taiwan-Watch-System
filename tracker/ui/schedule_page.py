@@ -33,6 +33,22 @@ def _combine_dt(date_value, time_value) -> datetime:
     return datetime.combine(date_value, safe_time)
 
 
+def _render_search_result(result: dict | None, result_type: str) -> None:
+    if not result:
+        return
+    st.json(result)
+    if result_type == "event":
+        items = list(result.get("items") or [])
+        if items:
+            st.markdown("**事件結果清單**")
+            st.dataframe(pd.DataFrame(items), use_container_width=True, hide_index=True)
+    if result_type == "legislation":
+        items = list(result.get("items") or [])
+        if items:
+            st.markdown("**法案結果清單**")
+            st.dataframe(pd.DataFrame(items), use_container_width=True, hide_index=True)
+
+
 def _render_schedule_table(lang: str) -> None:
     with session_scope() as session:
         service = ScheduledCollectionService(session)
@@ -48,11 +64,15 @@ def _render_schedule_table(lang: str) -> None:
         rows = []
         for task in schedules:
             payload = task.raw_payload or {}
+            one_shot = bool(payload.get("one_shot"))
+            mode_text = "單次" if one_shot else "重複"
             rows.append(
                 {
                     "ID": task.id,
                     "名稱": task.name,
                     "類型": "事件搜尋" if payload.get("schedule_kind") == "event_keyword_search_v1" else "Congress 法案",
+                    "模式": mode_text,
+                    "間隔(分)": int(task.interval_minutes or 0),
                     "下次執行": task.next_run_at,
                     "上次執行": task.last_run_at,
                     "狀態": task.last_status or "-",
@@ -65,8 +85,14 @@ def _render_schedule_table(lang: str) -> None:
             col1, col2, col3 = st.columns([6, 2, 2])
             col1.caption(f"#{task.id} | {task.name}")
             if col2.button("立即執行", key=f"schedule-page-run-{task.id}", use_container_width=True):
-                result = service.run_schedule(task.id)
+                result = service.run_schedule(task.id) or {}
                 st.json(result)
+                nested = result.get("result") if isinstance(result, dict) else None
+                if isinstance(nested, dict):
+                    if "events" in nested:
+                        _render_search_result(nested.get("events"), "event")
+                    if "legislation" in nested:
+                        _render_search_result(nested.get("legislation"), "legislation")
             toggle_label = "停用" if task.enabled else "啟用"
             if col3.button(toggle_label, key=f"schedule-page-toggle-{task.id}", use_container_width=True):
                 service.set_enabled(task.id, not task.enabled)
@@ -107,7 +133,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     domains=domains,
                     max_people=(None if int(max_people) <= 0 else int(max_people)),
                 )
-                st.json(result)
+                _render_search_result(result, "event")
 
         st.subheader("預約搜尋事件")
         with st.form("schedule-event-reserve-form"):
@@ -123,6 +149,8 @@ def render(lang: str, labels: dict[str, str]) -> None:
             reserve_domains = st.multiselect("預設網域", options=DEFAULT_EVENT_DOMAINS, default=DEFAULT_EVENT_DOMAINS, key="schedule-event-reserve-domain-default")
             reserve_custom_domains = st.text_input("新增網域（可多個，逗號分隔）", value="", key="schedule-event-reserve-domain-custom")
             reserve_max_people = st.number_input("人物數上限（0=不限）", min_value=0, max_value=10000, value=0, step=10, key="schedule-event-reserve-max-people")
+            reserve_mode = st.selectbox("執行模式", options=[("single", "單次"), ("repeat", "每隔一段時間重複")], format_func=lambda item: item[1], key="schedule-event-reserve-mode")
+            reserve_interval = st.number_input("重複間隔（分鐘）", min_value=5, max_value=10080, value=1440, step=5, key="schedule-event-reserve-interval")
             col5, col6 = st.columns(2)
             run_date = col5.date_input("預約執行日期", value=datetime.utcnow().date(), key="schedule-event-reserve-run-date")
             run_time = col6.time_input("預約執行時間", value=time(datetime.utcnow().hour, datetime.utcnow().minute), key="schedule-event-reserve-run-time")
@@ -143,7 +171,8 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     domains=domains,
                     run_at=run_at,
                     max_people=(None if int(reserve_max_people) <= 0 else int(reserve_max_people)),
-                    one_shot=True,
+                    one_shot=(reserve_mode[0] == "single"),
+                    interval_minutes=int(reserve_interval),
                 )
                 st.success(f"已建立排程 #{task.id}")
 
@@ -168,7 +197,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     end_at=end_at,
                     taiwan_keywords=_parse_csv_lines(keywords),
                 )
-                st.json(result)
+                _render_search_result(result, "legislation")
 
         st.subheader("預約搜尋 Congress 涉台法案")
         with st.form("schedule-congress-reserve-form"):
@@ -180,6 +209,8 @@ def render(lang: str, labels: dict[str, str]) -> None:
             reserve_start_time = col3.time_input("開始時間", value=time(0, 0), key="schedule-congress-reserve-start-time")
             reserve_end_time = col4.time_input("結束時間", value=time(23, 59), key="schedule-congress-reserve-end-time")
             reserve_keywords = st.text_area("台灣關鍵字（逗號或換行分隔）", value=", ".join(DEFAULT_TAIWAN_KEYWORDS), key="schedule-congress-reserve-keywords")
+            reserve_mode = st.selectbox("執行模式", options=[("single", "單次"), ("repeat", "每隔一段時間重複")], format_func=lambda item: item[1], key="schedule-congress-reserve-mode")
+            reserve_interval = st.number_input("重複間隔（分鐘）", min_value=5, max_value=10080, value=1440, step=5, key="schedule-congress-reserve-interval")
             col5, col6 = st.columns(2)
             run_date = col5.date_input("預約執行日期", value=datetime.utcnow().date(), key="schedule-congress-reserve-run-date")
             run_time = col6.time_input("預約執行時間", value=time(datetime.utcnow().hour, datetime.utcnow().minute), key="schedule-congress-reserve-run-time")
@@ -193,7 +224,8 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     end_at=_combine_dt(reserve_end_date, reserve_end_time),
                     taiwan_keywords=_parse_csv_lines(reserve_keywords),
                     run_at=_combine_dt(run_date, run_time),
-                    one_shot=True,
+                    one_shot=(reserve_mode[0] == "single"),
+                    interval_minutes=int(reserve_interval),
                 )
                 st.success(f"已建立排程 #{task.id}")
 
