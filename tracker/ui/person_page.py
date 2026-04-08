@@ -741,7 +741,7 @@ def _render_selectable_roster_table(
         use_container_width=True,
         hide_index=True,
         on_select="rerun",
-        selection_mode="single-cell",
+        selection_mode="single-row",
         key=key,
     )
     selected_rows = list((event.selection or {}).get("rows", [])) if event else []
