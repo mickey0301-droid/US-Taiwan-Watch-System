@@ -226,6 +226,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
         people_type = st.selectbox(
             "人物類型" if lang == "zh-TW" else "Person type",
             options=[
+                ("auto", "自動判斷（AI+規則）" if lang == "zh-TW" else "Auto classify (AI + rules)"),
                 ("federal_official", "聯邦官員" if lang == "zh-TW" else "Federal official"),
                 ("federal_senator", "聯邦參議員" if lang == "zh-TW" else "Federal senator"),
                 ("federal_house", "聯邦眾議員" if lang == "zh-TW" else "Federal house member"),

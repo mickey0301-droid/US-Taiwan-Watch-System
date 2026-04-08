@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from tracker.models import Alias, Appointment, Office, Person
 from tracker.models import Legislation, LegislationSource, Statement, StatementParticipant, StatementSource
+from tracker.services.ai_assist_service import AIAssistService
 from tracker.services.legislation_service import LegislationService
 from tracker.services.officials_service import InvalidPersonNameError, OfficialsService
 from tracker.services.statements_service import StatementsService
@@ -111,6 +112,7 @@ class ManualUrlImportService:
         self.officials_service = OfficialsService(session)
         self.statements_service = StatementsService(session)
         self.legislation_service = LegislationService(session)
+        self.ai_assist_service = AIAssistService()
         self._people_search_index: list[tuple[int, str]] | None = None
 
     def parse_urls(self, raw_text: str) -> list[str]:
@@ -137,37 +139,40 @@ class ManualUrlImportService:
         chamber_hint: str | None = None,
     ) -> ManualImportResult:
         urls = self.parse_urls(raw_urls)
-        config = dict(self.PERSON_TYPE_CONFIG.get(person_type) or self.PERSON_TYPE_CONFIG["federal_official"])
-        if person_type.startswith("state_"):
-            config["jurisdiction_name"] = (state_name or "").strip() or "Unknown State"
-            if person_type == "state_legislator":
-                normalized_hint = str(chamber_hint or "").strip().lower()
-                if normalized_hint in {"senate", "house"}:
-                    config["chamber"] = normalized_hint
-                    config["office_name"] = f"{config['jurisdiction_name']} {normalized_hint.title()}"
-                    config["role_title"] = "State Senator" if normalized_hint == "senate" else "State Representative"
-                else:
-                    config["office_name"] = f"{config['jurisdiction_name']} Legislature"
-
         result = ManualImportResult(items=[])
-        jurisdiction = self.officials_service.get_or_create_jurisdiction(
-            name=str(config["jurisdiction_name"]),
-            jurisdiction_type=str(config["jurisdiction_type"]),
-        )
-        office = self.officials_service.get_or_create_office(
-            office_name=str(config["office_name"]),
-            level=str(config["level"]),
-            branch=(str(config["branch"]) if config["branch"] else None),
-            chamber=(str(config["chamber"]) if config["chamber"] else None),
-            jurisdiction_id=jurisdiction.id,
-            source_url="manual://url-batch",
-            source_type="manual",
-        )
 
         for url in urls:
             try:
                 page = self._fetch_page(url)
                 final_url = str(page.get("final_url") or url)
+                resolved_person_type = person_type
+                if person_type == "auto":
+                    resolved_person_type = self._infer_person_type(
+                        final_url=final_url,
+                        title=str(page.get("title") or ""),
+                        body=str(page.get("body") or ""),
+                    )
+                config = self._build_person_type_config(
+                    person_type=resolved_person_type,
+                    state_name=state_name,
+                    chamber_hint=chamber_hint,
+                    final_url=final_url,
+                    title=str(page.get("title") or ""),
+                    body=str(page.get("body") or ""),
+                )
+                jurisdiction = self.officials_service.get_or_create_jurisdiction(
+                    name=str(config["jurisdiction_name"]),
+                    jurisdiction_type=str(config["jurisdiction_type"]),
+                )
+                office = self.officials_service.get_or_create_office(
+                    office_name=str(config["office_name"]),
+                    level=str(config["level"]),
+                    branch=(str(config["branch"]) if config["branch"] else None),
+                    chamber=(str(config["chamber"]) if config["chamber"] else None),
+                    jurisdiction_id=jurisdiction.id,
+                    source_url="manual://url-batch",
+                    source_type="manual",
+                )
                 existing_person = self._find_person_by_url(final_url)
                 full_name = existing_person.full_name if existing_person else self._infer_person_name(url=final_url, title=str(page.get("title") or ""))
                 person, created = self.officials_service.upsert_person(
@@ -215,6 +220,7 @@ class ManualUrlImportService:
                         "name": full_name,
                         "person_id": person.id,
                         "created": bool(created),
+                        "auto_person_type": resolved_person_type,
                     }
                 )
             except (InvalidPersonNameError, ValueError) as exc:
@@ -238,6 +244,7 @@ class ManualUrlImportService:
                 participant_ids = self._match_people(f"{title}\n{full_text}")
                 primary_person_id = participant_ids[0] if participant_ids else None
                 statement_type = self._statement_type(source_type)
+                ai_category = self.ai_assist_service.classify_event_category(title=title, body=full_text, source_url=final_url)
                 existing_statement = self._find_statement_by_url(final_url)
                 if existing_statement:
                     statement = existing_statement
@@ -305,6 +312,7 @@ class ManualUrlImportService:
                                 "manual_input_url": url,
                                 "matched_person_ids": participant_ids,
                                 "auto_category": self._infer_event_category(primary_person_id),
+                                "ai_auto_category": ai_category,
                             },
                         }
                     )
@@ -320,6 +328,7 @@ class ManualUrlImportService:
                         "title": statement.title,
                         "created": bool(created),
                         "matched_people": len(participant_ids),
+                        "ai_auto_category": ai_category,
                     }
                 )
             except Exception as exc:
@@ -337,6 +346,13 @@ class ManualUrlImportService:
                 title = str(page.get("title") or final_url)
                 body = str(page.get("body") or "")
                 meta = self._classify_legislation(final_url, title, body)
+                ai_scope = self.ai_assist_service.classify_legislation_scope(title=title, body=body, source_url=final_url) or {}
+                if ai_scope.get("level") in {"federal", "state", "other"}:
+                    meta["level"] = ai_scope["level"]
+                if ai_scope.get("chamber") in {"senate", "house"}:
+                    meta["chamber"] = ai_scope["chamber"]
+                if ai_scope.get("legislation_type") and ai_scope["legislation_type"] != "other":
+                    meta["legislation_type"] = ai_scope["legislation_type"]
                 existing_legislation = self._find_legislation_by_url(final_url)
                 payload = {
                     "title": meta["title"],
@@ -359,6 +375,7 @@ class ManualUrlImportService:
                         "seeded_from": "manual_url_legislation_batch_v1",
                         "manual_input_url": url,
                         "auto_classification": meta,
+                        "ai_classification": ai_scope,
                     },
                     "sources": [
                         {
@@ -384,6 +401,7 @@ class ManualUrlImportService:
                         "title": legislation.title,
                         "bill_number": legislation.bill_number,
                         "created": bool(created),
+                        "ai_classification": ai_scope,
                     }
                 )
             except Exception as exc:
@@ -705,6 +723,52 @@ class ManualUrlImportService:
     def _is_taiwan_related(self, text: str) -> bool:
         lowered = str(text or "").lower()
         return any(keyword in lowered for keyword in ("taiwan", "台灣", "臺灣", "台海"))
+
+    def _build_person_type_config(
+        self,
+        person_type: str,
+        state_name: str | None,
+        chamber_hint: str | None,
+        final_url: str,
+        title: str,
+        body: str,
+    ) -> dict[str, str | None]:
+        config = dict(self.PERSON_TYPE_CONFIG.get(person_type) or self.PERSON_TYPE_CONFIG["federal_official"])
+        if str(person_type).startswith("state_"):
+            inferred_state = self._extract_state_name(f"{title} {body} {final_url}")
+            config["jurisdiction_name"] = (state_name or "").strip() or inferred_state or "Unknown State"
+            if person_type == "state_legislator":
+                normalized_hint = str(chamber_hint or "").strip().lower()
+                if normalized_hint not in {"senate", "house"}:
+                    merged = f"{title} {body} {final_url}".lower()
+                    if "senate" in merged:
+                        normalized_hint = "senate"
+                    elif "house" in merged or "assembly" in merged:
+                        normalized_hint = "house"
+                if normalized_hint in {"senate", "house"}:
+                    config["chamber"] = normalized_hint
+                    config["office_name"] = f"{config['jurisdiction_name']} {normalized_hint.title()}"
+                    config["role_title"] = "State Senator" if normalized_hint == "senate" else "State Representative"
+                else:
+                    config["office_name"] = f"{config['jurisdiction_name']} Legislature"
+        return config
+
+    def _infer_person_type(self, final_url: str, title: str, body: str) -> str:
+        ai_result = self.ai_assist_service.classify_person_type(title=title, body=body, source_url=final_url)
+        if ai_result:
+            return ai_result
+        merged = f"{title} {body} {final_url}".lower()
+        if "senate.gov" in final_url.lower() or "u.s. senator" in merged or " united states senator" in merged:
+            return "federal_senator"
+        if "house.gov" in final_url.lower() or "u.s. representative" in merged or " united states representative" in merged:
+            return "federal_house"
+        if "governor" in merged or "state secretary" in merged or "attorney general" in merged:
+            return "state_official" if "state" in merged else "federal_official"
+        if "state senate" in merged or "state house" in merged or "general assembly" in merged or "state legislature" in merged:
+            return "state_legislator"
+        if self._extract_state_name(merged):
+            return "state_official"
+        return "federal_official"
 
     def _json_find(self, payload: object, target_key: str) -> str | None:
         if isinstance(payload, dict):

@@ -61,17 +61,79 @@ class AIAssistService:
         result = _responses_text(self.settings.openai_api_key or "", self.settings.openai_model, system_prompt, user_prompt, 120)
         return result.strip() if result else None
 
-    def translate_legislation_title(self, title: str) -> str | None:
-        if not self.enabled or not title.strip():
+    def classify_person_type(self, title: str, body: str, source_url: str) -> str | None:
+        if not self.enabled:
             return None
         system_prompt = (
-            "You translate U.S. bill titles into Traditional Chinese (Taiwan usage). "
-            "Return only the translated title. "
-            "Do not include explanations, notes, markdown, or bilingual output."
+            "You classify a US public figure page into one category. "
+            "Return only one token from: federal_official, federal_senator, federal_house, state_official, state_legislator."
         )
-        user_prompt = f"English bill title: {title}\nTask: Translate into Traditional Chinese title only."
-        result = _responses_text(self.settings.openai_api_key or "", self.settings.openai_model, system_prompt, user_prompt, 120)
-        return result.strip() if result else None
+        user_prompt = (
+            f"URL: {source_url}\n"
+            f"Title: {title}\n"
+            f"Body excerpt: {body[:1200]}\n"
+            "Task: choose exactly one category token."
+        )
+        result = _responses_text(self.settings.openai_api_key or "", self.settings.openai_model, system_prompt, user_prompt, 24)
+        if not result:
+            return None
+        token = result.strip().lower()
+        allowed = {"federal_official", "federal_senator", "federal_house", "state_official", "state_legislator"}
+        return token if token in allowed else None
+
+    def classify_event_category(self, title: str, body: str, source_url: str) -> str | None:
+        if not self.enabled:
+            return None
+        system_prompt = (
+            "Classify event category for US-Taiwan monitoring. "
+            "Return only one token from: federal_official, congress_member, state_official, state_legislator, other."
+        )
+        user_prompt = (
+            f"URL: {source_url}\n"
+            f"Title: {title}\n"
+            f"Body excerpt: {body[:1500]}\n"
+            "Task: choose exactly one category token."
+        )
+        result = _responses_text(self.settings.openai_api_key or "", self.settings.openai_model, system_prompt, user_prompt, 20)
+        if not result:
+            return None
+        token = result.strip().lower()
+        allowed = {"federal_official", "congress_member", "state_official", "state_legislator", "other"}
+        return token if token in allowed else None
+
+    def classify_legislation_scope(self, title: str, body: str, source_url: str) -> dict[str, str] | None:
+        if not self.enabled:
+            return None
+        system_prompt = (
+            "Classify legislation scope. Return strict JSON with keys: "
+            "level (federal/state/other), chamber (senate/house/unknown), legislation_type (bill/resolution/joint_resolution/concurrent_resolution/other)."
+        )
+        user_prompt = (
+            f"URL: {source_url}\n"
+            f"Title: {title}\n"
+            f"Body excerpt: {body[:1600]}\n"
+            "Task: Return JSON only."
+        )
+        result = _responses_text(self.settings.openai_api_key or "", self.settings.openai_model, system_prompt, user_prompt, 80)
+        if not result:
+            return None
+        try:
+            payload = json.loads(result)
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        level = str(payload.get("level") or "").lower()
+        chamber = str(payload.get("chamber") or "").lower()
+        legislation_type = str(payload.get("legislation_type") or "").lower()
+        if level not in {"federal", "state", "other"}:
+            level = "other"
+        if chamber not in {"senate", "house", "unknown"}:
+            chamber = "unknown"
+        allowed_types = {"bill", "resolution", "joint_resolution", "concurrent_resolution", "other"}
+        if legislation_type not in allowed_types:
+            legislation_type = "other"
+        return {"level": level, "chamber": chamber, "legislation_type": legislation_type}
 
 
 @lru_cache(maxsize=512)
