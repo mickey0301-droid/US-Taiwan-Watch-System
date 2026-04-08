@@ -16,6 +16,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 logger = logging.getLogger(__name__)
+GOOGLE_SHEET_DISABLED_MESSAGE = "Google Sheet integration is permanently disabled in this deployment."
 
 
 class GoogleSheetsConfigurationError(RuntimeError):
@@ -38,6 +39,7 @@ class GoogleSheetsService:
         self.settings = get_settings()
 
     def _require_config(self) -> tuple[str | None, str | None, str]:
+        raise GoogleSheetsConfigurationError(GOOGLE_SHEET_DISABLED_MESSAGE)
         service_account_file = self.settings.google_service_account_file
         service_account_json = self.settings.google_service_account_json
         sheet_id = self.settings.google_sheet_id

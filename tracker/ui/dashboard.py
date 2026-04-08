@@ -5,8 +5,7 @@ from functools import lru_cache
 import re
 
 import streamlit as st
-from sqlalchemy import and_, case, distinct, func, select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import func, select
 
 from tracker.config import get_settings, use_google_sheet_primary_mode
 from tracker.db import session_scope
@@ -233,6 +232,11 @@ def _render_metrics(
 
 def _render_database_persistence_status(lang: str) -> None:
     database_url = get_settings().database_url
+    st.caption(
+        "Google Sheet 已永久停用；目前僅使用資料庫。"
+        if lang == "zh-TW"
+        else "Google Sheet is permanently disabled; DB-only mode is active."
+    )
     if database_url.startswith("postgresql+psycopg://"):
         st.caption(
             "資料庫模式：PostgreSQL（持久化，重新部署後資料會保留）"
@@ -254,30 +258,32 @@ def _count_event_categories_db(session) -> dict[str, int]:
         "state_officials": 0,
         "state_legislators": 0,
     }
-    category_expr = case(
-        (and_(Office.level == "federal", Office.branch == "executive"), "federal_officials"),
-        (and_(Office.level == "federal", Office.branch == "legislative"), "congress_members"),
-        (and_(Office.level == "state", Office.branch == "executive"), "state_officials"),
-        (and_(Office.level == "state", Office.branch == "legislative"), "state_legislators"),
-        else_=None,
-    )
-    try:
-        rows = session.execute(
-            select(
-                category_expr.label("category"),
-                func.count(distinct(StatementParticipant.statement_id)).label("statement_count"),
-            )
-            .join(Appointment, Appointment.person_id == StatementParticipant.person_id)
-            .join(Office, Office.id == Appointment.office_id)
-            .where(Appointment.is_current.is_(True))
-            .where(category_expr.is_not(None))
-            .group_by(category_expr)
-        ).all()
-    except SQLAlchemyError:
-        return counts
-    for category, statement_count in rows:
-        if category in counts:
-            counts[category] = int(statement_count or 0)
+    participant_rows = session.execute(
+        select(StatementParticipant.statement_id, Office.level, Office.branch)
+        .join(Appointment, Appointment.person_id == StatementParticipant.person_id)
+        .join(Office, Office.id == Appointment.office_id)
+    ).all()
+    owner_rows = session.execute(
+        select(Statement.id, Office.level, Office.branch)
+        .join(Appointment, Appointment.person_id == Statement.person_id)
+        .join(Office, Office.id == Appointment.office_id)
+        .where(Statement.person_id.is_not(None))
+    ).all()
+    bucket_statement_ids: dict[str, set[int]] = {key: set() for key in counts}
+    for statement_id, level, branch in [*participant_rows, *owner_rows]:
+        category = None
+        if level == "federal" and branch == "executive":
+            category = "federal_officials"
+        elif level == "federal" and branch == "legislative":
+            category = "congress_members"
+        elif level == "state" and branch == "executive":
+            category = "state_officials"
+        elif level == "state" and branch == "legislative":
+            category = "state_legislators"
+        if category:
+            bucket_statement_ids[category].add(int(statement_id))
+    for key in counts:
+        counts[key] = len(bucket_statement_ids[key])
     return counts
 
 

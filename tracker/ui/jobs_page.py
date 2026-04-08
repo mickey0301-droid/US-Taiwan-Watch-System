@@ -281,12 +281,23 @@ def render(lang: str, labels: dict[str, str]) -> None:
     if maint_col1.button("清理重複連結資料" if lang == "zh-TW" else "Dedupe records by URL", key="run-dedupe-main", use_container_width=True):
         with session_scope() as session:
             st.json(DedupeCleanupService(session).cleanup_all())
-    if maint_col2.button("匯入 Google Sheet 資料" if lang == "zh-TW" else "Import Google Sheet data", key="run-import-sheet", use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["import_google_sheet_data"](), lang))
-    if maint_col3.button("同步本機資料到 Google Sheet" if lang == "zh-TW" else "Export local data to Google Sheet", key="run-export-sheet", use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["export_google_sheet_data"](), lang))
+    maint_col2.button(
+        "Google Sheet 已永久停用" if lang == "zh-TW" else "Google Sheet permanently disabled",
+        key="sheet-disabled-import",
+        disabled=True,
+        use_container_width=True,
+    )
+    maint_col3.button(
+        "Google Sheet 已永久停用" if lang == "zh-TW" else "Google Sheet permanently disabled",
+        key="sheet-disabled-export",
+        disabled=True,
+        use_container_width=True,
+    )
+    st.caption(
+        "本系統已改為資料庫單一路徑，永遠不再使用 Google Sheet。"
+        if lang == "zh-TW"
+        else "This system is DB-only and no longer uses Google Sheet."
+    )
 
     def _render_job_grid(job_items: list[tuple[str, str, str]]) -> None:
         cols = st.columns(2)

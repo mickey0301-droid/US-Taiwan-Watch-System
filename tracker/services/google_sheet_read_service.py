@@ -5,7 +5,11 @@ import logging
 import re
 from typing import Any
 
-from tracker.services.google_sheets_service import GoogleSheetsConfigurationError, GoogleSheetsService
+from tracker.services.google_sheets_service import (
+    GOOGLE_SHEET_DISABLED_MESSAGE,
+    GoogleSheetsConfigurationError,
+    GoogleSheetsService,
+)
 
 
 _URL_PATTERN = re.compile(r"https?://[^\s|]+")
@@ -15,7 +19,7 @@ logger = logging.getLogger(__name__)
 class GoogleSheetReadService:
     def __init__(self) -> None:
         self.google_sheets = GoogleSheetsService()
-        self.last_error: str | None = None
+        self.last_error: str | None = GOOGLE_SHEET_DISABLED_MESSAGE
 
     def has_any_data(self) -> bool:
         return bool(self.list_people() or self.list_events() or self.list_legislation())
