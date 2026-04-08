@@ -543,7 +543,10 @@ def _render_member_roster(
         department = _bilingual_text(department_en, department_zh)
 
         office_zh = _position_label_zh(office)
-        office_bilingual = _bilingual_text(office, office_zh)
+        if department_en == "Department of State" and _is_probable_person_name_title(office, name):
+            office_bilingual = _bilingual_text("Title pending", "職稱待補")
+        else:
+            office_bilingual = _bilingual_text(office, office_zh)
 
         if selected_category in {"state_senate", "state_house"}:
             district_label = district or "Unspecified district"
@@ -1138,20 +1141,64 @@ def _military_unit_sort_key(name: str | None) -> tuple[int, str]:
 
 
 def _display_office_name(office_name: str | None, appointment_payload: dict | None = None) -> str:
+    def _normalize_title(text: str) -> str:
+        value = " ".join(str(text or "").split()).strip()
+        if not value:
+            return ""
+        value = re.sub(r"\[\s*\d+\s*\]", "", value).strip()
+        value = re.sub(r"\s+", " ", value).strip()
+        value = re.sub(r"\s+\d+\s+FAM\s+[0-9A-Za-z.-]+$", "", value, flags=re.I).strip()
+        value = re.sub(r"^\((acting|interim)\)\s*,?\s*", r"\1 ", value, flags=re.I).strip()
+        value = re.sub(r"^(acting|interim)\s*[,:\-]?\s*", r"\1 ", value, flags=re.I).strip()
+        return value
+
     payload = appointment_payload or {}
     payload_title = payload.get("office_title") if isinstance(payload, dict) else None
-    clean_title = " ".join(str(payload_title).split()).strip() if payload_title else ""
+    clean_title = _normalize_title(str(payload_title)) if payload_title else ""
     if clean_title:
         return clean_title
-    clean_office = " ".join(str(office_name or "").split()).strip()
+    clean_office = _normalize_title(str(office_name or ""))
     if clean_office.startswith(":"):
         clean_office = clean_office[1:].strip()
     if ":" in clean_office:
         prefix, suffix = clean_office.split(":", 1)
         if suffix.strip():
-            return suffix.strip()
-        return prefix.strip()
+            return _normalize_title(suffix.strip())
+        return _normalize_title(prefix.strip())
     return clean_office
+
+
+def _is_probable_person_name_title(title: str, person_name: str) -> bool:
+    title_text = str(title or "").strip()
+    name_text = str(person_name or "").strip()
+    if not title_text:
+        return False
+    if title_text.lower() == name_text.lower():
+        return True
+    words = [w for w in re.split(r"\s+", title_text) if w]
+    if len(words) < 2 or len(words) > 4:
+        return False
+    lower_title = title_text.lower()
+    role_keywords = (
+        "secretary",
+        "deputy",
+        "under secretary",
+        "assistant secretary",
+        "ambassador",
+        "coordinator",
+        "envoy",
+        "representative",
+        "director",
+        "advisor",
+        "adviser",
+        "officer",
+        "chief",
+        "counsel",
+        "commissioner",
+    )
+    if any(keyword in lower_title for keyword in role_keywords):
+        return False
+    return all(re.match(r"^[A-Z][A-Za-z'`.-]+$", word) for word in words)
 
 
 def _format_background_source(field_name: str, person_data: dict[str, object], labels: dict[str, str], lang: str) -> str | None:
