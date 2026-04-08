@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 
 import pandas as pd
 import streamlit as st
@@ -13,6 +14,24 @@ from tracker.services.statements_service import StatementsService
 from tracker.ui.display import localize_dataframe, localize_value
 from tracker.ui import dashboard
 from tracker.ui.source_labels import statement_source_label
+
+
+def _matched_hits(value: object) -> list[str]:
+    payload = value
+    if isinstance(payload, str):
+        text = payload.strip()
+        if not text:
+            return []
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return []
+    if not isinstance(payload, dict):
+        return []
+    hits = payload.get("hits")
+    if isinstance(hits, list):
+        return [str(item).strip() for item in hits if str(item).strip()]
+    return []
 
 
 def render(lang: str, labels: dict[str, str]) -> None:
@@ -126,7 +145,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
             dashboard._render_event_card(index=1, event=event_payload, lang=lang)
 
             st.write(f"{labels['attached_sources']}: {service.get_source_count(selected.id)}")
-            st.write(f"{labels['keywords']}: {', '.join((selected.matched_keywords or {}).get('hits', [])) or labels['unknown']}")
+            st.write(f"{labels['keywords']}: {', '.join(_matched_hits(selected.matched_keywords)) or labels['unknown']}")
 
         rows = [
             {
@@ -135,7 +154,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 "review_status": item.review_status,
                 "event_source_preference": statement_source_label(item, lang, str(localize_value(item.event_source_preference, lang))),
                 "source_count": service.get_source_count(item.id),
-                "matched_keywords": ", ".join((item.matched_keywords or {}).get("hits", [])),
+                "matched_keywords": ", ".join(_matched_hits(item.matched_keywords)),
             }
             for item in filtered_events
         ]
