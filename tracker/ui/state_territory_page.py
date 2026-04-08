@@ -21,7 +21,7 @@ from tracker.models import (
 from tracker.services.google_sheet_read_service import GoogleSheetReadService
 from tracker.services.statements_service import StatementsService
 from tracker.ui import dashboard
-from tracker.ui.navigation import person_detail_href
+from tracker.ui.navigation import person_detail_anchor_html, person_detail_href
 
 STATE_EXECUTIVE_ROLE_ZH = {
     "Governor": "州長",
@@ -655,14 +655,14 @@ def _render_state_legislature_roster(container, legislature_roster: dict[str, li
             name = item.get("name") or ""
             person_id = str(item.get("person_id") or "").strip()
             if name and person_id:
-                member = f"[{_clean_cell(name)}]({person_detail_href(int(person_id))})"
+                member = person_detail_anchor_html(_clean_cell(name), int(person_id))
             else:
                 member = _clean_cell(name)
             district_text = district or ("未填選區" if lang == "zh-TW" else "Unspecified district")
             department = title
             position = f"{_bilingual_text(position_label_en, position_label_zh)} (第{district_text}選區 / District {district_text})"
             lines.append(f"| {member} | {_clean_cell(department)} | {_clean_cell(position)} |")
-        container.markdown("\n".join(lines))
+        container.markdown("\n".join(lines), unsafe_allow_html=True)
 
     _render_chamber(
         "州參議院",
@@ -697,10 +697,10 @@ def _render_state_executive_roster(container, executive_roster: list[dict[str, s
         name = item.get("name") or ""
         person_id = str(item.get("person_id") or "").strip()
         if name and person_id:
-            official = f"[{_clean_cell(name)}]({person_detail_href(int(person_id))})"
+            official = person_detail_anchor_html(_clean_cell(name), int(person_id))
         else:
             official = _clean_cell(name)
         department = _bilingual_text("State Government", "州政府")
         role_bilingual = _bilingual_text(role, STATE_EXECUTIVE_ROLE_ZH.get(role, ""))
         lines.append(f"| {official} | {_clean_cell(department)} | {_clean_cell(role_bilingual)} |")
-    container.markdown("\n".join(lines))
+    container.markdown("\n".join(lines), unsafe_allow_html=True)

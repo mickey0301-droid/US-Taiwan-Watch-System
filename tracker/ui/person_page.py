@@ -17,7 +17,7 @@ from tracker.services.statements_service import StatementsService
 from tracker.services.x_candidate_confirmation_service import XCandidateConfirmationService
 from tracker.ui.badges import render_source_badges
 from tracker.ui.display import localize_dataframe, localize_value, style_source_columns
-from tracker.ui.navigation import person_detail_href, render_person_links
+from tracker.ui.navigation import person_detail_anchor_html, person_detail_href, render_person_links
 from tracker.ui.social_links import render_social_links
 from tracker.ui.source_labels import source_label, statement_source_label
 from tracker.utils.congress import build_congress_member_search_url, extract_legislator_metadata
@@ -555,10 +555,10 @@ def _render_member_roster(
         else:
             position = office_bilingual
 
-        name_link = f"[{_clean_cell(name)}]({person_detail_href(person_id)})"
+        name_link = person_detail_anchor_html(_clean_cell(name), person_id)
         lines.append(f"| {name_link} | {_clean_cell(department)} | {_clean_cell(position)} |")
 
-    st.markdown("\n".join(lines))
+    st.markdown("\n".join(lines), unsafe_allow_html=True)
 
 
 def _render_white_house_roster(
@@ -625,9 +625,9 @@ def _render_white_house_roster(
             hierarchy = _executive_hierarchy(row[4], row[6])
             subdepartment_en = (hierarchy[1] or "White House Office").strip()
             subdepartment = _bilingual_text(subdepartment_en, _subdepartment_label(subdepartment_en, "zh-TW", "White House"))
-            name_link = f"[{_clean_cell(name)}]({person_detail_href(person_id)})"
+            name_link = person_detail_anchor_html(_clean_cell(name), person_id)
             lines.append(f"| {name_link} | {_clean_cell(subdepartment)} | {_clean_cell(office_bilingual)} |")
-        st.markdown("\n".join(lines))
+        st.markdown("\n".join(lines), unsafe_allow_html=True)
 
     _render_table("白宮辦公室", "White House Office", office_rows)
     _render_table("國家安全會議", "National Security Council", nsc_rows)

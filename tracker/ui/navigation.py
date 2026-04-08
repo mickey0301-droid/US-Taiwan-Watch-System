@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from html import escape
+
 import streamlit as st
 
 
 def person_detail_href(person_id: int) -> str:
     return f"?page=person_detail&person_id={int(person_id)}"
+
+
+def person_detail_anchor_html(label: str, person_id: int) -> str:
+    href = person_detail_href(int(person_id))
+    text = escape(str(label or "").strip())
+    return f'<a href="{href}" target="_self">{text}</a>'
 
 
 def render_person_links(
@@ -23,6 +31,6 @@ def render_person_links(
         target_column = columns[index % len(columns)]
         with target_column:
             if person_id:
-                st.markdown(f"[{display_name}]({person_detail_href(int(person_id))})")
+                st.markdown(person_detail_anchor_html(display_name, int(person_id)), unsafe_allow_html=True)
             else:
                 st.caption(display_name)
