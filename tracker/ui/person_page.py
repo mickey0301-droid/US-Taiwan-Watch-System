@@ -641,6 +641,18 @@ def _executive_hierarchy(office_name: str | None, appointment_payload: dict | No
 
 def _is_military_role(office_name: str | None, appointment_payload: dict | None) -> bool:
     title = _display_office_name(office_name, appointment_payload).lower()
+    civilian_indicators = [
+        "secretary of defense",
+        "deputy secretary of defense",
+        "under secretary",
+        "assistant secretary",
+        "general counsel",
+        "chief financial officer",
+        "chief data and artificial intelligence officer",
+        "comptroller",
+    ]
+    if any(keyword in title for keyword in civilian_indicators):
+        return False
     return any(
         keyword in title
         for keyword in [
@@ -1046,7 +1058,8 @@ def render(lang: str, labels: dict[str, str]) -> None:
         settings.google_sheet_id
         and (settings.google_service_account_json or settings.google_service_account_file)
     )
-    prefer_sheet_person_view = use_google_sheet_primary_mode() or has_sheet_config
+    # DB-first: only use sheet fallback when explicitly configured as primary.
+    prefer_sheet_person_view = use_google_sheet_primary_mode()
 
     if prefer_sheet_person_view:
         if _render_google_sheet_fallback_v2(lang, labels, pending_person_id):
@@ -1976,6 +1989,10 @@ def _sheet_person_matches_category(person: dict[str, object], category_key: str)
     is_house = any(token in office_title for token in ("rep", "house", "assembly", "delegate"))
     if category_key == "federal_executive":
         return level == "federal" and branch == "executive"
+    if category_key == "federal_military":
+        if not (level == "federal" and branch == "executive"):
+            return False
+        return _is_military_role(str(person.get("office_title") or ""), {"office_title": person.get("office_title")})
     if category_key == "federal_senate":
         return level == "federal" and branch == "legislative" and is_senate
     if category_key == "federal_house":

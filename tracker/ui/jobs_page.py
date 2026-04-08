@@ -99,224 +99,14 @@ def _validation_columns(lang: str) -> dict[str, str]:
 
 def render(lang: str, labels: dict[str, str]) -> None:
     st.header(labels["jobs_scheduler"])
-
-    row1_col1, row1_col2 = st.columns(2)
-    row2_col1, row2_col2 = st.columns(2)
-    row3_col1, row3_col2 = st.columns(2)
-    row4_col1, row4_col2 = st.columns(2)
-    row5_col1, row5_col2 = st.columns(2)
-    row6_col1, row6_col2 = st.columns(2)
-    row7_col1, row7_col2 = st.columns(2)
-    row8_col1, row8_col2 = st.columns(2)
-    row9_col1, row9_col2 = st.columns(2)
-    row10_col1, row10_col2 = st.columns(2)
-
-    if row1_col1.button(labels["run_sample_sync"], use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["sync_officials"](), lang))
-    if row1_col2.button(labels["run_profile_enrichment"], use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["enrich_profiles"](), lang))
-
-    x_backfill_label = labels.get("run_x_profile_backfill", "補全 X 社群帳號" if lang == "zh-TW" else "Backfill X profiles")
-    if row2_col1.button(x_backfill_label, use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["backfill_x_profiles"](), lang))
-    if row2_col2.button(labels["run_portrait_backfill"], use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["backfill_portraits"](), lang))
-
-    discovery_label = labels.get(
-        "run_official_discovery",
-        "批次準備官方資料搜尋" if lang == "zh-TW" else "Prepare official discovery",
+    st.caption(
+        "先用下方「自動排程」與「手動網址匯入」，舊同步工具已收合到頁面底部。"
+        if lang == "zh-TW"
+        else "Use the schedule and manual import sections first. Legacy jobs are grouped in collapsed panels below."
     )
-    if row3_col1.button(discovery_label, use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["discover_official_sources"](), lang))
-    predecessor_label = labels.get(
-        "run_wikipedia_predecessors",
-        "從現任維基頁擴充前任人物" if lang == "zh-TW" else "Seed predecessors from current Wikipedia pages",
-    )
-    if row3_col2.button(predecessor_label, use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["seed_wikipedia_predecessors"](), lang))
 
-    roster_label = labels.get(
-        "run_historical_roster_seed",
-        "建立歷史名單框架" if lang == "zh-TW" else "Seed historical rosters",
-    )
-    if row4_col1.button(roster_label, use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["seed_historical_rosters"](), lang))
-    taiwan_bootstrap_label = labels.get(
-        "run_current_taiwan_bootstrap",
-        "建立 2026 Taiwan 追蹤器" if lang == "zh-TW" else "Bootstrap 2026 Taiwan trackers",
-    )
-    if row4_col2.button(taiwan_bootstrap_label, use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["bootstrap_current_taiwan_2026"](), lang))
-
-    x_candidate_label = "建立現任聯邦人物 X 候選搜尋" if lang == "zh-TW" else "Seed current federal X search links"
-    if row5_col1.button(x_candidate_label, use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["seed_current_legislator_x_candidates"](), lang))
-    x_discovery_label = "解析現任聯邦人物 X 候選結果" if lang == "zh-TW" else "Discover current federal X candidates"
-    if row5_col2.button(x_discovery_label, use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["discover_current_legislator_x_candidates"](), lang))
-    state_department_label = "同步國務院 Wikipedia 名單" if lang == "zh-TW" else "Sync State Department Wikipedia roster"
-    if row6_col1.button(state_department_label, use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["sync_state_department_wikipedia"](), lang))
-    federal_department_label = "同步聯邦部門 Wikipedia 名單" if lang == "zh-TW" else "Sync federal department Wikipedia roster"
-    if row6_col2.button(federal_department_label, use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["sync_federal_department_wikipedia"](), lang))
-    if row7_col1.button("同步媒體工作" if lang == "zh-TW" else "Run media sync", use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["sync_media"](), lang))
-    if row7_col2.button("清理工作" if lang == "zh-TW" else "Run cleanup", use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["cleanup"](), lang))
-
-    current_federal_background_label = "補全現任聯邦人物背景資料" if lang == "zh-TW" else "Enrich current federal people backgrounds"
-    if row8_col1.button(current_federal_background_label, use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["enrich_current_federal_backgrounds"](), lang))
-    taiwan_chinese_sources_label = "建立台灣中文來源追蹤" if lang == "zh-TW" else "Bootstrap Taiwan Chinese source tracking"
-    if row8_col2.button(taiwan_chinese_sources_label, use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["bootstrap_taiwan_chinese_sources"](), lang))
-    arizona_legislation_label = "同步 Arizona 涉台法案" if lang == "zh-TW" else "Sync Arizona Taiwan legislation"
-    if row9_col1.button(arizona_legislation_label, use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["seed_arizona_taiwan_legislation"](), lang))
-
-    congress_detail_label = "è£œå…¨ Congress.gov æ³•æ¡ˆè©³æƒ…" if lang == "zh-TW" else "Enrich Congress.gov bill details"
-    if row9_col2.button(congress_detail_label, use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["enrich_congress_bill_details"](), lang))
-    import_sheet_label = "匯入 Google Sheet 資料" if lang == "zh-TW" else "Import Google Sheet data"
-    if row10_col1.button(import_sheet_label, use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["import_google_sheet_data"](), lang))
-    export_sheet_label = "同步本機資料到 Google Sheet" if lang == "zh-TW" else "Export local data to Google Sheet"
-    if row10_col2.button(export_sheet_label, use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["export_google_sheet_data"](), lang))
-    cleanup_legislation_people_label = "清理立法髒人名" if lang == "zh-TW" else "Clean malformed legislation people"
-    if row7_col2.button(cleanup_legislation_people_label, use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["cleanup_malformed_legislation_people"](), lang))
-    dedupe_records_label = "清理重複連結資料" if lang == "zh-TW" else "Dedupe records by URL"
-    if row9_col2.button(dedupe_records_label, use_container_width=True):
-        st.subheader(labels["job_result"])
-        st.json(_localize_job_result(JOB_REGISTRY["dedupe_records_by_url"](), lang))
-
-    st.divider()
-    st.subheader("手動網址批次匯入" if lang == "zh-TW" else "Manual URL Batch Import")
-
-    with st.form("manual_people_import_form"):
-        st.markdown("**1. 人物匯入（可批次）**" if lang == "zh-TW" else "**1. People import (batch)**")
-        people_urls = st.text_area(
-            "人物網址（每行一筆）" if lang == "zh-TW" else "Person URLs (one per line)",
-            height=120,
-            key="manual_people_urls",
-        )
-        people_type = st.selectbox(
-            "人物類型" if lang == "zh-TW" else "Person type",
-            options=[
-                ("auto", "自動判斷（AI+規則）" if lang == "zh-TW" else "Auto classify (AI + rules)"),
-                ("federal_official", "聯邦官員" if lang == "zh-TW" else "Federal official"),
-                ("federal_senator", "聯邦參議員" if lang == "zh-TW" else "Federal senator"),
-                ("federal_house", "聯邦眾議員" if lang == "zh-TW" else "Federal house member"),
-                ("state_official", "州政府官員" if lang == "zh-TW" else "State official"),
-                ("state_legislator", "州議員" if lang == "zh-TW" else "State legislator"),
-            ],
-            format_func=lambda item: item[1],
-            key="manual_people_type",
-        )
-        state_name = st.text_input("州名（州層級必填）" if lang == "zh-TW" else "State name (required for state scopes)", key="manual_people_state")
-        chamber_hint = st.selectbox(
-            "州議院提示（選填）" if lang == "zh-TW" else "State chamber hint (optional)",
-            options=["", "senate", "house"],
-            key="manual_people_chamber",
-        )
-        submit_people = st.form_submit_button("批次新增人物" if lang == "zh-TW" else "Batch add people")
-    if submit_people:
-        with session_scope() as session:
-            service = ManualUrlImportService(session)
-            result = service.import_people_from_urls(
-                raw_urls=people_urls,
-                person_type=people_type[0],
-                state_name=state_name,
-                chamber_hint=chamber_hint,
-            )
-            dedupe = DedupeCleanupService(session).cleanup_all()
-            st.json(
-                {
-                    "created": result.created,
-                    "updated": result.updated,
-                    "failed": result.failed,
-                    "dedupe": dedupe,
-                    "items": result.items[:50] if result.items else [],
-                }
-            )
-
-    with st.form("manual_events_import_form"):
-        st.markdown("**2. 事件匯入（系統自動分類）**" if lang == "zh-TW" else "**2. Event import (auto-classified)**")
-        event_urls = st.text_area(
-            "事件網址（每行一筆）" if lang == "zh-TW" else "Event URLs (one per line)",
-            height=120,
-            key="manual_event_urls_batch",
-        )
-        submit_events = st.form_submit_button("批次新增事件" if lang == "zh-TW" else "Batch add events")
-    if submit_events:
-        with session_scope() as session:
-            service = ManualUrlImportService(session)
-            result = service.import_events_from_urls(raw_urls=event_urls)
-            dedupe = DedupeCleanupService(session).cleanup_all()
-            st.json(
-                {
-                    "created": result.created,
-                    "updated": result.updated,
-                    "failed": result.failed,
-                    "dedupe": dedupe,
-                    "items": result.items[:50] if result.items else [],
-                }
-            )
-
-    with st.form("manual_legislation_import_form"):
-        st.markdown("**3. 法案匯入（系統自動分類）**" if lang == "zh-TW" else "**3. Legislation import (auto-classified)**")
-        legislation_urls = st.text_area(
-            "法案網址（每行一筆）" if lang == "zh-TW" else "Legislation URLs (one per line)",
-            height=120,
-            key="manual_legislation_urls_batch",
-        )
-        submit_legislation = st.form_submit_button("批次新增法案" if lang == "zh-TW" else "Batch add legislation")
-    if submit_legislation:
-        with session_scope() as session:
-            service = ManualUrlImportService(session)
-            result = service.import_legislation_from_urls(raw_urls=legislation_urls)
-            dedupe = DedupeCleanupService(session).cleanup_all()
-            st.json(
-                {
-                    "created": result.created,
-                    "updated": result.updated,
-                    "failed": result.failed,
-                    "dedupe": dedupe,
-                    "items": result.items[:50] if result.items else [],
-                }
-            )
-
-    dedupe_label = "執行全庫去重（人物/事件/法案）" if lang == "zh-TW" else "Run full dedupe (people/events/legislation)"
-    if st.button(dedupe_label, use_container_width=True):
-        with session_scope() as session:
-            result = DedupeCleanupService(session).cleanup_all()
-            st.json(result)
-
-    st.divider()
     st.subheader("自動排程搜尋更新" if lang == "zh-TW" else "Scheduled auto update")
+
     with st.form("create_collection_schedule_form"):
         schedule_name = st.text_input("排程名稱" if lang == "zh-TW" else "Schedule name", value=f"auto-{datetime.utcnow().strftime('%Y%m%d-%H%M')}")
         entity_scope = st.selectbox(
@@ -386,6 +176,157 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     schedule_service.set_enabled(task.id, not task.enabled)
                     st.success("已更新排程狀態" if lang == "zh-TW" else "Schedule status updated")
 
+    st.divider()
+    st.subheader("手動網址批次匯入" if lang == "zh-TW" else "Manual URL Batch Import")
+    import_tab1, import_tab2, import_tab3 = st.tabs(
+        ["人物" if lang == "zh-TW" else "People", "事件" if lang == "zh-TW" else "Events", "法案" if lang == "zh-TW" else "Legislation"]
+    )
+
+    with import_tab1:
+        with st.form("manual_people_import_form"):
+            people_urls = st.text_area(
+                "人物網址（每行一筆）" if lang == "zh-TW" else "Person URLs (one per line)",
+                height=130,
+                key="manual_people_urls",
+            )
+            people_type = st.selectbox(
+                "人物類型" if lang == "zh-TW" else "Person type",
+                options=[
+                    ("auto", "自動判斷（AI+規則）" if lang == "zh-TW" else "Auto classify (AI + rules)"),
+                    ("federal_official", "聯邦官員" if lang == "zh-TW" else "Federal official"),
+                    ("federal_senator", "聯邦參議員" if lang == "zh-TW" else "Federal senator"),
+                    ("federal_house", "聯邦眾議員" if lang == "zh-TW" else "Federal house member"),
+                    ("state_official", "州政府官員" if lang == "zh-TW" else "State official"),
+                    ("state_legislator", "州議員" if lang == "zh-TW" else "State legislator"),
+                ],
+                format_func=lambda item: item[1],
+                key="manual_people_type",
+            )
+            state_name = st.text_input("州名（州層級必填）" if lang == "zh-TW" else "State name (required for state scopes)", key="manual_people_state")
+            chamber_hint = st.selectbox(
+                "州議院提示（選填）" if lang == "zh-TW" else "State chamber hint (optional)",
+                options=["", "senate", "house"],
+                key="manual_people_chamber",
+            )
+            submit_people = st.form_submit_button("批次新增人物" if lang == "zh-TW" else "Batch add people")
+        if submit_people:
+            with session_scope() as session:
+                service = ManualUrlImportService(session)
+                result = service.import_people_from_urls(
+                    raw_urls=people_urls,
+                    person_type=people_type[0],
+                    state_name=state_name,
+                    chamber_hint=chamber_hint,
+                )
+                dedupe = DedupeCleanupService(session).cleanup_all()
+                st.json(
+                    {
+                        "created": result.created,
+                        "updated": result.updated,
+                        "failed": result.failed,
+                        "dedupe": dedupe,
+                        "items": result.items[:50] if result.items else [],
+                    }
+                )
+
+    with import_tab2:
+        with st.form("manual_events_import_form"):
+            event_urls = st.text_area(
+                "事件網址（每行一筆）" if lang == "zh-TW" else "Event URLs (one per line)",
+                height=130,
+                key="manual_event_urls_batch",
+            )
+            submit_events = st.form_submit_button("批次新增事件" if lang == "zh-TW" else "Batch add events")
+        if submit_events:
+            with session_scope() as session:
+                service = ManualUrlImportService(session)
+                result = service.import_events_from_urls(raw_urls=event_urls)
+                dedupe = DedupeCleanupService(session).cleanup_all()
+                st.json(
+                    {
+                        "created": result.created,
+                        "updated": result.updated,
+                        "failed": result.failed,
+                        "dedupe": dedupe,
+                        "items": result.items[:50] if result.items else [],
+                    }
+                )
+
+    with import_tab3:
+        with st.form("manual_legislation_import_form"):
+            legislation_urls = st.text_area(
+                "法案網址（每行一筆）" if lang == "zh-TW" else "Legislation URLs (one per line)",
+                height=130,
+                key="manual_legislation_urls_batch",
+            )
+            submit_legislation = st.form_submit_button("批次新增法案" if lang == "zh-TW" else "Batch add legislation")
+        if submit_legislation:
+            with session_scope() as session:
+                service = ManualUrlImportService(session)
+                result = service.import_legislation_from_urls(raw_urls=legislation_urls)
+                dedupe = DedupeCleanupService(session).cleanup_all()
+                st.json(
+                    {
+                        "created": result.created,
+                        "updated": result.updated,
+                        "failed": result.failed,
+                        "dedupe": dedupe,
+                        "items": result.items[:50] if result.items else [],
+                    }
+                )
+
+    st.divider()
+    st.subheader("維護工具" if lang == "zh-TW" else "Maintenance")
+    maint_col1, maint_col2, maint_col3 = st.columns(3)
+    if maint_col1.button("清理重複連結資料" if lang == "zh-TW" else "Dedupe records by URL", key="run-dedupe-main", use_container_width=True):
+        with session_scope() as session:
+            st.json(DedupeCleanupService(session).cleanup_all())
+    if maint_col2.button("匯入 Google Sheet 資料" if lang == "zh-TW" else "Import Google Sheet data", key="run-import-sheet", use_container_width=True):
+        st.subheader(labels["job_result"])
+        st.json(_localize_job_result(JOB_REGISTRY["import_google_sheet_data"](), lang))
+    if maint_col3.button("同步本機資料到 Google Sheet" if lang == "zh-TW" else "Export local data to Google Sheet", key="run-export-sheet", use_container_width=True):
+        st.subheader(labels["job_result"])
+        st.json(_localize_job_result(JOB_REGISTRY["export_google_sheet_data"](), lang))
+
+    def _render_job_grid(job_items: list[tuple[str, str, str]]) -> None:
+        cols = st.columns(2)
+        for idx, (key, label, registry_key) in enumerate(job_items):
+            col = cols[idx % 2]
+            if col.button(label, key=key, use_container_width=True):
+                st.subheader(labels["job_result"])
+                st.json(_localize_job_result(JOB_REGISTRY[registry_key](), lang))
+
+    common_jobs = [
+        ("job-sync-officials", labels["run_sample_sync"], "sync_officials"),
+        ("job-enrich-profiles", labels["run_profile_enrichment"], "enrich_profiles"),
+        ("job-backfill-x", labels.get("run_x_profile_backfill", "補全 X 社群帳號" if lang == "zh-TW" else "Backfill X profiles"), "backfill_x_profiles"),
+        ("job-backfill-portraits", labels["run_portrait_backfill"], "backfill_portraits"),
+        ("job-sync-media", "同步媒體工作" if lang == "zh-TW" else "Run media sync", "sync_media"),
+        ("job-cleanup", "清理工作" if lang == "zh-TW" else "Run cleanup", "cleanup"),
+    ]
+    advanced_jobs = [
+        ("job-discover-official", labels.get("run_official_discovery", "批次準備官方資料搜尋" if lang == "zh-TW" else "Prepare official discovery"), "discover_official_sources"),
+        ("job-seed-predecessor", labels.get("run_wikipedia_predecessors", "從現任維基頁擴充前任人物" if lang == "zh-TW" else "Seed predecessors from current Wikipedia pages"), "seed_wikipedia_predecessors"),
+        ("job-seed-roster", labels.get("run_historical_roster_seed", "建立歷史名單框架" if lang == "zh-TW" else "Seed historical rosters"), "seed_historical_rosters"),
+        ("job-bootstrap-2026", labels.get("run_current_taiwan_bootstrap", "建立 2026 Taiwan 追蹤器" if lang == "zh-TW" else "Bootstrap 2026 Taiwan trackers"), "bootstrap_current_taiwan_2026"),
+        ("job-seed-x-candidates", "建立現任聯邦人物 X 候選搜尋" if lang == "zh-TW" else "Seed current federal X search links", "seed_current_legislator_x_candidates"),
+        ("job-discover-x-candidates", "解析現任聯邦人物 X 候選結果" if lang == "zh-TW" else "Discover current federal X candidates", "discover_current_legislator_x_candidates"),
+        ("job-sync-state-dept", "同步國務院 Wikipedia 名單" if lang == "zh-TW" else "Sync State Department Wikipedia roster", "sync_state_department_wikipedia"),
+        ("job-sync-pacom-leadership", "同步印太司令部軍職名單" if lang == "zh-TW" else "Sync PACOM military leadership", "sync_federal_military_official_pages"),
+        ("job-sync-combatant-commands", "同步美軍高階將領名單" if lang == "zh-TW" else "Sync U.S. military senior leadership", "sync_combatant_command_official_pages"),
+        ("job-sync-federal-dept", "同步聯邦部門 Wikipedia 名單" if lang == "zh-TW" else "Sync federal department Wikipedia roster", "sync_federal_department_wikipedia"),
+        ("job-enrich-federal-bg", "補全現任聯邦人物背景資料" if lang == "zh-TW" else "Enrich current federal people backgrounds", "enrich_current_federal_backgrounds"),
+        ("job-bootstrap-zh-src", "建立台灣中文來源追蹤" if lang == "zh-TW" else "Bootstrap Taiwan Chinese source tracking", "bootstrap_taiwan_chinese_sources"),
+        ("job-sync-az-legislation", "同步 Arizona 涉台法案" if lang == "zh-TW" else "Sync Arizona Taiwan legislation", "seed_arizona_taiwan_legislation"),
+        ("job-enrich-congress-detail", "補全 Congress.gov 法案詳情" if lang == "zh-TW" else "Enrich Congress.gov bill details", "enrich_congress_bill_details"),
+        ("job-clean-legislation-people", "清理立法髒人名" if lang == "zh-TW" else "Clean malformed legislation people", "cleanup_malformed_legislation_people"),
+        ("job-dedupe-url-legacy", "清理重複連結資料" if lang == "zh-TW" else "Dedupe records by URL", "dedupe_records_by_url"),
+    ]
+    with st.expander("常用同步工作" if lang == "zh-TW" else "Common sync jobs", expanded=False):
+        _render_job_grid(common_jobs)
+    with st.expander("進階/舊版工作（收合）" if lang == "zh-TW" else "Advanced / legacy jobs (collapsed)", expanded=False):
+        _render_job_grid(advanced_jobs)
+
     with session_scope() as session:
         rows = session.execute(
             select(
@@ -418,7 +359,8 @@ def render(lang: str, labels: dict[str, str]) -> None:
             for row in rows
         ]
     )
-    st.dataframe(localize_dataframe(summary_df, lang, value_columns=["status"]), use_container_width=True)
+    with st.expander("最近執行紀錄" if lang == "zh-TW" else "Recent runs", expanded=True):
+        st.dataframe(localize_dataframe(summary_df, lang, value_columns=["status"]), use_container_width=True)
 
     validation_rows: list[dict[str, object]] = []
     for row in rows:
@@ -435,6 +377,6 @@ def render(lang: str, labels: dict[str, str]) -> None:
             )
 
     if validation_rows:
-        st.subheader("最近被過濾的人名" if lang == "zh-TW" else "Recently filtered names")
-        validation_df = pd.DataFrame(validation_rows).rename(columns=_validation_columns(lang))
-        st.dataframe(validation_df, use_container_width=True)
+        with st.expander("最近被過濾的人名" if lang == "zh-TW" else "Recently filtered names", expanded=False):
+            validation_df = pd.DataFrame(validation_rows).rename(columns=_validation_columns(lang))
+            st.dataframe(validation_df, use_container_width=True)

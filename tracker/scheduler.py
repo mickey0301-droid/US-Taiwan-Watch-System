@@ -32,6 +32,8 @@ JOB_TARGETS: dict[str, tuple[str, str]] = {
     "sync_federal_house_wikipedia": ("tracker.jobs.sync_federal_house_wikipedia", "run_sync_federal_house_wikipedia"),
     "sync_federal_senators_wikipedia": ("tracker.jobs.sync_federal_senators_wikipedia", "run_sync_federal_senators_wikipedia"),
     "sync_state_department_wikipedia": ("tracker.jobs.sync_state_department_wikipedia", "run_sync_state_department_wikipedia"),
+    "sync_combatant_command_official_pages": ("tracker.jobs.sync_combatant_command_official_pages", "run_sync_combatant_command_official_pages"),
+    "sync_federal_military_official_pages": ("tracker.jobs.sync_federal_military_official_pages", "run_sync_federal_military_official_pages"),
     "sync_state_executive_official_pages": ("tracker.jobs.sync_state_executive_official_pages", "run_sync_state_executive_official_pages"),
     "sync_state_executives_wikipedia": ("tracker.jobs.sync_state_executives_wikipedia", "run_sync_state_executives_wikipedia"),
     "sync_state_legislatures": ("tracker.jobs.sync_state_legislatures", "run_sync_state_legislatures"),
