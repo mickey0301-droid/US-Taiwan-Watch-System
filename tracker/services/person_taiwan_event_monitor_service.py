@@ -80,7 +80,7 @@ class PersonTaiwanEventMonitorService:
         config.setdefault("domains", list(DEFAULT_DOMAINS))
         config.setdefault("daily_time", DEFAULT_DAILY_TIME)
         config.setdefault("lookback_days", DEFAULT_LOOKBACK_DAYS)
-        config.setdefault("include_global_news", True)
+        config.setdefault("include_global_news", False)
         config.setdefault("runs", [])
         return config
 
@@ -103,6 +103,7 @@ class PersonTaiwanEventMonitorService:
         config["domains"] = self._clean_domains(domains) or list(DEFAULT_DOMAINS)
         config["daily_time"] = self._normalize_daily_time(daily_time)
         config["lookback_days"] = self._normalize_lookback_days(lookback_days)
+        config["include_global_news"] = False
         payload[MONITOR_KEY] = config
         person.raw_payload = payload
         person.last_seen_at = datetime.utcnow()
@@ -147,7 +148,7 @@ class PersonTaiwanEventMonitorService:
         taiwan_keywords = self._clean_keywords(config.get("taiwan_keywords") or [])
         domains = self._clean_domains(config.get("domains") or [])
         lookback_days = self._normalize_lookback_days(config.get("lookback_days"))
-        include_global_news = bool(config.get("include_global_news", True))
+        include_global_news = bool(config.get("include_global_news", False))
         if not person_keywords:
             return MonitorRunResult(person_id=person.id, person_name=person.full_name, ok=False, error="Missing person keywords")
         if not taiwan_keywords:
