@@ -450,6 +450,19 @@ def _normalize_name_tokens_for_match(name: str | None) -> list[str]:
     return [token for token in text.split(" ") if token]
 
 
+def _strip_legislative_name_suffix(name: str | None) -> str:
+    text = str(name or "").strip()
+    if not text:
+        return ""
+    # Remove leadership/office suffix appended to names, e.g. " -- Majority Whip".
+    return re.sub(
+        r"\s*(?:--|—|-)\s*(?:majority|minority|assistant|president|speaker|leader|whip|pro tempore).*$",
+        "",
+        text,
+        flags=re.I,
+    ).strip()
+
+
 def _likely_same_legislator_name_variant(a: str | None, b: str | None) -> bool:
     a_tokens = _normalize_name_tokens_for_match(a)
     b_tokens = _normalize_name_tokens_for_match(b)
@@ -563,6 +576,8 @@ def _render_member_roster(
     for row in ordered:
         person_id = int(row[0])
         name = display_person_name(row[1], row[2], row[3])
+        if selected_category in {"state_senate", "state_house"}:
+            name = _strip_legislative_name_suffix(name)
         office = _display_office_name(row[4], row[6])
         district = str(row[7] or "").strip()
 
