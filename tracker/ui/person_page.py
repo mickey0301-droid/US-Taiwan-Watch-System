@@ -13,6 +13,7 @@ from tracker.services.ai_assist_service import AIAssistService
 from tracker.services.google_sheet_read_service import GoogleSheetReadService
 from tracker.services.manual_statement_ingest_service import ManualStatementIngestService
 from tracker.services.officials_service import OfficialsService
+from tracker.services.person_taiwan_event_monitor_service import PersonTaiwanEventMonitorService
 from tracker.services.statements_service import StatementsService
 from tracker.services.x_candidate_confirmation_service import XCandidateConfirmationService
 from tracker.ui.badges import render_source_badges
@@ -2552,6 +2553,114 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 session.flush()
                 st.session_state[alias_flash_key] = "已更新中文譯名" if lang == "zh-TW" else "Chinese names updated"
                 st.rerun()
+
+        monitor_service = PersonTaiwanEventMonitorService(session)
+        monitor_config = monitor_service.get_person_monitor_config(person, chinese_aliases=chinese_aliases)
+        monitor_flash_key = f"person-monitor-flash-{person.id}"
+        monitor_flash = st.session_state.pop(monitor_flash_key, None)
+        if monitor_flash:
+            st.success(str(monitor_flash))
+        with st.expander("人物台灣事件監測" if lang == "zh-TW" else "Person Taiwan Event Monitor"):
+            st.caption(
+                "每日按設定關鍵字搜尋（人物關鍵字 AND 台灣關鍵字），逐網域查詢；找到就寫入事件，找不到也會記錄 0 則。"
+                if lang == "zh-TW"
+                else "Run daily keyword monitoring (person keywords AND Taiwan keywords) by domain; records are logged even when zero found."
+            )
+            enabled = st.checkbox(
+                "啟用每日監測" if lang == "zh-TW" else "Enable daily monitor",
+                value=bool(monitor_config.get("enabled")),
+                key=f"person-monitor-enabled-{person.id}",
+            )
+            person_keywords_input = st.text_area(
+                "人物關鍵字（逗號或換行分隔）" if lang == "zh-TW" else "Person keywords (comma/new line separated)",
+                value="\n".join(monitor_config.get("person_keywords") or []),
+                key=f"person-monitor-person-keywords-{person.id}",
+                height=80,
+            )
+            taiwan_keywords_input = st.text_area(
+                "台灣關鍵字（逗號或換行分隔）" if lang == "zh-TW" else "Taiwan keywords (comma/new line separated)",
+                value="\n".join(monitor_config.get("taiwan_keywords") or []),
+                key=f"person-monitor-taiwan-keywords-{person.id}",
+                height=70,
+            )
+            domains_input = st.text_area(
+                "搜尋網域（逗號或換行分隔）" if lang == "zh-TW" else "Domains (comma/new line separated)",
+                value="\n".join(monitor_config.get("domains") or []),
+                key=f"person-monitor-domains-{person.id}",
+                height=70,
+            )
+            daily_time = st.text_input(
+                "每日執行時間（HH:MM，台北時間）" if lang == "zh-TW" else "Daily run time (HH:MM, Taipei time)",
+                value=str(monitor_config.get("daily_time") or "09:00"),
+                key=f"person-monitor-daily-time-{person.id}",
+            )
+            col_save, col_run = st.columns(2)
+            with col_save:
+                save_monitor = st.button("儲存監測設定" if lang == "zh-TW" else "Save monitor settings", key=f"save-monitor-{person.id}")
+            with col_run:
+                run_monitor = st.button("立即執行監測" if lang == "zh-TW" else "Run now", key=f"run-monitor-{person.id}")
+
+            if save_monitor:
+                person_keywords = [item.strip() for item in re.split(r"[\n,，、;/]+", person_keywords_input or "") if item.strip()]
+                taiwan_keywords = [item.strip() for item in re.split(r"[\n,，、;/]+", taiwan_keywords_input or "") if item.strip()]
+                domains = [item.strip() for item in re.split(r"[\n,，、;/]+", domains_input or "") if item.strip()]
+                monitor_service.save_person_monitor_config(
+                    person,
+                    enabled=enabled,
+                    person_keywords=person_keywords,
+                    taiwan_keywords=taiwan_keywords,
+                    domains=domains,
+                    daily_time=daily_time,
+                )
+                session.flush()
+                st.session_state[monitor_flash_key] = "已儲存監測設定" if lang == "zh-TW" else "Monitor settings saved"
+                st.rerun()
+
+            if run_monitor:
+                person_keywords = [item.strip() for item in re.split(r"[\n,，、;/]+", person_keywords_input or "") if item.strip()]
+                taiwan_keywords = [item.strip() for item in re.split(r"[\n,，、;/]+", taiwan_keywords_input or "") if item.strip()]
+                domains = [item.strip() for item in re.split(r"[\n,，、;/]+", domains_input or "") if item.strip()]
+                monitor_service.save_person_monitor_config(
+                    person,
+                    enabled=enabled,
+                    person_keywords=person_keywords,
+                    taiwan_keywords=taiwan_keywords,
+                    domains=domains,
+                    daily_time=daily_time,
+                )
+                with st.spinner("監測執行中..." if lang == "zh-TW" else "Running monitor..."):
+                    run_result = monitor_service.run_for_person(person.id, trigger="manual")
+                session.flush()
+                if run_result.ok:
+                    st.success(
+                        (
+                            f"完成：找到 {run_result.found} 則，新增 {run_result.created} 則，更新 {run_result.updated} 則"
+                            if lang == "zh-TW"
+                            else f"Done: found {run_result.found}, created {run_result.created}, updated {run_result.updated}"
+                        )
+                    )
+                else:
+                    st.error(str(run_result.error or "Monitor run failed"))
+
+            latest_monitor_config = monitor_service.get_person_monitor_config(person, chinese_aliases=chinese_aliases)
+            last_result = latest_monitor_config.get("last_result") or {}
+            if last_result:
+                st.caption(
+                    (
+                        f"最近結果：找到 {int(last_result.get('found', 0))}、新增 {int(last_result.get('created', 0))}、更新 {int(last_result.get('updated', 0))}"
+                        if lang == "zh-TW"
+                        else f"Latest result: found {int(last_result.get('found', 0))}, created {int(last_result.get('created', 0))}, updated {int(last_result.get('updated', 0))}"
+                    )
+                )
+            recent_runs = list(latest_monitor_config.get("runs") or [])[:5]
+            if recent_runs:
+                st.write("最近執行紀錄" if lang == "zh-TW" else "Recent runs")
+                for run in recent_runs:
+                    started_at = str(run.get("started_at") or "")
+                    found = int(run.get("found") or 0)
+                    created = int(run.get("created") or 0)
+                    updated = int(run.get("updated") or 0)
+                    st.write(f"- {started_at} ｜ found={found}, created={created}, updated={updated}")
 
         _render_db_person_highlights(
             recent_events=recent_statements,

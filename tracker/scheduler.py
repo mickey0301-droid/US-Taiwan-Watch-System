@@ -68,6 +68,7 @@ JOB_TARGETS: dict[str, tuple[str, str]] = {
     "cleanup": ("tracker.jobs.cleanup", "run_cleanup"),
     "cleanup_malformed_legislation_people": ("tracker.jobs.cleanup_malformed_legislation_people", "run_cleanup_malformed_legislation_people"),
     "run_scheduled_collections": ("tracker.jobs.run_scheduled_collections", "run_scheduled_collections"),
+    "run_person_taiwan_monitors": ("tracker.jobs.run_person_taiwan_monitors", "run_person_taiwan_monitors"),
     "dedupe_records_by_url": ("tracker.jobs.dedupe_records_by_url", "run_dedupe_records_by_url"),
 }
 
@@ -96,6 +97,13 @@ def build_scheduler() -> BackgroundScheduler:
             trigger="interval",
             minutes=10,
             id="run_scheduled_collections",
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            JOB_REGISTRY["run_person_taiwan_monitors"],
+            trigger="interval",
+            minutes=10,
+            id="run_person_taiwan_monitors",
             replace_existing=True,
         )
     return scheduler
