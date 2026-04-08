@@ -1,9 +1,11 @@
 ﻿from __future__ import annotations
 
 from datetime import datetime
+from html import unescape
+import json
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup, Tag
@@ -25,6 +27,20 @@ TARGET_EXECUTIVE_TITLE_KEYWORDS = (
     "deputy assistant secretary",
     "assistant secretary",
 )
+STATE_DEPARTMENT_BIOGRAPHIES_LIST_URL = "https://www.state.gov/biographies-list/"
+STATE_DEPARTMENT_BIOGRAPHIES_WP_API_URL = "https://www.state.gov/wp-json/wp/v2/state_biography?per_page=100&page={page}"
+STATE_DEPARTMENT_BIOGRAPHIES_FEED_URL = "https://www.state.gov/biographies-list/feed/"
+STATE_DEPARTMENT_SITEMAP_INDEX_URL = "https://www.state.gov/sitemap_index.xml"
+STATE_DEPARTMENT_BIOGRAPHIES_MAX_PAGES = 24
+REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/122.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 
 class _BaseStateDepartmentWikipediaCollector(BaseCollector):
@@ -41,10 +57,7 @@ class _BaseStateDepartmentWikipediaCollector(BaseCollector):
             timeout=30.0,
             follow_redirects=True,
             trust_env=False,
-            headers={
-                "User-Agent": "Mozilla/5.0",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            },
+            headers=REQUEST_HEADERS,
         )
         response.raise_for_status()
         if self.settings.snapshot_raw_responses:
@@ -279,6 +292,372 @@ class StateDepartmentAssistantSecretariesWikipediaCollector(_BaseStateDepartment
     source_url = "https://en.wikipedia.org/wiki/United_States_Assistant_Secretary_of_State"
     parser_identity = "wikipedia_state_assistant_secretaries_v1"
     subdepartment_name = "Assistant Secretaries"
+
+
+class StateDepartmentBiographiesOfficialCollector(_BaseStateDepartmentWikipediaCollector):
+    collector_name = "state_department_biographies_official"
+    source_name = "State.gov biographies list"
+    source_url = STATE_DEPARTMENT_BIOGRAPHIES_LIST_URL
+    parser_identity = "state_gov_biographies_v1"
+    source_type = "official"
+    subdepartment_name = "Department leadership"
+
+    def fetch(self) -> str:
+        return ""
+
+    def parse(self, payload: str) -> list[dict[str, Any]]:
+        parsed: list[dict[str, Any]] = []
+        seen_people_offices: set[tuple[str, str]] = set()
+        biography_items = self._fetch_biographies_from_wp_api()
+        if not biography_items:
+            biography_items = self._fetch_biographies_from_feed()
+        sitemap_urls = self._fetch_biography_urls_from_sitemap()
+        if sitemap_urls:
+            existing_links = {
+                (self._normalize_biography_url(str(item.get("link") or "")) or str(item.get("link") or "").strip())
+                for item in biography_items
+            }
+            for url in sitemap_urls:
+                if url not in existing_links:
+                    biography_items.append({"link": url})
+        if not biography_items:
+            biography_urls = self._collect_biography_urls(payload)
+            biography_items = [{"link": url} for url in biography_urls]
+        for biography_item in biography_items:
+            page_data = self._build_page_data_from_biography_item(biography_item)
+            full_name = page_data.get("full_name") or ""
+            role_title = page_data.get("role_title") or ""
+            biography_url = page_data.get("biography_url") or ""
+            if not full_name or not role_title:
+                continue
+            office_name = f"{self.department_name}: {role_title}"
+            unique_key = (full_name, office_name)
+            if unique_key in seen_people_offices:
+                continue
+            seen_people_offices.add(unique_key)
+            parsed.append(
+                {
+                    "person": {
+                        "full_name": full_name,
+                        "source_url": biography_url or self.source_url,
+                        "source_type": "official",
+                        "seed_source_type": "official",
+                        "profile_status": "seeded",
+                        "portrait_url": page_data.get("portrait_url"),
+                        "portrait_source_url": biography_url if page_data.get("portrait_url") else None,
+                        "portrait_source_type": "official" if page_data.get("portrait_url") else None,
+                        "social_profiles": page_data.get("social_profiles") or {},
+                        "parser_identity": self.parser_identity,
+                        "verification_status": "unverified",
+                        "raw_payload": {
+                            "official_bio_url": biography_url,
+                            "source_page": self.source_url,
+                            "top_department_name": self.department_name,
+                            "subdepartment_name": self.subdepartment_name,
+                            "department_name": self.department_name,
+                            "office_title": role_title,
+                        },
+                    },
+                    "jurisdiction": {"name": "United States", "type": "country", "code": "US"},
+                    "office": {
+                        "office_name": office_name,
+                        "level": "federal",
+                        "branch": "executive",
+                        "chamber": None,
+                        "source_url": biography_url,
+                        "source_type": "official",
+                    },
+                    "appointment": {
+                        "role_title": office_name,
+                        "status": "current",
+                        "source_url": biography_url,
+                        "source_type": "official",
+                        "parser_identity": self.parser_identity,
+                        "is_current": True,
+                        "raw_payload": {
+                            "top_department_name": self.department_name,
+                            "subdepartment_name": self.subdepartment_name,
+                            "department_name": self.department_name,
+                            "office_title": role_title,
+                            "official_bio_url": biography_url,
+                        },
+                    },
+                    "aliases": [full_name],
+                }
+            )
+        return parsed
+
+    def _fetch_biographies_from_wp_api(self) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        total_pages = 1
+        for page in range(1, STATE_DEPARTMENT_BIOGRAPHIES_MAX_PAGES + 1):
+            if page > total_pages:
+                break
+            url = STATE_DEPARTMENT_BIOGRAPHIES_WP_API_URL.format(page=page)
+            try:
+                response = httpx.get(
+                    url,
+                    timeout=30.0,
+                    follow_redirects=True,
+                    trust_env=False,
+                    headers=REQUEST_HEADERS,
+                )
+                response.raise_for_status()
+                batch = response.json()
+            except Exception:
+                break
+            if not isinstance(batch, list) or not batch:
+                break
+            if page == 1:
+                header_total_pages = response.headers.get("X-WP-TotalPages", "").strip()
+                if header_total_pages.isdigit():
+                    total_pages = min(int(header_total_pages), STATE_DEPARTMENT_BIOGRAPHIES_MAX_PAGES)
+            items.extend(batch)
+        return items
+
+    def _fetch_biographies_from_feed(self) -> list[dict[str, Any]]:
+        xml = self._fetch_html(STATE_DEPARTMENT_BIOGRAPHIES_FEED_URL)
+        if not xml:
+            return []
+        soup = BeautifulSoup(xml, "xml")
+        items: list[dict[str, Any]] = []
+        for item in soup.select("channel > item"):
+            title_node = item.find("title")
+            link_node = item.find("link")
+            title = (title_node.get_text(" ", strip=True) if title_node else "").strip()
+            link = (link_node.get_text(" ", strip=True) if link_node else "").strip()
+            if not title or not link:
+                continue
+            items.append({"title": title, "link": link})
+        return items
+
+    def _fetch_biography_urls_from_sitemap(self) -> list[str]:
+        index_xml = self._fetch_html(STATE_DEPARTMENT_SITEMAP_INDEX_URL)
+        if not index_xml:
+            return []
+        index_soup = BeautifulSoup(index_xml, "xml")
+        sitemap_urls: list[str] = []
+        for loc in index_soup.select("sitemapindex sitemap loc"):
+            url = (loc.get_text(" ", strip=True) or "").strip()
+            if "state_biography-sitemap" in url:
+                sitemap_urls.append(url)
+        if not sitemap_urls:
+            return []
+
+        biography_urls: list[str] = []
+        seen_urls: set[str] = set()
+        for sitemap_url in sitemap_urls:
+            sitemap_xml = self._fetch_html(sitemap_url)
+            if not sitemap_xml:
+                continue
+            soup = BeautifulSoup(sitemap_xml, "xml")
+            for loc in soup.select("urlset url loc"):
+                raw = (loc.get_text(" ", strip=True) or "").strip()
+                normalized = self._normalize_biography_url(raw)
+                if not normalized or normalized in seen_urls:
+                    continue
+                seen_urls.add(normalized)
+                biography_urls.append(normalized)
+        return biography_urls
+
+    def _build_page_data_from_biography_item(self, item: dict[str, Any]) -> dict[str, Any]:
+        biography_url = self._normalize_biography_url(str(item.get("link") or "")) or str(item.get("link") or "").strip()
+        full_name = self._extract_full_name_from_item(item)
+        role_title = self._extract_role_title_from_item(item)
+        portrait_url = self._extract_portrait_url_from_item(item)
+        if not full_name and biography_url:
+            fallback = self._fetch_biography_page_data(biography_url)
+            return {
+                "full_name": fallback.get("full_name"),
+                "role_title": fallback.get("role_title"),
+                "portrait_url": fallback.get("portrait_url"),
+                "social_profiles": fallback.get("social_profiles") or {},
+                "biography_url": biography_url,
+            }
+        return {
+            "full_name": full_name,
+            "role_title": role_title or "State Department official",
+            "portrait_url": portrait_url,
+            "social_profiles": {},
+            "biography_url": biography_url,
+        }
+
+    def _fetch_html(self, url: str) -> str | None:
+        try:
+            response = httpx.get(
+                url,
+                timeout=30.0,
+                follow_redirects=True,
+                trust_env=False,
+                headers=REQUEST_HEADERS,
+            )
+            response.raise_for_status()
+            return response.text
+        except Exception:
+            return None
+
+    def _collect_biography_urls(self, first_page_html: str) -> list[str]:
+        urls: list[str] = []
+        seen_urls: set[str] = set()
+        next_url: str | None = self.source_url
+        cached_first_page = first_page_html
+        visited_pages: set[str] = set()
+        for _ in range(STATE_DEPARTMENT_BIOGRAPHIES_MAX_PAGES):
+            if not next_url or next_url in visited_pages:
+                break
+            visited_pages.add(next_url)
+            html = cached_first_page if next_url == self.source_url else self._fetch_html(next_url)
+            if not html:
+                break
+            soup = BeautifulSoup(html, "html.parser")
+            for anchor in soup.select("a[href]"):
+                absolute_url = urljoin(next_url, anchor.get("href", "").strip())
+                normalized = self._normalize_biography_url(absolute_url)
+                if not normalized or normalized in seen_urls:
+                    continue
+                seen_urls.add(normalized)
+                urls.append(normalized)
+            next_anchor = soup.select_one('a[rel="next"]')
+            if not next_anchor:
+                next_link_tag = soup.select_one('link[rel="next"]')
+                next_href = next_link_tag.get("href", "").strip() if next_link_tag else ""
+            else:
+                next_href = next_anchor.get("href", "").strip()
+            next_url = urljoin(next_url, next_href) if next_href else None
+        return urls
+
+    def _normalize_biography_url(self, url: str) -> str | None:
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            return None
+        if parsed.netloc.lower() != "www.state.gov":
+            return None
+        path = (parsed.path or "").strip("/")
+        if not path.startswith("biographies/"):
+            return None
+        slug = path.removeprefix("biographies/").strip("/")
+        if not slug or "/" in slug:
+            return None
+        if slug in {"feed"}:
+            return None
+        return f"https://www.state.gov/biographies/{slug}/"
+
+    def _fetch_biography_page_data(self, biography_url: str) -> dict[str, Any]:
+        html = self._fetch_html(biography_url)
+        if not html:
+            return {}
+        soup = BeautifulSoup(html, "html.parser")
+        role_title = self._extract_role_title(soup)
+        full_name = self._extract_full_name(soup)
+        if not full_name:
+            return {}
+        portrait_url = self._extract_portrait_url(soup)
+        return {
+            "full_name": full_name,
+            "role_title": role_title or "State Department official",
+            "portrait_url": portrait_url,
+            "social_profiles": discover_social_profiles(biography_url, soup),
+        }
+
+    def _extract_role_title(self, soup: BeautifulSoup) -> str | None:
+        headline = soup.select_one("section.biography-header h1")
+        if not headline:
+            headline = soup.select_one("article h1")
+        if not headline:
+            return None
+        title = " ".join(headline.get_text(" ", strip=True).split())
+        return title or None
+
+    def _extract_role_title_from_item(self, item: dict[str, Any]) -> str | None:
+        acf = item.get("acf") or {}
+        rep_positions = acf.get("rep_positions") if isinstance(acf, dict) else None
+        if isinstance(rep_positions, list):
+            for position in rep_positions:
+                if not isinstance(position, dict):
+                    continue
+                text_position = " ".join(str(position.get("text_position") or "").split())
+                if text_position:
+                    return text_position
+        content_obj = item.get("content") if isinstance(item.get("content"), dict) else {}
+        rendered = str(content_obj.get("rendered") or "")
+        if rendered:
+            soup = BeautifulSoup(rendered, "html.parser")
+            paragraph = soup.select_one("p")
+            if paragraph:
+                text = " ".join(paragraph.get_text(" ", strip=True).split())
+                marker = " serves as "
+                lower = text.lower()
+                idx = lower.find(marker)
+                if idx >= 0:
+                    role = text[idx + len(marker):].split(".", 1)[0].strip(" ,;")
+                    if role:
+                        return role
+        return None
+
+    def _extract_full_name(self, soup: BeautifulSoup) -> str | None:
+        og_title = soup.select_one('meta[property="og:title"]')
+        candidate = (og_title.get("content", "") if og_title else "").strip()
+        if not candidate:
+            title_tag = soup.select_one("title")
+            candidate = title_tag.get_text(" ", strip=True) if title_tag else ""
+        if " - United States Department of State" in candidate:
+            candidate = candidate.replace(" - United States Department of State", "").strip()
+        candidate = " ".join(candidate.split())
+        if candidate.lower() in {"biographies", "biographies list"}:
+            return None
+        return candidate or None
+
+    def _extract_full_name_from_item(self, item: dict[str, Any]) -> str | None:
+        raw_title = item.get("title")
+        if isinstance(raw_title, dict):
+            rendered = unescape(str(raw_title.get("rendered") or "")).strip()
+        else:
+            rendered = unescape(str(raw_title or "")).strip()
+        rendered = " ".join(BeautifulSoup(rendered, "html.parser").get_text(" ", strip=True).split())
+        return rendered or None
+
+    def _extract_portrait_url(self, soup: BeautifulSoup) -> str | None:
+        candidate_selectors = [
+            "section.biography-header img[src]",
+            ".profile-card__image img[src]",
+            "article img[src]",
+        ]
+        for selector in candidate_selectors:
+            image = soup.select_one(selector)
+            if not image:
+                continue
+            src = (image.get("src") or image.get("data-src") or "").strip()
+            if not src:
+                continue
+            url = urljoin(self.source_url, src)
+            lowered = url.lower()
+            if "seal_only" in lowered or "dos_seal" in lowered:
+                continue
+            return url
+
+        og_image = soup.select_one('meta[property="og:image"]')
+        url = (og_image.get("content", "") if og_image else "").strip()
+        if not url:
+            return None
+        lowered = url.lower()
+        if "seal_only" in lowered or "dos_seal" in lowered:
+            return None
+        return url
+
+    def _extract_portrait_url_from_item(self, item: dict[str, Any]) -> str | None:
+        acf = item.get("acf") or {}
+        if not isinstance(acf, dict):
+            return None
+        portrait = acf.get("img_profile-thumbnail")
+        if not isinstance(portrait, dict):
+            return None
+        url = str(portrait.get("url") or "").strip()
+        if not url:
+            return None
+        lowered = url.lower()
+        if "seal_only" in lowered or "dos_seal" in lowered:
+            return None
+        return url
 
 
 STATE_DEPARTMENT_ORG_LINKS = [

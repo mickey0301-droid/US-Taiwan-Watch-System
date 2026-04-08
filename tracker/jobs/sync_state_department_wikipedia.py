@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tracker.collectors.state_department_wikipedia import (
+    StateDepartmentBiographiesOfficialCollector,
     StateDepartmentAssistantSecretariesWikipediaCollector,
     StateDepartmentOrganizationWikipediaCollector,
     StateDepartmentUnderSecretariesWikipediaCollector,
@@ -9,6 +10,7 @@ from tracker.collectors.state_department_wikipedia import (
 
 def run_sync_state_department_wikipedia() -> dict:
     collectors = [
+        StateDepartmentBiographiesOfficialCollector(),
         StateDepartmentOrganizationWikipediaCollector(),
         StateDepartmentUnderSecretariesWikipediaCollector(),
         StateDepartmentAssistantSecretariesWikipediaCollector(),
