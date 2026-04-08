@@ -1984,6 +1984,37 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 st.info(labels["no_people_loaded"])
                 return
 
+            if selected_category == "state_executive" and state_filter is None:
+                role_label = "職務" if lang == "zh-TW" else "Role"
+                role_options = sorted(
+                    {
+                        _display_office_name(row[4], row[6])
+                        for row in candidates
+                        if str(_display_office_name(row[4], row[6]) or "").strip()
+                    },
+                    key=lambda role: (_state_executive_role_rank(role), str(role).lower()),
+                )
+                if role_options:
+                    selected_role = st.selectbox(
+                        role_label,
+                        [select_prompt_value, *role_options],
+                        format_func=lambda value: (
+                            select_prompt_label
+                            if value == select_prompt_value
+                            else (_bilingual_text(value, _position_label_zh(value)) if lang == "zh-TW" else value)
+                        ),
+                        key="person-state-executive-role-all-states",
+                    )
+                    if selected_role == select_prompt_value:
+                        st.info(select_prompt_label)
+                        return
+                    candidates = [
+                        row for row in candidates if _display_office_name(row[4], row[6]) == selected_role
+                    ]
+                    if not candidates:
+                        st.info(labels["no_people_loaded"])
+                        return
+
             if selected_category in _legislative_categories():
                 party_map = _build_party_map_for_candidates(session, candidates, selected_category)
                 party_options = sorted({party for party in party_map.values() if party})
