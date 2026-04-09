@@ -11,6 +11,7 @@ import feedparser
 import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from scripts.discover_restricted_source_events import discover_cna, discover_mofa, discover_president
 from tracker.models import Person, StatementParticipant, StatementSource
@@ -109,6 +110,7 @@ class PersonTaiwanEventMonitorService:
         config["include_global_news"] = False
         payload[MONITOR_KEY] = config
         person.raw_payload = payload
+        flag_modified(person, "raw_payload")
         person.last_seen_at = datetime.utcnow()
         self.session.flush()
         return config
@@ -359,6 +361,7 @@ class PersonTaiwanEventMonitorService:
         }
         payload[MONITOR_KEY] = config
         person.raw_payload = payload
+        flag_modified(person, "raw_payload")
         person.last_seen_at = datetime.utcnow()
 
     def _collect_rss_items(self, client: httpx.Client, rss_url: str, domain: str) -> list[dict[str, Any]]:
