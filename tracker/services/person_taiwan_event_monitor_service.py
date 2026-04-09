@@ -47,12 +47,15 @@ class PersonTaiwanEventMonitorService:
         self._http_headers = {"User-Agent": "Mozilla/5.0 (compatible; UTWBot/1.0; +https://github.com/mickey0301-droid/US-Taiwan-Watch-System)"}
 
     def default_config_for_person(self, person: Person, chinese_aliases: list[str] | None = None) -> dict[str, Any]:
-        keywords = [person.full_name]
-        if person.family_name and person.family_name not in keywords:
-            keywords.append(person.family_name)
-        for alias in list(chinese_aliases or []):
-            if alias and alias not in keywords:
-                keywords.append(alias)
+        if self._is_trump_name(person.full_name):
+            keywords = [person.full_name]
+            if person.family_name and person.family_name not in keywords:
+                keywords.append(person.family_name)
+            for alias in list(chinese_aliases or []):
+                if alias and alias not in keywords:
+                    keywords.append(alias)
+        else:
+            keywords = self._filter_person_keywords(person, [person.full_name])
         return {
             "enabled": False,
             "person_keywords": keywords,
@@ -98,7 +101,7 @@ class PersonTaiwanEventMonitorService:
         payload = self._person_payload(person)
         config = self.get_person_monitor_config(person)
         config["enabled"] = bool(enabled)
-        config["person_keywords"] = self._clean_keywords(person_keywords)
+        config["person_keywords"] = self._filter_person_keywords(person, self._clean_keywords(person_keywords))
         config["taiwan_keywords"] = self._clean_keywords(taiwan_keywords) or list(DEFAULT_TAIWAN_KEYWORDS)
         config["domains"] = self._clean_domains(domains) or list(DEFAULT_DOMAINS)
         config["daily_time"] = self._normalize_daily_time(daily_time)
@@ -144,7 +147,7 @@ class PersonTaiwanEventMonitorService:
             return MonitorRunResult(person_id=person_id, person_name="", ok=False, error="Person not found")
 
         config = self.get_person_monitor_config(person)
-        person_keywords = self._clean_keywords(config.get("person_keywords") or [])
+        person_keywords = self._filter_person_keywords(person, self._clean_keywords(config.get("person_keywords") or []))
         taiwan_keywords = self._clean_keywords(config.get("taiwan_keywords") or [])
         domains = self._clean_domains(config.get("domains") or [])
         lookback_days = self._normalize_lookback_days(config.get("lookback_days"))
@@ -605,6 +608,41 @@ class PersonTaiwanEventMonitorService:
             seen.add(key)
             output.append(text)
         return output
+
+    def _filter_person_keywords(self, person: Person, values: list[str]) -> list[str]:
+        if self._is_trump_name(person.full_name):
+            return self._clean_keywords(values)
+        cleaned = self._clean_keywords(values)
+        filtered: list[str] = []
+        seen: set[str] = set()
+        for text in cleaned:
+            if not self._is_english_full_name(text):
+                continue
+            key = text.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            filtered.append(text)
+        if filtered:
+            return filtered
+        fallback = str(person.full_name or "").strip()
+        if self._is_english_full_name(fallback):
+            return [fallback]
+        return [fallback] if fallback else []
+
+    def _is_trump_name(self, full_name: str | None) -> bool:
+        return "trump" in str(full_name or "").casefold()
+
+    def _is_english_full_name(self, text: str) -> bool:
+        value = str(text or "").strip()
+        if not value:
+            return False
+        if re.search(r"[\u4e00-\u9fff]", value):
+            return False
+        parts = [part for part in re.split(r"\s+", value) if part]
+        if len(parts) < 2:
+            return False
+        return bool(re.search(r"[A-Za-z]", value))
 
     def _clean_domains(self, values: list[str]) -> list[str]:
         output: list[str] = []

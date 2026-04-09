@@ -284,8 +284,8 @@ class ScheduledCollectionService:
         aliases_map: dict[int, list[str]] = {}
         for person_id, full_name in people:
             aliases = self.session.execute(select(Alias.alias).where(Alias.person_id == person_id)).scalars().all()
-            terms = [full_name] + [alias.strip() for alias in aliases if (alias or "").strip()]
-            aliases_map[person_id] = list(dict.fromkeys(terms))
+            terms = self._normalize_person_search_terms(full_name, aliases)
+            aliases_map[person_id] = terms or [full_name]
 
         created = 0
         updated = 0
@@ -732,8 +732,8 @@ class ScheduledCollectionService:
         aliases_map: dict[int, list[str]] = {}
         for person_id, full_name in people:
             aliases = self.session.execute(select(Alias.alias).where(Alias.person_id == person_id)).scalars().all()
-            terms = [full_name] + [alias.strip() for alias in aliases if (alias or "").strip()]
-            aliases_map[person_id] = list(dict.fromkeys(terms))
+            terms = self._normalize_person_search_terms(full_name, aliases)
+            aliases_map[person_id] = terms or [full_name]
 
         created = 0
         updated = 0
@@ -882,6 +882,39 @@ class ScheduledCollectionService:
         if not normalized:
             return list(DEFAULT_EVENT_DOMAINS)
         return list(dict.fromkeys(normalized))
+
+    def _normalize_person_search_terms(self, full_name: str, aliases: list[str] | Any) -> list[str]:
+        base_name = str(full_name or "").strip()
+        terms = [base_name] + [str(alias or "").strip() for alias in (aliases or []) if str(alias or "").strip()]
+        if self._is_trump_name(base_name):
+            return list(dict.fromkeys(terms))
+        output: list[str] = []
+        seen: set[str] = set()
+        for term in terms:
+            if not self._is_english_full_name(term):
+                continue
+            key = term.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            output.append(term)
+        if output:
+            return output
+        return [base_name] if base_name else []
+
+    def _is_trump_name(self, full_name: str) -> bool:
+        return "trump" in str(full_name or "").casefold()
+
+    def _is_english_full_name(self, text: str) -> bool:
+        value = str(text or "").strip()
+        if not value:
+            return False
+        if re.search(r"[\u4e00-\u9fff]", value):
+            return False
+        parts = [part for part in re.split(r"\s+", value) if part]
+        if len(parts) < 2:
+            return False
+        return bool(re.search(r"[A-Za-z]", value))
 
     def _contains_any_keyword(self, text: str, keywords: list[str]) -> bool:
         normalized = (text or "").casefold()
