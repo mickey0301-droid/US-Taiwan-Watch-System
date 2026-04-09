@@ -422,8 +422,6 @@ class PersonTaiwanEventMonitorService:
         end = datetime.utcnow().date() + timedelta(days=1)
         start = end - timedelta(days=max(1, int(lookback_days)))
         cna_limit = self._cna_limit_for_lookback(lookback_days)
-        mofa_max_pages = self._mofa_max_pages_for_lookback(lookback_days)
-        president_max_pages = self._president_max_pages_for_lookback(lookback_days)
         hits = []
         try:
             if domain == "cna.com.tw":
@@ -455,7 +453,7 @@ class PersonTaiwanEventMonitorService:
                         person_terms=person_keywords,
                         start=start,
                         end=end,
-                        max_pages=mofa_max_pages,
+                        max_pages=40,
                         require_taiwan_keyword=False,
                     )
                 except TypeError:
@@ -465,7 +463,7 @@ class PersonTaiwanEventMonitorService:
                         person_terms=person_keywords,
                         start=start,
                         end=end,
-                        max_pages=mofa_max_pages,
+                        max_pages=40,
                     )
             elif domain == "president.gov.tw":
                 try:
@@ -475,7 +473,7 @@ class PersonTaiwanEventMonitorService:
                         person_terms=person_keywords,
                         start=start,
                         end=end,
-                        max_pages=president_max_pages,
+                        max_pages=40,
                         require_taiwan_keyword=False,
                     )
                 except TypeError:
@@ -485,7 +483,7 @@ class PersonTaiwanEventMonitorService:
                         person_terms=person_keywords,
                         start=start,
                         end=end,
-                        max_pages=president_max_pages,
+                        max_pages=40,
                     )
         except Exception:
             hits = []
@@ -532,30 +530,6 @@ class PersonTaiwanEventMonitorService:
         if days >= 180:
             return 400
         return 300
-
-    def _mofa_max_pages_for_lookback(self, lookback_days: int) -> int:
-        days = max(1, int(lookback_days or 1))
-        if days >= 1800:
-            return 220
-        if days >= 1000:
-            return 180
-        if days >= 365:
-            return 120
-        if days >= 180:
-            return 90
-        return 60
-
-    def _president_max_pages_for_lookback(self, lookback_days: int) -> int:
-        days = max(1, int(lookback_days or 1))
-        if days >= 1800:
-            return 220
-        if days >= 1000:
-            return 180
-        if days >= 365:
-            return 120
-        if days >= 180:
-            return 90
-        return 60
 
     def _has_existing_person_source_url(self, person_id: int, source_url: str) -> bool:
         url = str(source_url or "").strip()
