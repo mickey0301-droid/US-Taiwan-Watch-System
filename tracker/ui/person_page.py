@@ -2768,11 +2768,17 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     run_result = monitor_service.run_for_person(person.id, trigger="manual")
                 session.flush()
                 if run_result.ok:
+                    skipped_existing = 0
+                    for query_row in list(run_result.queries or []):
+                        try:
+                            skipped_existing += int((query_row or {}).get("items_skipped_existing") or 0)
+                        except Exception:
+                            continue
                     st.success(
                         (
-                            f"完成：找到 {run_result.found} 則，新增 {run_result.created} 則，更新 {run_result.updated} 則"
+                            f"完成：找到 {run_result.found} 則，新增 {run_result.created} 則，更新 {run_result.updated} 則，已存在略過 {skipped_existing} 則"
                             if lang == "zh-TW"
-                            else f"Done: found {run_result.found}, created {run_result.created}, updated {run_result.updated}"
+                            else f"Done: found {run_result.found}, created {run_result.created}, updated {run_result.updated}, skipped existing {skipped_existing}"
                         )
                     )
                 else:
