@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta
 from datetime import date as date_type
+import re
 from typing import Any
 
 import feedparser
@@ -407,26 +408,55 @@ class ScheduledCollectionService:
         end_at = self._parse_datetime(payload.get("end_at")) or datetime.utcnow()
         if end_at <= start_at:
             end_at = start_at + timedelta(days=1)
-        taiwan_keywords = self._normalize_keywords(payload.get("taiwan_keywords"))
+        taiwan_keywords = self._normalize_legislation_keywords(self._normalize_keywords(payload.get("taiwan_keywords")))
 
         all_bills: list[dict[str, Any]] = []
         result_items: list[dict[str, Any]] = []
         scan_meta: list[dict[str, Any]] = []
+        summary_cache: dict[str, str] = {}
         for congress in CONGRESSES:
             bills = asyncio.run(_fetch_congress_bills(congress, settings.congress_api_key))
             filtered: list[dict[str, Any]] = []
             for item in bills:
+                title = str(item.get("title") or "")
+                latest_action = item.get("latestAction") if isinstance(item.get("latestAction"), dict) else {}
+                policy_area = item.get("policyArea") if isinstance(item.get("policyArea"), dict) else {}
                 text = " ".join(
                     [
-                        str(item.get("title") or ""),
-                        str((item.get("latestAction") or {}).get("text") or ""),
+                        title,
+                        str(latest_action.get("text") or ""),
+                        str(policy_area.get("name") or ""),
                     ]
                 )
-                if not self._contains_any_keyword(text, taiwan_keywords):
-                    continue
+                introduced_at = self._parse_iso_datetime_to_date(item.get("introducedDate"))
                 updated_at = self._parse_iso_datetime_to_date(item.get("updateDate"))
-                if updated_at and not (start_at.date() <= updated_at <= end_at.date()):
+                action_at = self._parse_iso_datetime_to_date(latest_action.get("actionDate"))
+                in_range = any(
+                    value and (start_at.date() <= value <= end_at.date())
+                    for value in (introduced_at, action_at, updated_at)
+                )
+                if not in_range:
                     continue
+
+                has_keyword = self._contains_any_keyword(text, taiwan_keywords)
+                if not has_keyword:
+                    bill_type = str(item.get("type") or "").strip().lower()
+                    bill_number = str(item.get("number") or "").strip()
+                    cache_key = f"{int(item.get('congress') or congress)}-{bill_type}-{bill_number}"
+                    summary_text = summary_cache.get(cache_key)
+                    if summary_text is None:
+                        summary_text = self._fetch_congress_bill_summaries_text(
+                            congress=int(item.get("congress") or congress),
+                            bill_type=bill_type,
+                            bill_number=bill_number,
+                            api_key=settings.congress_api_key,
+                        )
+                        summary_cache[cache_key] = summary_text
+                    has_keyword = self._contains_any_keyword(summary_text, taiwan_keywords)
+                if not has_keyword:
+                    continue
+
+                updated_at = self._parse_iso_datetime_to_date(item.get("updateDate"))
                 filtered.append(item)
                 if len(result_items) < 300:
                     result_items.append(
@@ -435,12 +465,14 @@ class ScheduledCollectionService:
                             "bill_type": str(item.get("type") or ""),
                             "bill_number": str(item.get("number") or ""),
                             "title": str(item.get("title") or ""),
+                            "introduced_date": str(item.get("introducedDate") or ""),
+                            "latest_action_date": str(latest_action.get("actionDate") or ""),
                             "update_date": str(item.get("updateDate") or ""),
                             "url": f"https://www.congress.gov/bill/{int(item.get('congress') or congress)}th-congress/{str(item.get('type') or '').lower()}-bill/{str(item.get('number') or '')}",
                         }
                     )
             all_bills.extend(filtered)
-            scan_meta.append({"congress": congress, "fetched": len(filtered)})
+            scan_meta.append({"congress": congress, "fetched_total": len(bills), "matched": len(filtered)})
 
         db_result = _upsert_bills(all_bills)
         return {
@@ -458,6 +490,41 @@ class ScheduledCollectionService:
             "items": result_items,
             "errors": list(db_result.get("errors") or [])[:20],
         }
+
+    def _normalize_legislation_keywords(self, keywords: list[str]) -> list[str]:
+        baseline = ["Taiwan", "taiwan", "Republic of China", "Taipei", "台灣", "臺灣"]
+        merged = [str(item or "").strip() for item in list(keywords or []) + baseline]
+        return [item for item in dict.fromkeys(merged) if item]
+
+    def _fetch_congress_bill_summaries_text(
+        self,
+        *,
+        congress: int,
+        bill_type: str,
+        bill_number: str,
+        api_key: str,
+    ) -> str:
+        if not (congress and bill_type and bill_number and api_key):
+            return ""
+        url = f"https://api.congress.gov/v3/bill/{int(congress)}/{bill_type}/{bill_number}/summaries"
+        params = {"api_key": api_key, "format": "json", "limit": 250}
+        try:
+            response = httpx.get(url, params=params, timeout=25.0, follow_redirects=True, headers={"User-Agent": USER_AGENT})
+            response.raise_for_status()
+            data = response.json() if response.content else {}
+        except Exception:
+            return ""
+        summaries = data.get("summaries") if isinstance(data, dict) else None
+        if not isinstance(summaries, list):
+            return ""
+        chunks: list[str] = []
+        for item in summaries:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or item.get("summaryText") or "").strip()
+            if text:
+                chunks.append(re.sub(r"<[^>]+>", " ", text))
+        return "\n".join(chunks)
 
     def _run_restricted_event_scan(self, task: CollectionSchedule) -> dict[str, Any]:
         months = self._months_from_task(task)
