@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import func, select
+from sqlalchemy import text as sql_text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from tracker.models import Statement, StatementParticipant, StatementSource
@@ -205,34 +207,55 @@ class StatementsService:
             self._ensure_statement_participants(existing.id, payload)
             return existing, False
 
-        statement = Statement(
-            person_id=payload.get("person_id"),
-            tracker_id=payload.get("tracker_id"),
-            tracker_target_id=payload.get("tracker_target_id"),
-            title=title,
-            canonical_event_key=canonical_event_key,
-            date_published=payload.get("date_published"),
-            date_collected=datetime.utcnow(),
-            source_url=payload["source_url"],
-            source_domain=domain_from_url(payload["source_url"]),
-            source_type=payload["source_type"],
-            event_source_preference=payload["source_type"],
-            statement_type=payload.get("statement_type"),
-            excerpt=payload.get("excerpt"),
-            full_text=payload.get("full_text"),
-            raw_text=raw_text,
-            relevance_score=score,
-            review_status="pending" if hits else "needs_review",
-            dedupe_hash=self.dedupe_service.build_statement_hash(title, payload["source_url"], raw_text),
-            is_primary_source=payload.get("is_primary_source", True),
-            matched_keywords={"hits": hits},
-            raw_payload=payload.get("raw_payload"),
-        )
+        statement_kwargs = {
+            "person_id": payload.get("person_id"),
+            "tracker_id": payload.get("tracker_id"),
+            "tracker_target_id": payload.get("tracker_target_id"),
+            "title": title,
+            "canonical_event_key": canonical_event_key,
+            "date_published": payload.get("date_published"),
+            "date_collected": datetime.utcnow(),
+            "source_url": payload["source_url"],
+            "source_domain": domain_from_url(payload["source_url"]),
+            "source_type": payload["source_type"],
+            "event_source_preference": payload["source_type"],
+            "statement_type": payload.get("statement_type"),
+            "excerpt": payload.get("excerpt"),
+            "full_text": payload.get("full_text"),
+            "raw_text": raw_text,
+            "relevance_score": score,
+            "review_status": "pending" if hits else "needs_review",
+            "dedupe_hash": self.dedupe_service.build_statement_hash(title, payload["source_url"], raw_text),
+            "is_primary_source": payload.get("is_primary_source", True),
+            "matched_keywords": {"hits": hits},
+            "raw_payload": payload.get("raw_payload"),
+        }
+        statement = Statement(**statement_kwargs)
         self.session.add(statement)
-        self.session.flush()
+        try:
+            self.session.flush()
+        except IntegrityError as exc:
+            if "statements_pkey" not in str(exc):
+                raise
+            self.session.rollback()
+            self._repair_postgres_sequence("statements", "id")
+            statement = Statement(**statement_kwargs)
+            self.session.add(statement)
+            self.session.flush()
         self._ensure_statement_source(statement.id, payload)
         self._ensure_statement_participants(statement.id, payload)
         return statement, True
+
+    def _repair_postgres_sequence(self, table_name: str, id_column: str) -> None:
+        bind = self.session.get_bind()
+        if not bind or bind.dialect.name != "postgresql":
+            return
+        self.session.execute(
+            sql_text(
+                f"SELECT setval(pg_get_serial_sequence('{table_name}', '{id_column}'), "
+                f"COALESCE((SELECT MAX({id_column}) FROM {table_name}), 0), true)"
+            )
+        )
 
     def _promote_preferred_source(self, statement: Statement, payload: dict) -> None:
         current_rank = source_priority_key(statement.event_source_preference or statement.source_type, statement.source_url)
@@ -284,7 +307,25 @@ class StatementsService:
                 raw_payload=payload.get("raw_payload"),
             )
         )
-        self.session.flush()
+        try:
+            self.session.flush()
+        except IntegrityError as exc:
+            if "statement_sources_pkey" not in str(exc):
+                raise
+            self.session.rollback()
+            self._repair_postgres_sequence("statement_sources", "id")
+            self.session.add(
+                StatementSource(
+                    statement_id=statement_id,
+                    source_url=payload["source_url"],
+                    source_type=payload["source_type"],
+                    source_title=payload.get("source_title") or payload.get("title"),
+                    parser_identity=payload.get("parser_identity"),
+                    is_primary=payload.get("is_primary_source", True),
+                    raw_payload=payload.get("raw_payload"),
+                )
+            )
+            self.session.flush()
 
     def _ensure_statement_participants(self, statement_id: int, payload: dict) -> None:
         participant_ids = list(payload.get("participant_ids") or [])
@@ -307,4 +348,19 @@ class StatementsService:
                     source_type=payload.get("source_type"),
                 )
             )
-            self.session.flush()
+            try:
+                self.session.flush()
+            except IntegrityError as exc:
+                if "statement_participants_pkey" not in str(exc):
+                    raise
+                self.session.rollback()
+                self._repair_postgres_sequence("statement_participants", "id")
+                self.session.add(
+                    StatementParticipant(
+                        statement_id=statement_id,
+                        person_id=participant_id,
+                        source_url=payload.get("source_url"),
+                        source_type=payload.get("source_type"),
+                    )
+                )
+                self.session.flush()
