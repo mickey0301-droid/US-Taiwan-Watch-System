@@ -416,6 +416,7 @@ class ScheduledCollectionService:
         scan_meta: list[dict[str, Any]] = []
         summary_cache: dict[str, str] = {}
         fulltext_cache: dict[str, str] = {}
+        subjects_cache: dict[str, str] = {}
         for congress in CONGRESSES:
             bills = asyncio.run(_fetch_congress_bills(congress, settings.congress_api_key))
             filtered: list[dict[str, Any]] = []
@@ -442,6 +443,22 @@ class ScheduledCollectionService:
 
                 has_keyword = self._contains_any_keyword(text, taiwan_keywords)
                 matched_in = "title_or_latest_action" if has_keyword else ""
+                if not has_keyword:
+                    bill_type = str(item.get("type") or "").strip().lower()
+                    bill_number = str(item.get("number") or "").strip()
+                    cache_key = f"{int(item.get('congress') or congress)}-{bill_type}-{bill_number}"
+                    subjects_text = subjects_cache.get(cache_key)
+                    if subjects_text is None:
+                        subjects_text = self._fetch_congress_bill_subjects_text(
+                            congress=int(item.get("congress") or congress),
+                            bill_type=bill_type,
+                            bill_number=bill_number,
+                            api_key=settings.congress_api_key,
+                        )
+                        subjects_cache[cache_key] = subjects_text
+                    has_keyword = self._contains_any_keyword(subjects_text, taiwan_keywords)
+                    if has_keyword:
+                        matched_in = "subjects"
                 if not has_keyword:
                     bill_type = str(item.get("type") or "").strip().lower()
                     bill_number = str(item.get("number") or "").strip()
@@ -630,6 +647,50 @@ class ScheduledCollectionService:
         text = html.unescape(text)
         text = re.sub(r"\s+", " ", text).strip()
         return text
+
+    def _fetch_congress_bill_subjects_text(
+        self,
+        *,
+        congress: int,
+        bill_type: str,
+        bill_number: str,
+        api_key: str,
+    ) -> str:
+        if not (congress and bill_type and bill_number and api_key):
+            return ""
+        url = f"https://api.congress.gov/v3/bill/{int(congress)}/{bill_type}/{bill_number}/subjects"
+        params = {"api_key": api_key, "format": "json", "limit": 250}
+        try:
+            response = httpx.get(url, params=params, timeout=25.0, follow_redirects=True, headers={"User-Agent": USER_AGENT})
+            response.raise_for_status()
+            data = response.json() if response.content else {}
+        except Exception:
+            return ""
+        subjects = data.get("subjects") if isinstance(data, dict) else None
+        if not isinstance(subjects, dict):
+            return ""
+        chunks: list[str] = []
+        for key in ("legislativeSubjects", "policyArea"):
+            value = subjects.get(key)
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        name = str(item.get("name") or "").strip()
+                        if name:
+                            chunks.append(name)
+                    elif isinstance(item, str):
+                        text = item.strip()
+                        if text:
+                            chunks.append(text)
+            elif isinstance(value, dict):
+                name = str(value.get("name") or "").strip()
+                if name:
+                    chunks.append(name)
+            elif isinstance(value, str):
+                text = value.strip()
+                if text:
+                    chunks.append(text)
+        return "\n".join(chunks)
 
     def _run_restricted_event_scan(self, task: CollectionSchedule) -> dict[str, Any]:
         months = self._months_from_task(task)
