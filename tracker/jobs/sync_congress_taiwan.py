@@ -35,7 +35,15 @@ def _parse_date(value: object) -> date | None:
         return None
 
 
-async def _fetch_congress_bills(congress: int, api_key: str, limit: int = 250, max_pages: int = 20) -> list[dict[str, Any]]:
+async def _fetch_congress_bills(
+    congress: int,
+    api_key: str,
+    *,
+    limit: int = 250,
+    max_pages: int = 20,
+    from_datetime: str | None = None,
+    to_datetime: str | None = None,
+) -> list[dict[str, Any]]:
     base = f"https://api.congress.gov/v3/bill/{int(congress)}"
     bills: list[dict[str, Any]] = []
     offset = 0
@@ -47,8 +55,13 @@ async def _fetch_congress_bills(congress: int, api_key: str, limit: int = 250, m
                 "format": "json",
                 "limit": int(limit),
                 "offset": int(offset),
-                "sort": "updateDate+desc",
             }
+            if from_datetime:
+                params["fromDateTime"] = from_datetime
+            if to_datetime:
+                params["toDateTime"] = to_datetime
+            if not from_datetime and not to_datetime:
+                params["sort"] = "updateDate+desc"
             response = await client.get(base, params=params)
             response.raise_for_status()
             data = response.json() if response.content else {}
@@ -162,4 +175,3 @@ def run_sync_congress_taiwan() -> dict[str, Any]:
         "metadata": {"scans": scan_meta},
         "errors": list(upserted.get("errors") or [])[:20],
     }
-

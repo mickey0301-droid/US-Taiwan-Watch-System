@@ -418,7 +418,14 @@ class ScheduledCollectionService:
         fulltext_cache: dict[str, str] = {}
         subjects_cache: dict[str, str] = {}
         for congress in CONGRESSES:
-            bills = asyncio.run(_fetch_congress_bills(congress, settings.congress_api_key))
+            bills = asyncio.run(
+                _fetch_congress_bills(
+                    congress,
+                    settings.congress_api_key,
+                    from_datetime=start_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    to_datetime=end_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                )
+            )
             filtered: list[dict[str, Any]] = []
             for item in bills:
                 title = str(item.get("title") or "")
