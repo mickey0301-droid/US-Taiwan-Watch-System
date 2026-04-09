@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from datetime import date, datetime
 from typing import Iterable
@@ -15,6 +16,21 @@ from tracker.ui.navigation import render_person_links
 from tracker.ui import dashboard
 from tracker.utils.congress_bills import congress_bill_url
 from tracker.utils.source_types import source_bucket_label, source_priority_key
+
+
+def _payload_dict(value: object) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
 
 def _select_preferred_legislation_title(title: str, source_url: str, raw_payload: dict[str, object] | None) -> str:
@@ -130,7 +146,7 @@ def _render_db_legislation_card(selected: Legislation, service: LegislationServi
     sponsor_text = dashboard._format_people_inline([sponsor_person], lang) if sponsor_person else ("未提供" if lang == "zh-TW" else "Not available")
     cosponsor_text = _format_cosponsor_people(cosponsor_people, lang)
 
-    raw_payload = selected.raw_payload or {}
+    raw_payload = _payload_dict(selected.raw_payload)
     official_link = raw_payload.get("congress_gov_url") or congress_bill_url(
         raw_payload.get("congress"),
         selected.bill_number,
@@ -496,7 +512,7 @@ def _dedupe_db_legislation_rows(rows: list[Legislation]) -> list[Legislation]:
     for key in order:
         selected = best_by_key[key]
         merged_links = _sort_source_links(source_links_by_key.get(key, set()))
-        payload = dict(selected.raw_payload or {})
+        payload = _payload_dict(selected.raw_payload)
         payload["_source_urls"] = merged_links
         selected.raw_payload = payload
         deduped.append(selected)
@@ -753,7 +769,7 @@ def _collect_db_source_links(row: Legislation) -> list[str]:
     links: set[str] = set()
     if row.source_url:
         links.add(str(row.source_url).strip())
-    payload = row.raw_payload if isinstance(row.raw_payload, dict) else {}
+    payload = _payload_dict(row.raw_payload)
     congress_link = str(payload.get("congress_gov_url") or "").strip()
     if congress_link:
         links.add(congress_link)
@@ -780,7 +796,7 @@ def _sort_source_links(links: set[str]) -> list[str]:
 def _effective_legislation_date(row: Legislation) -> date | None:
     if row.introduced_date:
         return row.introduced_date
-    payload = row.raw_payload or {}
+    payload = _payload_dict(row.raw_payload)
     # Prefer official introduced date from Congress payload before last action date.
     for key in ("introduced_on_congress", "introduced_date"):
         parsed = _parse_date_value(payload.get(key))
