@@ -105,7 +105,8 @@ class PersonTaiwanEventMonitorService:
         payload = self._person_payload(person)
         config = self.get_person_monitor_config(person)
         config["enabled"] = bool(enabled)
-        config["person_keywords"] = self._filter_person_keywords(person, self._clean_keywords(person_keywords))
+        cleaned_person_keywords = self._clean_keywords(person_keywords)
+        config["person_keywords"] = cleaned_person_keywords or [str(person.full_name or "").strip()]
         config["taiwan_keywords"] = self._clean_keywords(taiwan_keywords) or list(DEFAULT_TAIWAN_KEYWORDS)
         config["domains"] = self._clean_domains(domains) or list(DEFAULT_DOMAINS)
         config["daily_time"] = self._normalize_daily_time(daily_time)
@@ -275,12 +276,22 @@ class PersonTaiwanEventMonitorService:
             return MonitorRunResult(person_id=person_id, person_name="", ok=False, error="Person not found")
 
         config = self.get_person_monitor_config(person)
-        person_keywords = self._filter_person_keywords(person, self._clean_keywords(config.get("person_keywords") or []))
+        all_person_keywords = self._clean_keywords(config.get("person_keywords") or [])
+        if not all_person_keywords:
+            fallback_name = str(person.full_name or "").strip()
+            if fallback_name:
+                all_person_keywords = [fallback_name]
+        # Keep an English full-name subset for Google-style query quality,
+        # but preserve full keyword set (including Chinese aliases) for
+        # direct-site search and in-article matching.
+        person_keywords = self._filter_person_keywords(person, list(all_person_keywords))
+        if not person_keywords:
+            person_keywords = list(all_person_keywords)
         taiwan_keywords = self._clean_keywords(config.get("taiwan_keywords") or [])
         domains = self._clean_domains(config.get("domains") or [])
         lookback_days = self._normalize_lookback_days(config.get("lookback_days"))
         include_global_news = bool(config.get("include_global_news", False))
-        if not person_keywords:
+        if not all_person_keywords:
             return MonitorRunResult(person_id=person.id, person_name=person.full_name, ok=False, error="Missing person keywords")
         if not taiwan_keywords:
             taiwan_keywords = list(DEFAULT_TAIWAN_KEYWORDS)
@@ -302,6 +313,7 @@ class PersonTaiwanEventMonitorService:
                     domain=domain,
                     query=query,
                     person_keywords=person_keywords,
+                    all_person_keywords=all_person_keywords,
                     lookback_days=lookback_days,
                 )
                 found = 0
@@ -312,7 +324,7 @@ class PersonTaiwanEventMonitorService:
                     if not self._within_lookback(item.get("published_at"), lookback_days):
                         continue
                     text = self._merge_text(item.get("title"), item.get("summary"))
-                    matched_person = self._matched_keywords(text, person_keywords)
+                    matched_person = self._matched_keywords(text, all_person_keywords)
                     matched_taiwan = self._matched_keywords(text, taiwan_keywords)
                     if not matched_person or not matched_taiwan:
                         if bool(item.get("query_enforced_match")):
@@ -330,8 +342,8 @@ class PersonTaiwanEventMonitorService:
                                         )
                             if not matched_taiwan:
                                 continue
-                            if not matched_person and person_keywords:
-                                matched_person = [person_keywords[0]]
+                            if not matched_person and all_person_keywords:
+                                matched_person = [all_person_keywords[0]]
                         else:
                             continue
                     found += 1
@@ -411,7 +423,7 @@ class PersonTaiwanEventMonitorService:
                         skipped_existing += 1
                         continue
                     text = self._merge_text(item.get("title"), item.get("summary"))
-                    matched_person = self._matched_keywords(text, person_keywords)
+                    matched_person = self._matched_keywords(text, all_person_keywords)
                     matched_taiwan = self._matched_keywords(text, taiwan_keywords)
                     if not matched_taiwan:
                         source_url_for_check = str(item.get("url") or "").strip()
@@ -424,8 +436,8 @@ class PersonTaiwanEventMonitorService:
                                 )
                         if not matched_taiwan:
                             continue
-                    if not matched_person and person_keywords:
-                        matched_person = [person_keywords[0]]
+                    if not matched_person and all_person_keywords:
+                        matched_person = [all_person_keywords[0]]
                     found += 1
                     source_domain = domain_from_url(source_url)
                     source_type = "official" if source_domain in {"president.gov.tw", "mofa.gov.tw"} else "media"
@@ -556,11 +568,18 @@ class PersonTaiwanEventMonitorService:
         domain: str,
         query: str,
         person_keywords: list[str],
+        all_person_keywords: list[str],
         lookback_days: int,
     ) -> list[dict[str, Any]]:
         normalized_domain = str(domain or "").strip().lower()
         if normalized_domain in {"cna.com.tw", "mofa.gov.tw", "president.gov.tw"}:
-            return self._collect_direct_site_items(client, normalized_domain, person_keywords, lookback_days, query=query)
+            return self._collect_direct_site_items(
+                client,
+                normalized_domain,
+                all_person_keywords or person_keywords,
+                lookback_days,
+                query=query,
+            )
         rss_url = build_google_news_rss_url(query=query, hl="zh-TW", gl="TW", ceid="TW:zh-Hant")
         return self._collect_rss_items(client, rss_url=rss_url, domain=normalized_domain)
 
@@ -575,6 +594,7 @@ class PersonTaiwanEventMonitorService:
         end = datetime.utcnow().date() + timedelta(days=1)
         start = end - timedelta(days=max(1, int(lookback_days)))
         cna_limit = self._cna_limit_for_lookback(lookback_days)
+        max_pages = self._max_pages_for_lookback(lookback_days)
         hits = []
         try:
             if domain == "cna.com.tw":
@@ -606,7 +626,7 @@ class PersonTaiwanEventMonitorService:
                         person_terms=person_keywords,
                         start=start,
                         end=end,
-                        max_pages=40,
+                        max_pages=max_pages,
                         require_taiwan_keyword=True,
                     )
                 except TypeError:
@@ -616,7 +636,7 @@ class PersonTaiwanEventMonitorService:
                         person_terms=person_keywords,
                         start=start,
                         end=end,
-                        max_pages=40,
+                        max_pages=max_pages,
                     )
             elif domain == "president.gov.tw":
                 try:
@@ -626,7 +646,7 @@ class PersonTaiwanEventMonitorService:
                         person_terms=person_keywords,
                         start=start,
                         end=end,
-                        max_pages=40,
+                        max_pages=max_pages,
                         require_taiwan_keyword=True,
                     )
                 except TypeError:
@@ -636,7 +656,7 @@ class PersonTaiwanEventMonitorService:
                         person_terms=person_keywords,
                         start=start,
                         end=end,
-                        max_pages=40,
+                        max_pages=max_pages,
                     )
         except Exception:
             hits = []
@@ -733,6 +753,18 @@ class PersonTaiwanEventMonitorService:
         if days >= 180:
             return 400
         return 300
+
+    def _max_pages_for_lookback(self, lookback_days: int) -> int:
+        days = max(1, int(lookback_days or 1))
+        if days >= 1800:
+            return 220
+        if days >= 1000:
+            return 180
+        if days >= 365:
+            return 120
+        if days >= 180:
+            return 90
+        return 40
 
     def _has_existing_person_source_url(self, person_id: int, source_url: str) -> bool:
         url = str(source_url or "").strip()

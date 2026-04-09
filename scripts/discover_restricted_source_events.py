@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup
 
 USER_AGENT = "Mozilla/5.0 (compatible; UTWBot/1.0; +https://github.com/mickey0301-droid/US-Taiwan-Watch-System)"
 TAIWAN_KEYWORDS = ("台灣", "臺灣", "台海", "taiwan", "taipei")
-EXCERPT_MAX_LEN = 1500
+EXCERPT_MAX_LEN = 5000
 
 
 @dataclass
