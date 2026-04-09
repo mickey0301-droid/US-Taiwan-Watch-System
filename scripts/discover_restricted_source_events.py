@@ -81,6 +81,8 @@ def discover_cna(
     start: date,
     end: date,
     limit: int = 80,
+    require_taiwan_keyword: bool = True,
+    require_dated_url: bool = True,
 ) -> list[EventHit]:
     urls: list[str] = []
     # Try all aliases instead of only the first term. CNA search relevance can
@@ -92,10 +94,17 @@ def discover_cna(
         except Exception:
             continue
         soup = BeautifulSoup(resp.text, "html.parser")
+        # CNA search HTML keeps result links in multiple places (relative href,
+        # JSON-LD, and inline JSON). Collect from all patterns.
+        for match in re.findall(r"/news/[a-z0-9]+/\d+\.aspx", resp.text, flags=re.I):
+            full = f"https://www.cna.com.tw{match}" if match.startswith("/") else match
+            if full not in urls:
+                urls.append(full)
+        for match in re.findall(r"https://www\.cna\.com\.tw/news/[a-z0-9]+/\d+\.aspx", resp.text, flags=re.I):
+            if match not in urls:
+                urls.append(match)
         for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
             text = script.get_text(strip=True)
-            if "ItemList" not in text:
-                continue
             for match in re.findall(r"https://www\.cna\.com\.tw/news/[a-z0-9]+/\d+\.aspx", text, flags=re.I):
                 if match not in urls:
                     urls.append(match)
@@ -112,18 +121,21 @@ def discover_cna(
         )
         body = _clean_text(" ".join(node.get_text(" ", strip=True) for node in article.select("article p, .paragraph p, .paragraph")))
         merged = _clean_text(f"{title} {body}")
-        if not (_contains_any(merged, person_terms) and _contains_any(merged, TAIWAN_KEYWORDS)):
+        if not _contains_any(merged, person_terms):
+            continue
+        if require_taiwan_keyword and not _contains_any(merged, TAIWAN_KEYWORDS):
             continue
 
         published = None
-        date_match = re.search(r"/(\d{8})\.aspx(?:$|[?#])", link, flags=re.I)
+        # CNA IDs are commonly 12 digits now (YYYYMMDD + serial).
+        date_match = re.search(r"/(\d{8})\d*\.aspx(?:$|[?#])", link, flags=re.I)
         if date_match:
             try:
                 published = datetime.strptime(date_match.group(1), "%Y%m%d").date()
             except ValueError:
                 published = None
-        # CNA links should always include YYYYMMDD in URL; skip malformed links
-        if not published:
+        # Strict mode requires date in CNA URL; legacy mode can keep undated hits.
+        if require_dated_url and not published:
             continue
         if not _in_range(published, start, end):
             continue
@@ -146,6 +158,7 @@ def discover_mofa(
     start: date,
     end: date,
     max_pages: int = 30,
+    require_taiwan_keyword: bool = True,
 ) -> list[EventHit]:
     hits: list[EventHit] = []
     for page in range(1, max_pages + 1):
@@ -183,7 +196,9 @@ def discover_mofa(
             detail = BeautifulSoup(detail_resp.text, "html.parser")
             body = _clean_text(" ".join(node.get_text(" ", strip=True) for node in detail.select(".page-content p, .cp p, article p, .editor p")))
             merged = _clean_text(f"{title} {body}")
-            if not (_contains_any(merged, person_terms) and _contains_any(merged, TAIWAN_KEYWORDS)):
+            if not _contains_any(merged, person_terms):
+                continue
+            if require_taiwan_keyword and not _contains_any(merged, TAIWAN_KEYWORDS):
                 continue
             hits.append(
                 EventHit(
@@ -206,6 +221,7 @@ def discover_president(
     start: date,
     end: date,
     max_pages: int = 30,
+    require_taiwan_keyword: bool = True,
 ) -> list[EventHit]:
     hits: list[EventHit] = []
     for detailno in range(1, max_pages + 1):
@@ -245,7 +261,9 @@ def discover_president(
             detail = BeautifulSoup(detail_resp.text, "html.parser")
             body = _clean_text(" ".join(node.get_text(" ", strip=True) for node in detail.select(".article p, .con p, article p, .news p")))
             merged = _clean_text(f"{title} {body}")
-            if not (_contains_any(merged, person_terms) and _contains_any(merged, TAIWAN_KEYWORDS)):
+            if not _contains_any(merged, person_terms):
+                continue
+            if require_taiwan_keyword and not _contains_any(merged, TAIWAN_KEYWORDS):
                 continue
             hits.append(
                 EventHit(
