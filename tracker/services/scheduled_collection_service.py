@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta
 from datetime import date as date_type
+import html
 import re
 from typing import Any
 
@@ -414,6 +415,7 @@ class ScheduledCollectionService:
         result_items: list[dict[str, Any]] = []
         scan_meta: list[dict[str, Any]] = []
         summary_cache: dict[str, str] = {}
+        fulltext_cache: dict[str, str] = {}
         for congress in CONGRESSES:
             bills = asyncio.run(_fetch_congress_bills(congress, settings.congress_api_key))
             filtered: list[dict[str, Any]] = []
@@ -439,6 +441,7 @@ class ScheduledCollectionService:
                     continue
 
                 has_keyword = self._contains_any_keyword(text, taiwan_keywords)
+                matched_in = "title_or_latest_action" if has_keyword else ""
                 if not has_keyword:
                     bill_type = str(item.get("type") or "").strip().lower()
                     bill_number = str(item.get("number") or "").strip()
@@ -453,6 +456,24 @@ class ScheduledCollectionService:
                         )
                         summary_cache[cache_key] = summary_text
                     has_keyword = self._contains_any_keyword(summary_text, taiwan_keywords)
+                    if has_keyword:
+                        matched_in = "summary"
+                if not has_keyword:
+                    bill_type = str(item.get("type") or "").strip().lower()
+                    bill_number = str(item.get("number") or "").strip()
+                    cache_key = f"{int(item.get('congress') or congress)}-{bill_type}-{bill_number}"
+                    fulltext = fulltext_cache.get(cache_key)
+                    if fulltext is None:
+                        fulltext = self._fetch_congress_bill_fulltext_text(
+                            congress=int(item.get("congress") or congress),
+                            bill_type=bill_type,
+                            bill_number=bill_number,
+                            api_key=settings.congress_api_key,
+                        )
+                        fulltext_cache[cache_key] = fulltext
+                    has_keyword = self._contains_any_keyword(fulltext, taiwan_keywords)
+                    if has_keyword:
+                        matched_in = "fulltext"
                 if not has_keyword:
                     continue
 
@@ -465,6 +486,7 @@ class ScheduledCollectionService:
                             "bill_type": str(item.get("type") or ""),
                             "bill_number": str(item.get("number") or ""),
                             "title": str(item.get("title") or ""),
+                            "matched_in": matched_in or "unknown",
                             "introduced_date": str(item.get("introducedDate") or ""),
                             "latest_action_date": str(latest_action.get("actionDate") or ""),
                             "update_date": str(item.get("updateDate") or ""),
@@ -525,6 +547,89 @@ class ScheduledCollectionService:
             if text:
                 chunks.append(re.sub(r"<[^>]+>", " ", text))
         return "\n".join(chunks)
+
+    def _fetch_congress_bill_fulltext_text(
+        self,
+        *,
+        congress: int,
+        bill_type: str,
+        bill_number: str,
+        api_key: str,
+    ) -> str:
+        if not (congress and bill_type and bill_number and api_key):
+            return ""
+        api_url = f"https://api.congress.gov/v3/bill/{int(congress)}/{bill_type}/{bill_number}/text"
+        params = {"api_key": api_key, "format": "json", "limit": 50}
+        try:
+            response = httpx.get(api_url, params=params, timeout=25.0, follow_redirects=True, headers={"User-Agent": USER_AGENT})
+            response.raise_for_status()
+            data = response.json() if response.content else {}
+        except Exception:
+            return ""
+
+        text_versions = data.get("textVersions") if isinstance(data, dict) else None
+        if not isinstance(text_versions, list):
+            return ""
+
+        candidate_urls = self._extract_text_version_urls(text_versions)
+        if not candidate_urls:
+            return ""
+
+        chunks: list[str] = []
+        for url in candidate_urls[:3]:
+            raw = self._download_text_version(url)
+            if raw:
+                chunks.append(raw)
+            if len(" ".join(chunks)) > 20000:
+                break
+        return "\n".join(chunks)
+
+    def _extract_text_version_urls(self, text_versions: list[dict[str, Any]]) -> list[str]:
+        urls: list[str] = []
+        seen: set[str] = set()
+        for version in text_versions:
+            if not isinstance(version, dict):
+                continue
+            queue: list[Any] = [version]
+            while queue:
+                node = queue.pop(0)
+                if isinstance(node, dict):
+                    for key, value in node.items():
+                        if isinstance(value, (dict, list)):
+                            queue.append(value)
+                        elif isinstance(value, str):
+                            candidate = value.strip()
+                            if not candidate.startswith("http"):
+                                continue
+                            lower = candidate.lower()
+                            if any(token in lower for token in [".xml", ".htm", ".html", ".txt", "formattedtext", "generatedhtml", "xml"]):
+                                if candidate not in seen:
+                                    seen.add(candidate)
+                                    urls.append(candidate)
+                elif isinstance(node, list):
+                    queue.extend(node)
+        return urls
+
+    def _download_text_version(self, url: str) -> str:
+        try:
+            response = httpx.get(url, timeout=25.0, follow_redirects=True, headers={"User-Agent": USER_AGENT})
+            response.raise_for_status()
+            content_type = str(response.headers.get("content-type") or "").lower()
+            body = response.text
+        except Exception:
+            return ""
+        if not body:
+            return ""
+        text = body
+        if "html" in content_type or "<html" in body.lower():
+            text = re.sub(r"<script[\s\S]*?</script>", " ", text, flags=re.I)
+            text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.I)
+            text = re.sub(r"<[^>]+>", " ", text)
+        elif "xml" in content_type or body.lstrip().startswith("<?xml"):
+            text = re.sub(r"<[^>]+>", " ", text)
+        text = html.unescape(text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
 
     def _run_restricted_event_scan(self, task: CollectionSchedule) -> dict[str, Any]:
         months = self._months_from_task(task)
