@@ -189,10 +189,13 @@ class PersonTaiwanEventMonitorService:
                     matched_taiwan = self._matched_keywords(text, taiwan_keywords)
                     if not matched_person or not matched_taiwan:
                         if bool(item.get("query_enforced_match")):
+                            # For source-query-matched items, keep Taiwan keyword
+                            # strict in article text, while allowing person
+                            # keyword fallback to the configured primary name.
+                            if not matched_taiwan:
+                                continue
                             if not matched_person and person_keywords:
                                 matched_person = [person_keywords[0]]
-                            if not matched_taiwan and taiwan_keywords:
-                                matched_taiwan = [taiwan_keywords[0]]
                         else:
                             continue
                     found += 1
@@ -272,8 +275,12 @@ class PersonTaiwanEventMonitorService:
                         skipped_existing += 1
                         continue
                     text = self._merge_text(item.get("title"), item.get("summary"))
-                    matched_person = self._matched_keywords(text, person_keywords) or ([person_keywords[0]] if person_keywords else [])
-                    matched_taiwan = self._matched_keywords(text, taiwan_keywords) or ([taiwan_keywords[0]] if taiwan_keywords else [])
+                    matched_person = self._matched_keywords(text, person_keywords)
+                    matched_taiwan = self._matched_keywords(text, taiwan_keywords)
+                    if not matched_taiwan:
+                        continue
+                    if not matched_person and person_keywords:
+                        matched_person = [person_keywords[0]]
                     found += 1
                     source_domain = domain_from_url(source_url)
                     source_type = "official" if source_domain in {"president.gov.tw", "mofa.gov.tw"} else "media"
@@ -512,7 +519,7 @@ class PersonTaiwanEventMonitorService:
                     "title": str(getattr(hit, "title", "") or url),
                     "summary": str(getattr(hit, "excerpt", "") or ""),
                     "published_at": published_at,
-                    "query_enforced_match": False,
+                    "query_enforced_match": True,
                 }
             )
         return items
