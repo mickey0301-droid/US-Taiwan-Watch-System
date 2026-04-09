@@ -9,6 +9,7 @@ pydantic==2.9.2
 python-dotenv==1.0.1
 PyYAML==6.0.2
 rapidfuzz==3.10.1
+pypdf==5.4.0
 psycopg[binary]==3.2.3
 SQLAlchemy==2.0.36
 streamlit==1.39.0

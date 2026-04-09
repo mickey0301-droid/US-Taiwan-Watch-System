@@ -40,28 +40,42 @@ async def _fetch_congress_bills(
     api_key: str,
     *,
     limit: int = 250,
-    max_pages: int = 20,
+    max_pages: int = 200,
     from_datetime: str | None = None,
     to_datetime: str | None = None,
 ) -> list[dict[str, Any]]:
     base = f"https://api.congress.gov/v3/bill/{int(congress)}"
     bills: list[dict[str, Any]] = []
-    offset = 0
-    pages = 0
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        while pages < max_pages:
-            params = {
-                "api_key": api_key,
-                "format": "json",
-                "limit": int(limit),
-                "offset": int(offset),
-            }
-            if from_datetime:
-                params["fromDateTime"] = from_datetime
-            if to_datetime:
-                params["toDateTime"] = to_datetime
-            if not from_datetime and not to_datetime:
-                params["sort"] = "updateDate+desc"
+        params = {
+            "api_key": api_key,
+            "format": "json",
+            "limit": int(limit),
+            "offset": 0,
+            "sort": "updateDate+desc",
+        }
+        if from_datetime:
+            params["fromDateTime"] = from_datetime
+        if to_datetime:
+            params["toDateTime"] = to_datetime
+
+        first_response = await client.get(base, params=params)
+        first_response.raise_for_status()
+        first_data = first_response.json() if first_response.content else {}
+        first_chunk = first_data.get("bills") if isinstance(first_data, dict) else None
+        if not isinstance(first_chunk, list) or not first_chunk:
+            return []
+        bills.extend([item for item in first_chunk if isinstance(item, dict)])
+
+        pagination = first_data.get("pagination") if isinstance(first_data, dict) else None
+        total_count = int((pagination or {}).get("count") or 0)
+        if total_count <= len(first_chunk):
+            return bills
+
+        page_count = (total_count + limit - 1) // limit
+        page_count = min(page_count, int(max_pages))
+        for page_idx in range(1, page_count):
+            params["offset"] = int(page_idx * limit)
             response = await client.get(base, params=params)
             response.raise_for_status()
             data = response.json() if response.content else {}
@@ -69,10 +83,8 @@ async def _fetch_congress_bills(
             if not isinstance(chunk, list) or not chunk:
                 break
             bills.extend([item for item in chunk if isinstance(item, dict)])
-            pages += 1
             if len(chunk) < limit:
                 break
-            offset += limit
     return bills
 
 

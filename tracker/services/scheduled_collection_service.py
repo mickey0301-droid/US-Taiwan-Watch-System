@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timedelta
 from datetime import date as date_type
 import html
+import io
 import re
 from typing import Any
 
@@ -24,6 +25,11 @@ from tracker.config import get_settings
 from tracker.models import Alias, Appointment, CollectionSchedule, Office, Person, StatementParticipant, StatementSource
 from tracker.utils.web import build_google_news_rss_url
 from tracker.services.statements_service import StatementsService
+
+try:
+    from pypdf import PdfReader
+except Exception:  # pragma: no cover
+    PdfReader = None
 
 
 USER_AGENT = "Mozilla/5.0 (compatible; UTWBot/1.0; +https://github.com/mickey0301-droid/US-Taiwan-Watch-System)"
@@ -626,7 +632,10 @@ class ScheduledCollectionService:
                             if not candidate.startswith("http"):
                                 continue
                             lower = candidate.lower()
-                            if any(token in lower for token in [".xml", ".htm", ".html", ".txt", "formattedtext", "generatedhtml", "xml"]):
+                            if any(
+                                token in lower
+                                for token in [".xml", ".htm", ".html", ".txt", ".pdf", "formattedtext", "generatedhtml", "xml", "pdf"]
+                            ):
                                 if candidate not in seen:
                                     seen.add(candidate)
                                     urls.append(candidate)
@@ -642,6 +651,19 @@ class ScheduledCollectionService:
             body = response.text
         except Exception:
             return ""
+        if "pdf" in content_type or str(url).lower().endswith(".pdf"):
+            if PdfReader is None:
+                return ""
+            try:
+                reader = PdfReader(io.BytesIO(response.content))
+                pages: list[str] = []
+                for page in reader.pages[:30]:
+                    page_text = (page.extract_text() or "").strip()
+                    if page_text:
+                        pages.append(page_text)
+                return re.sub(r"\s+", " ", " ".join(pages)).strip()
+            except Exception:
+                return ""
         if not body:
             return ""
         text = body
