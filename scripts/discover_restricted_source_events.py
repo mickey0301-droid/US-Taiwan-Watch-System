@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import time
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Iterable
@@ -88,11 +89,40 @@ def discover_cna(
     urls: list[str] = []
     # Try all aliases instead of only the first term. CNA search relevance can
     # differ significantly between English and Chinese keywords.
-    for search_term in list(dict.fromkeys([term.strip() for term in person_terms if term and term.strip()])):
+    base_terms = list(dict.fromkeys([term.strip() for term in person_terms if term and term.strip()]))
+    search_terms = list(base_terms)
+    # CNA index can miss person-only searches. Add person + Taiwan-term
+    # queries to recover relevant records that are otherwise hidden.
+    for base in base_terms:
+        for taiwan_term in ("台灣", "臺灣"):
+            combined = f"{base} {taiwan_term}".strip()
+            if combined and combined not in search_terms:
+                search_terms.append(combined)
+
+    for search_term in search_terms:
         url = f"https://www.cna.com.tw/search/hysearchws.aspx?q={quote_plus(search_term)}"
-        try:
-            resp = _safe_get(client, insecure_client, url=url)
-        except Exception:
+        resp: httpx.Response | None = None
+        for attempt in range(3):
+            try:
+                candidate = client.get(url, timeout=30.0)
+            except Exception:
+                candidate = None
+                # Keep legacy certificate fallback behavior.
+                try:
+                    candidate = _safe_get(client, insecure_client, url=url)
+                except Exception:
+                    candidate = None
+            if candidate is None:
+                continue
+            if candidate.status_code == 429:
+                time.sleep(1.0 + attempt * 1.5)
+                continue
+            if candidate.status_code >= 400:
+                candidate = None
+                continue
+            resp = candidate
+            break
+        if resp is None:
             continue
         soup = BeautifulSoup(resp.text, "html.parser")
         # CNA search HTML keeps result links in multiple places (relative href,
