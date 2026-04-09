@@ -81,7 +81,7 @@ def discover_cna(
     person_terms: list[str],
     start: date,
     end: date,
-    limit: int = 80,
+    limit: int = 300,
     require_taiwan_keyword: bool = True,
     require_dated_url: bool = True,
 ) -> list[EventHit]:

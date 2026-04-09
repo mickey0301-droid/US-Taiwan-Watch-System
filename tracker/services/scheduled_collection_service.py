@@ -970,6 +970,8 @@ class ScheduledCollectionService:
     ):
         start = start_at.date()
         end = end_at.date()
+        lookback_days = max(1, int((end_at.date() - start_at.date()).days))
+        cna_limit = self._cna_limit_for_lookback(lookback_days)
         if domain == "cna.com.tw":
             # CNA search endpoint only uses the first term as query seed.
             # Run multiple seeds (full name / aliases) then merge to avoid missing
@@ -979,9 +981,18 @@ class ScheduledCollectionService:
             for idx, seed in enumerate(ordered_terms[:4]):
                 reordered = [seed] + [term for term in ordered_terms if term != seed]
                 try:
-                    aggregate.extend(discover_cna(client, insecure_client, person_terms=reordered, start=start, end=end))
+                    aggregate.extend(
+                        discover_cna(
+                            client,
+                            insecure_client,
+                            person_terms=reordered,
+                            start=start,
+                            end=end,
+                            limit=cna_limit,
+                        )
+                    )
                 except TypeError:
-                    aggregate.extend(discover_cna(client, insecure_client, reordered, start, end))
+                    aggregate.extend(discover_cna(client, insecure_client, reordered, start, end, cna_limit))
                 # Keep runtime bounded for large scopes.
                 if idx >= 2 and len(aggregate) >= 20:
                     break
@@ -1049,6 +1060,18 @@ class ScheduledCollectionService:
                 )()
             )
         return dedupe_hits(hits)
+
+    def _cna_limit_for_lookback(self, lookback_days: int) -> int:
+        days = max(1, int(lookback_days or 1))
+        if days >= 1800:
+            return 1200
+        if days >= 1000:
+            return 900
+        if days >= 365:
+            return 600
+        if days >= 180:
+            return 400
+        return 300
 
     def _resolve_possible_google_news_link(self, client: httpx.Client, link: str) -> str:
         if not link:

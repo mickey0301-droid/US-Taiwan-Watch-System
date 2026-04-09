@@ -421,6 +421,7 @@ class PersonTaiwanEventMonitorService:
     ) -> list[dict[str, Any]]:
         end = datetime.utcnow().date() + timedelta(days=1)
         start = end - timedelta(days=max(1, int(lookback_days)))
+        cna_limit = self._cna_limit_for_lookback(lookback_days)
         hits = []
         try:
             if domain == "cna.com.tw":
@@ -431,6 +432,7 @@ class PersonTaiwanEventMonitorService:
                         person_terms=person_keywords,
                         start=start,
                         end=end,
+                        limit=cna_limit,
                         require_taiwan_keyword=False,
                         require_dated_url=False,
                     )
@@ -441,7 +443,7 @@ class PersonTaiwanEventMonitorService:
                         person_terms=person_keywords,
                         start=start,
                         end=end,
-                        limit=120,
+                        limit=cna_limit,
                     )
             elif domain == "mofa.gov.tw":
                 try:
@@ -514,6 +516,20 @@ class PersonTaiwanEventMonitorService:
                 }
             )
         return items
+
+    def _cna_limit_for_lookback(self, lookback_days: int) -> int:
+        days = max(1, int(lookback_days or 1))
+        # Scale candidate depth with lookback window so long windows don't
+        # silently cap at a small fixed number.
+        if days >= 1800:
+            return 1200
+        if days >= 1000:
+            return 900
+        if days >= 365:
+            return 600
+        if days >= 180:
+            return 400
+        return 300
 
     def _has_existing_person_source_url(self, person_id: int, source_url: str) -> bool:
         url = str(source_url or "").strip()
