@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from scripts.discover_restricted_source_events import discover_cna, discover_mofa, discover_president
-from tracker.models import Person, StatementParticipant, StatementSource
+from tracker.models import Person, StatementParticipant, StatementSource, SyncRun
 from tracker.services.statements_service import StatementsService
 from tracker.utils.web import build_google_news_rss_url, domain_from_url, parse_datetime
 
@@ -117,6 +117,7 @@ class PersonTaiwanEventMonitorService:
         return config
 
     def run_due_monitors(self) -> dict[str, Any]:
+        queue_result = self.run_queued_manual_runs(limit=2)
         now_utc = datetime.utcnow()
         now_local = datetime.now(self._tz)
         people = self.session.execute(select(Person).where(Person.is_current.is_(True))).scalars().all()
@@ -142,7 +143,108 @@ class PersonTaiwanEventMonitorService:
                     "error": result.error,
                 }
             )
-        return {"status": "success", "due_count": len(due_people), "results": results}
+        return {
+            "status": "success",
+            "queued_processed": int(queue_result.get("processed", 0)),
+            "due_count": len(due_people),
+            "results": results,
+            "queue_results": queue_result.get("results", []),
+        }
+
+    def enqueue_manual_run(self, person_id: int) -> SyncRun:
+        person = self.session.get(Person, int(person_id))
+        if not person:
+            raise ValueError("Person not found")
+        run = SyncRun(
+            job_name=f"person_monitor_manual_{person.id}",
+            job_type="person_monitor_manual",
+            source_name=person.full_name,
+            status="queued",
+            records_found=0,
+            records_created=0,
+            records_updated=0,
+            records_deactivated=0,
+            meta={"person_id": person.id},
+        )
+        self.session.add(run)
+        self.session.flush()
+        return run
+
+    def get_latest_manual_run(self, person_id: int) -> SyncRun | None:
+        candidates = (
+            self.session.execute(
+                select(SyncRun)
+                .where(SyncRun.job_type == "person_monitor_manual")
+                .order_by(SyncRun.created_at.desc())
+                .limit(50)
+            )
+            .scalars()
+            .all()
+        )
+        target = int(person_id)
+        for run in candidates:
+            if int((run.meta or {}).get("person_id") or 0) == target:
+                return run
+        return None
+
+    def run_queued_manual_runs(self, limit: int = 2) -> dict[str, Any]:
+        queued_runs = (
+            self.session.execute(
+                select(SyncRun)
+                .where(
+                    SyncRun.job_type == "person_monitor_manual",
+                    SyncRun.status == "queued",
+                )
+                .order_by(SyncRun.created_at.asc())
+                .limit(max(1, int(limit)))
+            )
+            .scalars()
+            .all()
+        )
+        results: list[dict[str, Any]] = []
+        processed = 0
+        for run in queued_runs:
+            processed += 1
+            run.status = "running"
+            run.started_at = datetime.utcnow()
+            run.error_message = None
+            self.session.flush()
+            person_id = int((run.meta or {}).get("person_id") or 0)
+            try:
+                result = self.run_for_person(person_id, trigger="manual_queue")
+                run.ended_at = datetime.utcnow()
+                run.status = "success" if result.ok else "failed"
+                run.records_found = int(result.found or 0)
+                run.records_created = int(result.created or 0)
+                run.records_updated = int(result.updated or 0)
+                if not result.ok:
+                    run.error_message = str(result.error or "manual queue run failed")
+                run.meta = {**dict(run.meta or {}), "result": {"ok": result.ok, "found": result.found, "created": result.created, "updated": result.updated}}
+                results.append(
+                    {
+                        "run_id": run.id,
+                        "person_id": person_id,
+                        "ok": bool(result.ok),
+                        "found": int(result.found or 0),
+                        "created": int(result.created or 0),
+                        "updated": int(result.updated or 0),
+                        "error": result.error,
+                    }
+                )
+            except Exception as exc:
+                run.ended_at = datetime.utcnow()
+                run.status = "failed"
+                run.error_message = f"{type(exc).__name__}: {exc}"
+                results.append(
+                    {
+                        "run_id": run.id,
+                        "person_id": person_id,
+                        "ok": False,
+                        "error": run.error_message,
+                    }
+                )
+            self.session.flush()
+        return {"processed": processed, "results": results}
 
     def run_for_person(self, person_id: int, trigger: str = "manual") -> MonitorRunResult:
         person = self.session.get(Person, int(person_id))

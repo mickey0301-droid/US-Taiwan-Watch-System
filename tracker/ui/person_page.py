@@ -2764,25 +2764,15 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     daily_time=daily_time,
                     lookback_days=int(lookback_days),
                 )
-                with st.spinner("監測執行中..." if lang == "zh-TW" else "Running monitor..."):
-                    run_result = monitor_service.run_for_person(person.id, trigger="manual")
+                queued_run = monitor_service.enqueue_manual_run(person.id)
                 session.flush()
-                if run_result.ok:
-                    skipped_existing = 0
-                    for query_row in list(run_result.queries or []):
-                        try:
-                            skipped_existing += int((query_row or {}).get("items_skipped_existing") or 0)
-                        except Exception:
-                            continue
-                    st.success(
-                        (
-                            f"完成：找到 {run_result.found} 則，新增 {run_result.created} 則，更新 {run_result.updated} 則，已存在略過 {skipped_existing} 則"
-                            if lang == "zh-TW"
-                            else f"Done: found {run_result.found}, created {run_result.created}, updated {run_result.updated}, skipped existing {skipped_existing}"
-                        )
-                    )
-                else:
-                    st.error(str(run_result.error or "Monitor run failed"))
+                session.commit()
+                st.session_state[monitor_flash_key] = (
+                    f"已排入監測佇列（任務 #{queued_run.id}），請稍候自動執行"
+                    if lang == "zh-TW"
+                    else f"Queued monitor run (job #{queued_run.id}); it will be processed shortly."
+                )
+                st.rerun()
 
             latest_monitor_config = monitor_service.get_person_monitor_config(person, chinese_aliases=chinese_aliases)
             last_result = latest_monitor_config.get("last_result") or {}
@@ -2794,6 +2784,17 @@ def render(lang: str, labels: dict[str, str]) -> None:
                         else f"Latest result: found {int(last_result.get('found', 0))}, created {int(last_result.get('created', 0))}, updated {int(last_result.get('updated', 0))}"
                     )
                 )
+            latest_manual_run = monitor_service.get_latest_manual_run(person.id)
+            if latest_manual_run:
+                status = str(latest_manual_run.status or "")
+                if status in {"queued", "running"}:
+                    st.info(
+                        (
+                            f"手動任務 #{latest_manual_run.id} 目前狀態：{status}"
+                            if lang == "zh-TW"
+                            else f"Manual job #{latest_manual_run.id} status: {status}"
+                        )
+                    )
             recent_runs = list(latest_monitor_config.get("runs") or [])[:5]
             if recent_runs:
                 st.write("最近執行紀錄" if lang == "zh-TW" else "Recent runs")

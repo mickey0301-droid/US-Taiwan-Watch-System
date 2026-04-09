@@ -102,7 +102,7 @@ def build_scheduler() -> BackgroundScheduler:
         scheduler.add_job(
             JOB_REGISTRY["run_person_taiwan_monitors"],
             trigger="interval",
-            minutes=10,
+            minutes=1,
             id="run_person_taiwan_monitors",
             replace_existing=True,
         )
