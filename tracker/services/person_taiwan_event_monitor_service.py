@@ -435,7 +435,7 @@ class PersonTaiwanEventMonitorService:
     ) -> list[dict[str, Any]]:
         normalized_domain = str(domain or "").strip().lower()
         if normalized_domain in {"cna.com.tw", "mofa.gov.tw", "president.gov.tw"}:
-            return self._collect_direct_site_items(client, normalized_domain, person_keywords, lookback_days)
+            return self._collect_direct_site_items(client, normalized_domain, person_keywords, lookback_days, query=query)
         rss_url = build_google_news_rss_url(query=query, hl="zh-TW", gl="TW", ceid="TW:zh-Hant")
         return self._collect_rss_items(client, rss_url=rss_url, domain=normalized_domain)
 
@@ -445,6 +445,7 @@ class PersonTaiwanEventMonitorService:
         domain: str,
         person_keywords: list[str],
         lookback_days: int,
+        query: str | None = None,
     ) -> list[dict[str, Any]]:
         end = datetime.utcnow().date() + timedelta(days=1)
         start = end - timedelta(days=max(1, int(lookback_days)))
@@ -542,6 +543,56 @@ class PersonTaiwanEventMonitorService:
                     "query_enforced_match": True,
                 }
             )
+        if domain == "cna.com.tw":
+            # CNA site search can intermittently under-return (or rate-limit).
+            # Add Google News CNA feed fallback and merge by URL.
+            fallback_items = self._collect_cna_google_fallback_items(
+                client,
+                person_keywords=person_keywords,
+                lookback_days=lookback_days,
+                base_query=query or "",
+            )
+            for item in fallback_items:
+                url = str(item.get("url") or "").strip()
+                if not url:
+                    continue
+                key = self._url_key(url)
+                if key in seen:
+                    continue
+                seen.add(key)
+                items.append(item)
+        return items
+
+    def _collect_cna_google_fallback_items(
+        self,
+        client: httpx.Client,
+        *,
+        person_keywords: list[str],
+        lookback_days: int,
+        base_query: str,
+    ) -> list[dict[str, Any]]:
+        query_candidates: list[str] = []
+        if base_query:
+            query_candidates.append(base_query)
+        for term in ["台灣", "臺灣", "Taiwan"]:
+            query_candidates.append(self.build_query(person_keywords, [term], domain="cna.com.tw"))
+        query_candidates = [q for q in query_candidates if q]
+
+        seen_keys: set[str] = set()
+        items: list[dict[str, Any]] = []
+        for query in query_candidates:
+            for hl, gl, ceid in [("zh-TW", "TW", "TW:zh-Hant"), ("en-US", "US", "US:en")]:
+                rss_url = build_google_news_rss_url(query=query, hl=hl, gl=gl, ceid=ceid)
+                for item in self._collect_rss_items(client, rss_url=rss_url, domain="cna.com.tw"):
+                    url = str(item.get("url") or "").strip()
+                    key = self._url_key(url)
+                    if not key or key in seen_keys:
+                        continue
+                    if not self._within_lookback(item.get("published_at"), lookback_days):
+                        continue
+                    seen_keys.add(key)
+                    item["query_enforced_match"] = True
+                    items.append(item)
         return items
 
     def _cna_limit_for_lookback(self, lookback_days: int) -> int:
