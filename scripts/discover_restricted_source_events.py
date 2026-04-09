@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 
 USER_AGENT = "Mozilla/5.0 (compatible; UTWBot/1.0; +https://github.com/mickey0301-droid/US-Taiwan-Watch-System)"
 TAIWAN_KEYWORDS = ("台灣", "臺灣", "台海", "taiwan", "taipei")
+EXCERPT_MAX_LEN = 1500
 
 
 @dataclass
@@ -145,7 +146,7 @@ def discover_cna(
                 url=link,
                 title=title or link,
                 published_date=published.isoformat() if published else None,
-                excerpt=body[:220],
+                excerpt=body[:EXCERPT_MAX_LEN],
             )
         )
     return hits
@@ -206,7 +207,7 @@ def discover_mofa(
                     url=full_url,
                     title=title or full_url,
                     published_date=published.isoformat() if published else None,
-                    excerpt=body[:220],
+                    excerpt=body[:EXCERPT_MAX_LEN],
                 )
             )
         if oldest_on_page and oldest_on_page < start:
@@ -271,7 +272,7 @@ def discover_president(
                     url=full_url,
                     title=title or full_url,
                     published_date=published.isoformat() if published else None,
-                    excerpt=body[:220],
+                    excerpt=body[:EXCERPT_MAX_LEN],
                 )
             )
         if oldest_on_page and oldest_on_page < start:
