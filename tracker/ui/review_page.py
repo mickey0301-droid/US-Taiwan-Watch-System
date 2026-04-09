@@ -107,6 +107,10 @@ def _infer_statement_time(statement) -> datetime | None:
     return _extract_date_from_text(text_blob)
 
 
+def _event_datetime_for_ui(statement) -> datetime | None:
+    return _infer_statement_time(statement) or getattr(statement, "date_collected", None)
+
+
 def render(lang: str, labels: dict[str, str]) -> None:
     st.header(labels["review_queue"])
     if use_google_sheet_primary_mode():
@@ -126,14 +130,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
             st.info(empty_label)
             return
 
-        years = sorted(
-            {
-                (item.date_published or item.date_collected).year
-                for item in events
-                if (item.date_published or item.date_collected)
-            },
-            reverse=True,
-        )
+        years = sorted({event_dt.year for item in events for event_dt in [_event_datetime_for_ui(item)] if event_dt}, reverse=True)
         year_label = "年份" if lang == "zh-TW" else "Year"
         month_label = "月份" if lang == "zh-TW" else "Month"
         category_label = "人物類別" if lang == "zh-TW" else "Person category"
@@ -142,9 +139,10 @@ def render(lang: str, labels: dict[str, str]) -> None:
         selected_year = st.selectbox(year_label, years)
         month_options = sorted(
             {
-                (item.date_published or item.date_collected).month
+                event_dt.month
                 for item in events
-                if (item.date_published or item.date_collected) and (item.date_published or item.date_collected).year == selected_year
+                for event_dt in [_event_datetime_for_ui(item)]
+                if event_dt and event_dt.year == selected_year
             },
             reverse=True,
         )
@@ -158,9 +156,8 @@ def render(lang: str, labels: dict[str, str]) -> None:
         filtered_events = [
             item
             for item in events
-            if (item.date_published or item.date_collected)
-            and (item.date_published or item.date_collected).year == selected_year
-            and (selected_month == 0 or (item.date_published or item.date_collected).month == selected_month)
+            for event_dt in [_event_datetime_for_ui(item)]
+            if event_dt and event_dt.year == selected_year and (selected_month == 0 or event_dt.month == selected_month)
         ]
         if not filtered_events:
             st.info(no_events_in_filter)
@@ -194,7 +191,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
             return
 
         for selected in filtered_events:
-            inferred_time = _infer_statement_time(selected)
+            inferred_time = _event_datetime_for_ui(selected)
             if selected.date_published is None and inferred_time is not None:
                 selected.date_published = inferred_time
 
@@ -227,7 +224,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
 
         rows = [
             {
-                "event_time": _infer_statement_time(item),
+                "event_time": _event_datetime_for_ui(item),
                 "title": item.title,
                 "review_status": item.review_status,
                 "event_source_preference": statement_source_label(item, lang, str(localize_value(item.event_source_preference, lang))),
