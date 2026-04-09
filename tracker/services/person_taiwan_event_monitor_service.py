@@ -11,6 +11,8 @@ import feedparser
 import httpx
 from bs4 import BeautifulSoup
 from sqlalchemy import select
+from sqlalchemy import text as sql_text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -167,7 +169,28 @@ class PersonTaiwanEventMonitorService:
             meta={"person_id": person.id},
         )
         self.session.add(run)
-        self.session.flush()
+        try:
+            self.session.flush()
+        except IntegrityError as exc:
+            # PostgreSQL sequence drift can happen after bulk migration/import.
+            # Repair sequence and retry once for sync_runs inserts.
+            if "sync_runs_pkey" not in str(exc):
+                raise
+            self.session.rollback()
+            self._repair_postgres_sequence("sync_runs", "id")
+            run = SyncRun(
+                job_name=f"person_monitor_manual_{person.id}",
+                job_type="person_monitor_manual",
+                source_name=person.full_name,
+                status="queued",
+                records_found=0,
+                records_created=0,
+                records_updated=0,
+                records_deactivated=0,
+                meta={"person_id": person.id},
+            )
+            self.session.add(run)
+            self.session.flush()
         return run
 
     def get_latest_manual_run(self, person_id: int) -> SyncRun | None:
@@ -769,6 +792,17 @@ class PersonTaiwanEventMonitorService:
             text = ""
         cache[key] = text
         return text
+
+    def _repair_postgres_sequence(self, table_name: str, id_column: str) -> None:
+        bind = self.session.get_bind()
+        if not bind or bind.dialect.name != "postgresql":
+            return
+        self.session.execute(
+            sql_text(
+                f"SELECT setval(pg_get_serial_sequence('{table_name}', '{id_column}'), "
+                f"COALESCE((SELECT MAX({id_column}) FROM {table_name}), 0), true)"
+            )
+        )
 
     def _is_due_today(self, config: dict[str, Any], now_local: datetime, now_utc: datetime) -> bool:
         daily_time = self._normalize_daily_time(str(config.get("daily_time") or DEFAULT_DAILY_TIME))
