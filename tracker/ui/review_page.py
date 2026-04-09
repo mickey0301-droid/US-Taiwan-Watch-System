@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import re
+from urllib.parse import parse_qs, unquote, urlparse
 
 import pandas as pd
 import streamlit as st
@@ -32,6 +34,77 @@ def _matched_hits(value: object) -> list[str]:
     if isinstance(hits, list):
         return [str(item).strip() for item in hits if str(item).strip()]
     return []
+
+
+def _safe_payload_dict(value: object) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _extract_date_from_text(text: str) -> datetime | None:
+    value = str(text or "")
+    if not value:
+        return None
+
+    for pattern in [
+        r"(20\d{2})[-/](\d{1,2})[-/](\d{1,2})",
+        r"(20\d{2})\.(\d{1,2})\.(\d{1,2})",
+        r"(20\d{2})(\d{2})(\d{2})",
+    ]:
+        for year_text, month_text, day_text in re.findall(pattern, value):
+            try:
+                return datetime(int(year_text), int(month_text), int(day_text))
+            except ValueError:
+                continue
+    return None
+
+
+def _infer_statement_time(statement) -> datetime | None:
+    if statement.date_published:
+        return statement.date_published
+
+    payload = _safe_payload_dict(getattr(statement, "raw_payload", None))
+    for key in ["published_at", "pub_date", "publish_date", "date", "article_date", "event_date"]:
+        candidate = payload.get(key)
+        if isinstance(candidate, str):
+            parsed = _extract_date_from_text(candidate)
+            if parsed:
+                return parsed
+
+    source_url = str(getattr(statement, "source_url", "") or "")
+    if source_url:
+        parsed_url = urlparse(source_url)
+        url_text = "\n".join(
+            [
+                source_url,
+                unquote(parsed_url.path or ""),
+                unquote(parsed_url.query or ""),
+                unquote(" ".join(sum(parse_qs(parsed_url.query or "").values(), []))),
+            ]
+        )
+        parsed = _extract_date_from_text(url_text)
+        if parsed:
+            return parsed
+
+    text_blob = "\n".join(
+        [
+            str(getattr(statement, "title", "") or ""),
+            str(getattr(statement, "excerpt", "") or ""),
+            str(getattr(statement, "full_text", "") or ""),
+            str(getattr(statement, "raw_text", "") or ""),
+        ]
+    )
+    return _extract_date_from_text(text_blob)
 
 
 def render(lang: str, labels: dict[str, str]) -> None:
@@ -121,6 +194,10 @@ def render(lang: str, labels: dict[str, str]) -> None:
             return
 
         for selected in filtered_events:
+            inferred_time = _infer_statement_time(selected)
+            if selected.date_published is None and inferred_time is not None:
+                selected.date_published = inferred_time
+
             participants = []
             for participant_row in participant_rows_map.get(selected.id, []):
                 person = people_by_id.get(participant_row.person_id)
@@ -141,7 +218,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
             event_payload = {
                 "title": selected.title,
                 "description": selected.excerpt or selected.title or selected.source_url,
-                "event_time": selected.date_published,
+                "event_time": inferred_time,
                 "participants": participants,
                 "sources": sources,
                 "representative_source_url": selected.source_url,
@@ -150,7 +227,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
 
         rows = [
             {
-                "event_time": item.date_published,
+                "event_time": _infer_statement_time(item),
                 "title": item.title,
                 "review_status": item.review_status,
                 "event_source_preference": statement_source_label(item, lang, str(localize_value(item.event_source_preference, lang))),
