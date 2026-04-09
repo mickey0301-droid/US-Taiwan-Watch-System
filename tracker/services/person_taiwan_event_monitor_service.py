@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import feedparser
 import httpx
+from bs4 import BeautifulSoup
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -166,6 +167,7 @@ class PersonTaiwanEventMonitorService:
         total_found = 0
         total_created = 0
         total_updated = 0
+        article_text_cache: dict[str, str] = {}
 
         with httpx.Client(headers=self._http_headers, follow_redirects=True, timeout=25.0) as client:
             for domain in domains:
@@ -192,6 +194,15 @@ class PersonTaiwanEventMonitorService:
                             # For source-query-matched items, keep Taiwan keyword
                             # strict in article text, while allowing person
                             # keyword fallback to the configured primary name.
+                            if not matched_taiwan:
+                                source_url_for_check = str(item.get("url") or "").strip()
+                                if source_url_for_check:
+                                    full_text = self._fetch_full_article_text(client, source_url_for_check, article_text_cache)
+                                    if full_text:
+                                        matched_taiwan = self._matched_keywords(
+                                            self._merge_text(item.get("title"), full_text),
+                                            taiwan_keywords,
+                                        )
                             if not matched_taiwan:
                                 continue
                             if not matched_person and person_keywords:
@@ -278,7 +289,16 @@ class PersonTaiwanEventMonitorService:
                     matched_person = self._matched_keywords(text, person_keywords)
                     matched_taiwan = self._matched_keywords(text, taiwan_keywords)
                     if not matched_taiwan:
-                        continue
+                        source_url_for_check = str(item.get("url") or "").strip()
+                        if source_url_for_check:
+                            full_text = self._fetch_full_article_text(client, source_url_for_check, article_text_cache)
+                            if full_text:
+                                matched_taiwan = self._matched_keywords(
+                                    self._merge_text(item.get("title"), full_text),
+                                    taiwan_keywords,
+                                )
+                        if not matched_taiwan:
+                            continue
                     if not matched_person and person_keywords:
                         matched_person = [person_keywords[0]]
                     found += 1
@@ -440,7 +460,7 @@ class PersonTaiwanEventMonitorService:
                         start=start,
                         end=end,
                         limit=cna_limit,
-                        require_taiwan_keyword=False,
+                        require_taiwan_keyword=True,
                         require_dated_url=False,
                     )
                 except TypeError:
@@ -461,7 +481,7 @@ class PersonTaiwanEventMonitorService:
                         start=start,
                         end=end,
                         max_pages=40,
-                        require_taiwan_keyword=False,
+                        require_taiwan_keyword=True,
                     )
                 except TypeError:
                     hits = discover_mofa(
@@ -481,7 +501,7 @@ class PersonTaiwanEventMonitorService:
                         start=start,
                         end=end,
                         max_pages=40,
-                        require_taiwan_keyword=False,
+                        require_taiwan_keyword=True,
                     )
                 except TypeError:
                     hits = discover_president(
@@ -574,6 +594,28 @@ class PersonTaiwanEventMonitorService:
             return ""
         parsed = urlparse(value)
         return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+    def _fetch_full_article_text(self, client: httpx.Client, url: str, cache: dict[str, str]) -> str:
+        key = self._url_key(url) or str(url or "").strip()
+        if not key:
+            return ""
+        if key in cache:
+            return cache[key]
+        try:
+            response = client.get(url, follow_redirects=True, timeout=20.0)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, "html.parser")
+            text = " ".join(
+                node.get_text(" ", strip=True)
+                for node in soup.select("article p, .paragraph p, .paragraph, .cp p, .page-content p, .article p, .con p")
+            )
+            if not text:
+                text = soup.get_text(" ", strip=True)
+            text = self._strip_html(text)
+        except Exception:
+            text = ""
+        cache[key] = text
+        return text
 
     def _is_due_today(self, config: dict[str, Any], now_local: datetime, now_utc: datetime) -> bool:
         daily_time = self._normalize_daily_time(str(config.get("daily_time") or DEFAULT_DAILY_TIME))
