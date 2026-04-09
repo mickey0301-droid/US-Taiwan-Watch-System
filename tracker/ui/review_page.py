@@ -190,7 +190,13 @@ def render(lang: str, labels: dict[str, str]) -> None:
             st.info(no_events_in_filter)
             return
 
-        for selected in filtered_events:
+        filtered_events = sorted(
+            filtered_events,
+            key=lambda item: (_event_datetime_for_ui(item) or datetime.min, getattr(item, "id", 0)),
+            reverse=True,
+        )
+
+        for index, selected in enumerate(filtered_events, start=1):
             inferred_time = _event_datetime_for_ui(selected)
             if selected.date_published is None and inferred_time is not None:
                 selected.date_published = inferred_time
@@ -220,7 +226,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 "sources": sources,
                 "representative_source_url": selected.source_url,
             }
-            dashboard._render_event_card(index=1, event=event_payload, lang=lang)
+            dashboard._render_event_card(index=index, event=event_payload, lang=lang)
 
         rows = [
             {
@@ -309,7 +315,16 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
         st.info("此篩選條件下沒有待審核事件。" if lang == "zh-TW" else "No review events match this filter.")
         return True
 
-    for selected in filtered_events:
+    filtered_events = sorted(
+        filtered_events,
+        key=lambda item: (
+            item.get("event_date_date") or datetime.min,
+            int(item.get("event_id_int") or 0),
+        ),
+        reverse=True,
+    )
+
+    for index, selected in enumerate(filtered_events, start=1):
         participants = _sheet_participants(selected, people_by_id=people_by_id)
         event_payload = {
             "title": str(selected.get("title") or ""),
@@ -319,7 +334,7 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
             "sources": selected.get("source_urls") or [],
             "representative_source_url": None,
         }
-        dashboard._render_event_card(index=1, event=event_payload, lang=lang)
+        dashboard._render_event_card(index=index, event=event_payload, lang=lang)
 
     summary_df = localize_dataframe(
         pd.DataFrame(
