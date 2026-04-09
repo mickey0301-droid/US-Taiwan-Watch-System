@@ -1036,7 +1036,7 @@ def _format_people_inline(people: list[dict[str, object]], lang: str) -> str:
             continue
         person_id = person.get("person_id")
         if person_id:
-            parts.append(f"[{name}]({person_detail_href(int(person_id))})")
+            parts.append(f"[{name}]({person_detail_href(int(person_id), name)})")
         else:
             parts.append(name)
     if not parts:

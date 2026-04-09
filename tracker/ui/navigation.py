@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 from html import escape
+from urllib.parse import quote_plus
 
 import streamlit as st
 
 
-def person_detail_href(person_id: int) -> str:
-    return f"?page=person_detail&person_id={int(person_id)}"
+def person_detail_href(person_id: int, display_name: str | None = None) -> str:
+    href = f"?page=person_detail&person_id={int(person_id)}"
+    if display_name:
+        href += f"&person_name={quote_plus(str(display_name).strip())}"
+    return href
 
 
 def person_detail_anchor_html(label: str, person_id: int) -> str:
-    href = person_detail_href(int(person_id))
+    href = person_detail_href(int(person_id), label)
     text = escape(str(label or "").strip())
     return f'<a href="{href}" target="_self">{text}</a>'
 

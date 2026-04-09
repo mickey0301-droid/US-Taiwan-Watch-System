@@ -375,7 +375,7 @@ def main() -> None:
     st.sidebar.markdown("## US Taiwan Watch")
     google_sheet_primary = use_google_sheet_primary_mode()
     query_page = st.query_params.get("page")
-    if query_page in PAGES and "sidebar_nav_radio" not in st.session_state:
+    if query_page in PAGES:
         st.session_state["sidebar_nav_radio"] = str(query_page)
     nav_page_order = GOOGLE_SHEET_PRIMARY_PAGES if google_sheet_primary else NAV_PAGE_ORDER
     page_options = [page for page in nav_page_order if page in PAGES]

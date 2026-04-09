@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import date, datetime
+from html import escape
 from typing import Iterable
 
 import streamlit as st
@@ -56,6 +57,7 @@ def _should_prefix_bill_number(bill_number: str) -> bool:
 
 def render(lang: str, labels: dict[str, str]) -> None:
     st.header(labels["legislation"])
+    selected_legislation_id = _query_legislation_id()
     with session_scope() as session:
         service = LegislationService(session)
         people_by_id = {person.id: person for person in session.query(Person).all()}
@@ -67,6 +69,16 @@ def render(lang: str, labels: dict[str, str]) -> None:
 
         if not all_rows:
             st.info("目前還沒有立法資料。" if lang == "zh-TW" else "No legislation is available yet.")
+            return
+
+        if selected_legislation_id is not None:
+            selected = next((row for row in all_rows if int(row.id) == int(selected_legislation_id)), None)
+            if not selected:
+                st.warning("找不到指定法案，已返回列表。" if lang == "zh-TW" else "Requested bill was not found. Returned to list.")
+                _clear_legislation_id()
+                st.rerun()
+                return
+            _render_legislation_detail(selected, service, people_by_id, lang)
             return
 
         type_label = "法案類型" if lang == "zh-TW" else "Legislation type"
@@ -96,6 +108,76 @@ def render(lang: str, labels: dict[str, str]) -> None:
 
         for idx, item in enumerate(legislation_rows, start=1):
             _render_db_legislation_card(item, service, people_by_id, lang, idx)
+
+
+def _render_legislation_detail(selected: Legislation, service: LegislationService, people_by_id: dict[int, Person], lang: str) -> None:
+    if st.button("返回法案列表" if lang == "zh-TW" else "Back to legislation list", key=f"legislation-back-{selected.id}"):
+        _clear_legislation_id()
+        st.rerun()
+
+    raw_payload = _payload_dict(selected.raw_payload)
+    official_link = raw_payload.get("congress_gov_url") or congress_bill_url(
+        raw_payload.get("congress"),
+        selected.bill_number,
+    ) or selected.source_url
+    bill_text_url = raw_payload.get("text_page_url")
+    sponsors, cosponsors = _split_db_sponsors(service.list_sponsors(selected.id), people_by_id)
+    summary = str(selected.summary or raw_payload.get("summary") or "").strip()
+    latest_action = str(raw_payload.get("latest_action_text") or "").strip()
+    if not summary:
+        summary = latest_action or (str(selected.title or "").strip())
+
+    with st.container(border=True):
+        heading = str(selected.title or "").strip()
+        if _should_prefix_bill_number(str(selected.bill_number or "")):
+            heading = f"{selected.bill_number} {heading}".strip()
+        st.markdown(f"### {heading}")
+        st.markdown(f"`{'標題' if lang == 'zh-TW' else 'Title'}`：{selected.title or 'N/A'}")
+        st.markdown(f"`{'摘要' if lang == 'zh-TW' else 'Summary'}`：{summary}")
+        st.markdown(f"`{'提案日期' if lang == 'zh-TW' else 'Introduced'}`：{_format_date(_effective_legislation_date(selected))}")
+        st.markdown(f"`{'目前狀態' if lang == 'zh-TW' else 'Current status'}`：{selected.status_text or ('未知' if lang == 'zh-TW' else 'Unknown')}")
+        if official_link:
+            st.markdown(f"`Congress.gov`：[Congress.gov]({official_link})")
+        if bill_text_url:
+            st.markdown(f"`{'法案全文' if lang == 'zh-TW' else 'Bill text'}`：[{'法案全文' if lang == 'zh-TW' else 'Bill text'}]({bill_text_url})")
+        if latest_action:
+            st.markdown(f"`{'最新動作' if lang == 'zh-TW' else 'Latest action'}`：{latest_action}")
+
+        st.markdown(f"`{'提案人' if lang == 'zh-TW' else 'Sponsor'}`：")
+        if sponsors:
+            render_person_links(sponsors, lang, key_prefix=f"legislation-detail-sponsor-{selected.id}")
+        else:
+            st.write("未提供" if lang == "zh-TW" else "Not available")
+
+        st.markdown(f"`{'共同提案人' if lang == 'zh-TW' else 'Cosponsors'}`：")
+        if cosponsors:
+            render_person_links(cosponsors, lang, key_prefix=f"legislation-detail-cosponsor-{selected.id}")
+        else:
+            st.write("無" if lang == "zh-TW" else "None")
+
+
+def _split_db_sponsors(records: list[object], people_by_id: dict[int, Person]) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    sponsors: list[dict[str, object]] = []
+    cosponsors: list[dict[str, object]] = []
+    for record in records:
+        person = people_by_id.get(int(getattr(record, "person_id", 0) or 0))
+        if not person:
+            continue
+        chinese_name = _current_chinese_alias(person)
+        payload = {
+            "person_id": int(person.id),
+            "display_name": chinese_name or person.full_name,
+            "english_name": person.full_name,
+            "chinese_name": chinese_name,
+        }
+        role = str(getattr(record, "role", "") or "").lower()
+        if role == "cosponsor":
+            cosponsors.append(payload)
+        else:
+            sponsors.append(payload)
+    deduped_sponsors = _dedupe_people_for_display(sponsors)
+    deduped_cosponsors = [item for item in _dedupe_people_for_display(cosponsors) if all(item.get("person_id") != s.get("person_id") for s in deduped_sponsors)]
+    return deduped_sponsors, deduped_cosponsors
 
 
 def _choose_legislation_source(sheet_rows: list[dict[str, object]], db_rows: list[Legislation]) -> str:
@@ -173,7 +255,8 @@ def _render_db_legislation_card(selected: Legislation, service: LegislationServi
         )
         if _should_prefix_bill_number(str(selected.bill_number or "")):
             title = f"{selected.bill_number} {title}".strip()
-        st.markdown(f"**{index}. {title}**")
+        link = f"?page=legislation&legislation_id={int(selected.id)}"
+        st.markdown(f'**{index}. <a href="{link}" target="_self">{escape(title)}</a>**', unsafe_allow_html=True)
         st.markdown(f"`{chamber_label}`：{chamber_text}")
         st.markdown(f"`{sponsor_label}`：{sponsor_text}")
         st.markdown(f"`{cosponsor_label}`：{cosponsor_text}")
@@ -479,6 +562,23 @@ def _format_date(value) -> str:
     if value is None:
         return "N/A"
     return value.strftime("%Y-%m-%d")
+
+
+def _query_legislation_id() -> int | None:
+    raw_value = st.query_params.get("legislation_id")
+    if raw_value in (None, ""):
+        return None
+    if isinstance(raw_value, list):
+        raw_value = raw_value[0] if raw_value else None
+    if raw_value in (None, ""):
+        return None
+    text = str(raw_value).strip()
+    return int(text) if text.isdigit() else None
+
+
+def _clear_legislation_id() -> None:
+    if "legislation_id" in st.query_params:
+        del st.query_params["legislation_id"]
 
 
 def _dedupe_db_legislation_rows(rows: list[Legislation]) -> list[Legislation]:

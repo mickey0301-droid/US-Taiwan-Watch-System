@@ -1832,6 +1832,39 @@ def _query_person_id() -> int | None:
     return None
 
 
+def _query_person_name() -> str | None:
+    raw_value = st.query_params.get("person_name")
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, list):
+        raw_value = raw_value[0] if raw_value else None
+    if raw_value is None:
+        return None
+    text = str(raw_value).strip()
+    return text or None
+
+
+def _lookup_person_by_name(session, raw_name: str) -> Person | None:
+    text = str(raw_name or "").strip()
+    if not text:
+        return None
+    direct = session.execute(select(Person).where(func.lower(Person.full_name) == text.lower())).scalars().first()
+    if direct:
+        return direct
+    alias_match = (
+        session.execute(
+            select(Person)
+            .join(Alias, Alias.person_id == Person.id)
+            .where(func.lower(Alias.alias) == text.lower())
+        )
+        .scalars()
+        .first()
+    )
+    if alias_match:
+        return alias_match
+    return None
+
+
 def _render_x_candidate_block(person_id: int, candidate: dict[str, str], lang: str, button_prefix: str) -> None:
     title = candidate.get("title") or candidate.get("handle") or candidate.get("profile_url") or ""
     profile_url = candidate.get("profile_url") or ""
@@ -1970,11 +2003,14 @@ def render(lang: str, labels: dict[str, str]) -> None:
     st.header(labels["person_detail"])
 
     pending_person_id = _query_person_id()
+    pending_person_name = _query_person_name()
     if pending_person_id:
         clear_label = "返回人物瀏覽" if lang == "zh-TW" else "Back to person browser"
         if st.button(clear_label, key="clear-pending-person"):
             if "person_id" in st.query_params:
                 del st.query_params["person_id"]
+            if "person_name" in st.query_params:
+                del st.query_params["person_name"]
             if st.query_params.get("page") == "person_detail":
                 del st.query_params["page"]
             st.rerun()
@@ -1999,23 +2035,31 @@ def render(lang: str, labels: dict[str, str]) -> None:
     if total_people == 0 and _render_google_sheet_fallback_v2(lang, labels, pending_person_id):
         return
 
+    has_pending_person = False
+    if pending_person_id:
+        with session_scope() as session:
+            has_pending_person = session.get(Person, int(pending_person_id)) is not None
+
     category_select_prompt_value = "__select__"
     category_select_prompt_label = "請選擇" if lang == "zh-TW" else "Please select"
-    category_options = [
-        category_select_prompt_value,
-        *_visible_person_category_keys(),
-    ]
-    selected_category_value = st.selectbox(
-        labels["person_category"],
-        category_options,
-        format_func=lambda key: (
-            category_select_prompt_label if key == category_select_prompt_value else _category_label(PERSON_CATEGORIES[key], lang)
-        ),
-    )
-    if selected_category_value == category_select_prompt_value:
-        st.info(category_select_prompt_label)
-        return
-    selected_category = selected_category_value
+    if has_pending_person:
+        selected_category = "all"
+    else:
+        category_options = [
+            category_select_prompt_value,
+            *_visible_person_category_keys(),
+        ]
+        selected_category_value = st.selectbox(
+            labels["person_category"],
+            category_options,
+            format_func=lambda key: (
+                category_select_prompt_label if key == category_select_prompt_value else _category_label(PERSON_CATEGORIES[key], lang)
+            ),
+        )
+        if selected_category_value == category_select_prompt_value:
+            st.info(category_select_prompt_label)
+            return
+        selected_category = selected_category_value
 
 
     with session_scope() as session:
@@ -2035,7 +2079,19 @@ def render(lang: str, labels: dict[str, str]) -> None:
             if person:
                 person_id = int(pending_person_id)
             else:
-                pass
+                if pending_person_name:
+                    matched = _lookup_person_by_name(session, pending_person_name)
+                    if matched:
+                        person = matched
+                        person_id = int(matched.id)
+                        st.query_params["person_id"] = str(person_id)
+                if person is None:
+                    st.error(
+                        "找不到指定人物，請返回法案頁重試。"
+                        if lang == "zh-TW"
+                        else "The selected person was not found. Please return to legislation and try again."
+                    )
+                    return
 
         if person is None and selected_category == "federal_legislative":
             chamber_label = "院別" if lang == "zh-TW" else "Chamber"
