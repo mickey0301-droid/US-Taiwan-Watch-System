@@ -247,11 +247,6 @@ def render(lang: str, labels: dict[str, str]) -> None:
 
 def _render_event_delete_controls(service: StatementsService, session, statement, lang: str) -> None:
     label = "編輯 / 刪除" if lang == "zh-TW" else "Edit / Delete"
-    confirm_label = (
-        f"我確認要刪除事件 #{statement.id}"
-        if lang == "zh-TW"
-        else f"I confirm deleting event #{statement.id}"
-    )
     button_label = "刪除此事件" if lang == "zh-TW" else "Delete this event"
     warning = (
         "刪除後會移除此事件、來源、人物關聯與 mention 紀錄。這個動作無法在介面中復原。"
@@ -260,8 +255,7 @@ def _render_event_delete_controls(service: StatementsService, session, statement
     )
     with st.expander(label):
         st.warning(warning)
-        confirmed = st.checkbox(confirm_label, key=f"delete-statement-confirm-{statement.id}")
-        if st.button(button_label, key=f"delete-statement-button-{statement.id}", disabled=not confirmed):
+        if st.button(button_label, key=f"delete-statement-button-{statement.id}"):
             title = str(getattr(statement, "title", "") or "").strip()
             deleted = service.delete_statement(int(statement.id))
             if deleted:
