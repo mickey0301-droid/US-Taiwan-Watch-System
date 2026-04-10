@@ -113,6 +113,7 @@ def _discover_google_news_report_hits(
     person_terms: list[str],
     start: date,
     end: date,
+    slice_days: int = 10,
     hl: str = "zh-TW",
     gl: str = "TW",
     ceid: str = "TW:zh-Hant",
@@ -126,10 +127,10 @@ def _discover_google_news_report_hits(
 
     urls_seen: set[str] = set()
     hits: list[EventHit] = []
-    current = date(start.year, start.month, 1)
+    slice_size = max(1, min(31, int(slice_days or 10)))
+    current = start
     while current < end:
-        next_month = date(current.year + 1, 1, 1) if current.month == 12 else date(current.year, current.month + 1, 1)
-        slice_end = min(next_month, end + timedelta(days=1))
+        slice_end = min(current + timedelta(days=slice_size), end)
         for term in focused_terms:
             excluded = " -范斯高" if term in {"范斯", "範斯"} else ""
             q = (
@@ -174,7 +175,7 @@ def _discover_google_news_report_hits(
                         excerpt=summary[:EXCERPT_MAX_LEN],
                     )
                 )
-        current = next_month
+        current = slice_end
         time.sleep(0.2)
 
     return dedupe_hits(hits)
@@ -677,17 +678,27 @@ def main() -> None:
     parser.add_argument("--max-pages", type=int, default=40, help="Max listing pages for MOFA/President")
     parser.add_argument("--lookback-days", type=int, default=0,
                         help="Use a rolling N-day window instead of --year/--months (0 = use year/months)")
+    parser.add_argument("--start-date", default="", help="Fixed range start date, YYYY-MM-DD")
+    parser.add_argument("--end-date", default="", help="Fixed range end date, YYYY-MM-DD, inclusive")
     parser.add_argument("--no-wnewslist", action="store_true", help="Disable CNA WNewsList API layer")
     parser.add_argument("--no-google-rss", action="store_true", help="Disable Google News RSS layer")
     parser.add_argument("--news-only", action="store_true", help="Only run broad Google News media-report discovery")
+    parser.add_argument("--slice-days", type=int, default=10, help="Google News date-slice size in days")
     args = parser.parse_args()
 
-    if args.lookback_days > 0:
+    fixed_start = _parse_ymd(str(args.start_date).strip()) if str(args.start_date or "").strip() else None
+    fixed_end = _parse_ymd(str(args.end_date).strip()) if str(args.end_date or "").strip() else None
+    if fixed_start or fixed_end:
+        end = (fixed_end + timedelta(days=1)) if fixed_end else date.today() + timedelta(days=1)
+        start = fixed_start or (end - timedelta(days=max(1, args.lookback_days or 30)))
+        if end <= start:
+            raise SystemExit("--end-date must be on or after --start-date")
+    elif args.lookback_days > 0:
         end = date.today() + timedelta(days=1)
         start = end - timedelta(days=args.lookback_days)
     else:
         if not args.year:
-            raise SystemExit("Must provide --year or --lookback-days")
+            raise SystemExit("Must provide --year, --lookback-days, or --start-date/--end-date")
         months = [int(item.strip()) for item in str(args.months).split(",") if item.strip()]
         months = [m for m in months if 1 <= m <= 12]
         if not months:
@@ -714,7 +725,13 @@ def main() -> None:
                 )
                 mofa_hits = discover_mofa(client, insecure_client, person_terms=person_terms, start=start, end=end, max_pages=args.max_pages)
                 president_hits = discover_president(client, insecure_client, person_terms=person_terms, start=start, end=end, max_pages=args.max_pages)
-            news_hits = [] if args.no_google_rss else _discover_google_news_report_hits(client, person_terms=person_terms, start=start, end=end)
+            news_hits = [] if args.no_google_rss else _discover_google_news_report_hits(
+                client,
+                person_terms=person_terms,
+                start=start,
+                end=end,
+                slice_days=args.slice_days,
+            )
 
     all_hits = dedupe_hits(cna_hits + mofa_hits + president_hits + news_hits)
     payload = {

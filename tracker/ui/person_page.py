@@ -2727,6 +2727,21 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 step=1,
                 key=f"person-monitor-lookback-days-{person.id}",
             )
+            st.caption(
+                "可改用指定日期區間；建議一次查一個月，留空則使用上方回溯天數。"
+                if lang == "zh-TW"
+                else "Optionally use a fixed date range; one month at a time is recommended. Leave blank to use lookback days."
+            )
+            date_start_input = st.text_input(
+                "指定起日（YYYY-MM-DD，可留空）" if lang == "zh-TW" else "Start date (YYYY-MM-DD, optional)",
+                value=str(monitor_config.get("date_start") or ""),
+                key=f"person-monitor-date-start-{person.id}",
+            )
+            date_end_input = st.text_input(
+                "指定迄日（YYYY-MM-DD，含當日，可留空）" if lang == "zh-TW" else "End date (YYYY-MM-DD, inclusive, optional)",
+                value=str(monitor_config.get("date_end") or ""),
+                key=f"person-monitor-date-end-{person.id}",
+            )
             col_save, col_run = st.columns(2)
             with col_save:
                 save_monitor = st.button("儲存監測設定" if lang == "zh-TW" else "Save monitor settings", key=f"save-monitor-{person.id}")
@@ -2745,6 +2760,8 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     domains=domains,
                     daily_time=daily_time,
                     lookback_days=int(lookback_days),
+                    date_start=date_start_input,
+                    date_end=date_end_input,
                 )
                 session.flush()
                 session.commit()
@@ -2763,6 +2780,8 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     domains=domains,
                     daily_time=daily_time,
                     lookback_days=int(lookback_days),
+                    date_start=date_start_input,
+                    date_end=date_end_input,
                 )
                 session.flush()
                 session.commit()

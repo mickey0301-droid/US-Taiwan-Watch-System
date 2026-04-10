@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import re
 from typing import Any
 from urllib.parse import urlparse
@@ -16,7 +16,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
-from scripts.discover_restricted_source_events import discover_cna, discover_mofa, discover_president
+from scripts.discover_restricted_source_events import (
+    _discover_google_news_report_hits,
+    discover_cna,
+    discover_mofa,
+    discover_president,
+)
 from tracker.models import Alias, Person, StatementParticipant, StatementSource, SyncRun
 from tracker.services.relevance_service import RelevanceService
 from tracker.services.statements_service import StatementsService
@@ -24,7 +29,7 @@ from tracker.utils.web import build_google_news_rss_url, domain_from_url, parse_
 
 
 DEFAULT_DOMAINS = ["cna.com.tw", "president.gov.tw", "mofa.gov.tw"]
-DEFAULT_TAIWAN_KEYWORDS = ["台灣", "臺灣", "Taiwan"]
+DEFAULT_TAIWAN_KEYWORDS = ["台灣", "臺灣", "台海", "Taiwan"]
 DEFAULT_DAILY_TIME = "09:00"
 DEFAULT_LOOKBACK_DAYS = 30
 MONITOR_KEY = "taiwan_event_monitor"
@@ -75,6 +80,8 @@ class PersonTaiwanEventMonitorService:
             "domains": list(DEFAULT_DOMAINS),
             "daily_time": DEFAULT_DAILY_TIME,
             "lookback_days": DEFAULT_LOOKBACK_DAYS,
+            "date_start": None,
+            "date_end": None,
             "last_run_at": None,
             "last_result": None,
             "runs": [],
@@ -95,7 +102,9 @@ class PersonTaiwanEventMonitorService:
         config.setdefault("domains", list(DEFAULT_DOMAINS))
         config.setdefault("daily_time", DEFAULT_DAILY_TIME)
         config.setdefault("lookback_days", DEFAULT_LOOKBACK_DAYS)
-        config.setdefault("include_global_news", False)
+        config.setdefault("date_start", None)
+        config.setdefault("date_end", None)
+        config.setdefault("include_global_news", True)
         config.setdefault("runs", [])
         return config
 
@@ -109,6 +118,8 @@ class PersonTaiwanEventMonitorService:
         domains: list[str],
         daily_time: str,
         lookback_days: int | None = None,
+        date_start: Any | None = None,
+        date_end: Any | None = None,
     ) -> dict[str, Any]:
         payload = self._person_payload(person)
         config = self.get_person_monitor_config(person)
@@ -119,7 +130,9 @@ class PersonTaiwanEventMonitorService:
         config["domains"] = self._clean_domains(domains) or list(DEFAULT_DOMAINS)
         config["daily_time"] = self._normalize_daily_time(daily_time)
         config["lookback_days"] = self._normalize_lookback_days(lookback_days)
-        config["include_global_news"] = False
+        config["date_start"] = self._normalize_optional_date_text(date_start)
+        config["date_end"] = self._normalize_optional_date_text(date_end)
+        config["include_global_news"] = True
         payload[MONITOR_KEY] = config
         person.raw_payload = payload
         flag_modified(person, "raw_payload")
@@ -310,7 +323,13 @@ class PersonTaiwanEventMonitorService:
         taiwan_keywords = self._clean_keywords(config.get("taiwan_keywords") or [])
         domains = self._clean_domains(config.get("domains") or [])
         lookback_days = self._normalize_lookback_days(config.get("lookback_days"))
-        include_global_news = bool(config.get("include_global_news", False))
+        trigger_text = str(trigger or "")
+        use_fixed_date_window = not trigger_text.startswith("scheduled")
+        window_start, window_end = self._resolve_monitor_window(config, lookback_days, use_fixed_date_window=use_fixed_date_window)
+        window_days = max(1, (window_end - window_start).days)
+        has_fixed_date_window = use_fixed_date_window and bool(config.get("date_start") or config.get("date_end"))
+        manual_fast_news_only = trigger_text.startswith("manual") and has_fixed_date_window
+        include_global_news = bool(config.get("include_global_news", True)) or window_days > 10 or manual_fast_news_only
         if not all_person_keywords:
             return MonitorRunResult(person_id=person.id, person_name=person.full_name, ok=False, error="Missing person keywords")
         if not taiwan_keywords:
@@ -328,119 +347,144 @@ class PersonTaiwanEventMonitorService:
 
         with httpx.Client(headers=self._http_headers, follow_redirects=True, timeout=25.0) as client:
             with httpx.Client(headers=self._http_headers, follow_redirects=True, timeout=25.0, verify=False) as insecure_client:
-                for domain in domains:
-                    query = self.build_query(person_keywords, taiwan_keywords, domain=domain)
-                    items = self._collect_domain_items(
-                        client=client,
-                        insecure_client=insecure_client,
-                        domain=domain,
-                        query=query,
-                        person_keywords=person_keywords,
-                        all_person_keywords=all_person_keywords,
-                        lookback_days=lookback_days,
-                    )
-                    found = 0
-                    created = 0
-                    updated = 0
-                    skipped_existing = 0
-                    for item in items:
-                        if not self._within_lookback(item.get("published_at"), lookback_days):
-                            continue
-                        text = self._merge_text(item.get("title"), item.get("summary"))
-                        matched_person = self._matched_keywords(text, all_person_keywords)
-                        matched_taiwan = self._matched_keywords(text, taiwan_keywords)
-                        if not matched_person or not matched_taiwan:
-                            if bool(item.get("query_enforced_match")):
-                                # For source-query-matched items, keep Taiwan keyword
-                                # strict in article text, while allowing person
-                                # keyword fallback to the configured primary name.
-                                if not matched_taiwan:
-                                    source_url_for_check = str(item.get("url") or "").strip()
-                                    if source_url_for_check:
-                                        full_text = self._fetch_full_article_text(client, source_url_for_check, article_text_cache)
-                                        if full_text:
-                                            matched_taiwan = self._matched_keywords(
-                                                self._merge_text(item.get("title"), full_text),
-                                                taiwan_keywords,
-                                            )
-                                if not matched_taiwan:
-                                    continue
-                                if not matched_person and all_person_keywords:
-                                    matched_person = [all_person_keywords[0]]
-                            else:
-                                continue
-                        if self.relevance_service.is_taiwan_time_only_reference(text):
-                            continue
-                        found += 1
-
-                        source_url = str(item.get("url") or "").strip()
-                        if not source_url:
-                            continue
-                        if self._has_existing_person_source_url(person.id, source_url):
-                            skipped_existing += 1
-                            continue
-                        source_domain = domain_from_url(source_url)
-                        source_type = "official" if source_domain in {"president.gov.tw", "mofa.gov.tw"} else "media"
-
-                        payload = {
-                            "person_id": person.id,
-                            "participant_ids": [person.id],
-                            "title": str(item.get("title") or source_url),
-                            "source_title": str(item.get("title") or source_url),
-                            "date_published": item.get("published_at"),
-                            "source_url": source_url,
-                            "source_type": source_type,
-                            "statement_type": "statement",
-                            "excerpt": str(item.get("summary") or "")[:1000],
-                            "full_text": str(item.get("summary") or "")[:5000],
-                            "raw_text": str(item.get("summary") or ""),
-                            "is_primary_source": source_type == "official",
-                            "parser_identity": PARSER_IDENTITY,
-                            "raw_payload": {
-                                "seeded_from": PARSER_IDENTITY,
-                                "monitor_trigger": trigger,
-                                "monitor_domain": domain,
-                                "monitor_query": query,
-                                "monitor_lookback_days": lookback_days,
-                                "matched_person_keywords": matched_person,
-                                "matched_taiwan_keywords": matched_taiwan,
-                            },
-                        }
-                        _, is_created = self.statements_service.ingest_statement(payload)
-                        if is_created:
-                            created += 1
-                        else:
-                            updated += 1
-
-                    total_found += found
-                    total_created += created
-                    total_updated += updated
-                    total_skipped_existing += skipped_existing
+                if manual_fast_news_only:
                     query_logs.append(
                         {
-                            "domain": domain,
-                            "query": query,
+                            "domain": "__direct_sites__",
+                            "query": "skipped for manual fixed-date fast scan",
                             "lookback_days": lookback_days,
-                            "items_found": found,
-                            "items_added": created,
-                            "items_updated": updated,
-                            "items_skipped_existing": skipped_existing,
+                            "window_start": window_start.isoformat(),
+                            "window_end_exclusive": window_end.isoformat(),
+                            "items_found": 0,
+                            "items_added": 0,
+                            "items_updated": 0,
+                            "items_skipped_existing": 0,
+                            "skipped": True,
                         }
                     )
+                else:
+                    for domain in domains:
+                        query = self.build_query(person_keywords, taiwan_keywords, domain=domain)
+                        items = self._collect_domain_items(
+                            client=client,
+                            insecure_client=insecure_client,
+                            domain=domain,
+                            query=query,
+                            person_keywords=person_keywords,
+                            all_person_keywords=all_person_keywords,
+                            lookback_days=window_days,
+                            start_date=window_start,
+                            end_date=window_end,
+                        )
+                        found = 0
+                        created = 0
+                        updated = 0
+                        skipped_existing = 0
+                        for item in items:
+                            if not self._within_date_window(item.get("published_at"), window_start, window_end):
+                                continue
+                            text = self._merge_text(item.get("title"), item.get("summary"))
+                            matched_person = self._matched_keywords(text, all_person_keywords)
+                            matched_taiwan = self._matched_keywords(text, taiwan_keywords)
+                            if not matched_person or not matched_taiwan:
+                                if bool(item.get("query_enforced_match")):
+                                    # For source-query-matched items, keep Taiwan keyword
+                                    # strict in article text, while allowing person
+                                    # keyword fallback to the configured primary name.
+                                    if not matched_taiwan:
+                                        source_url_for_check = str(item.get("url") or "").strip()
+                                        if source_url_for_check:
+                                            full_text = self._fetch_full_article_text(client, source_url_for_check, article_text_cache)
+                                            if full_text:
+                                                matched_taiwan = self._matched_keywords(
+                                                    self._merge_text(item.get("title"), full_text),
+                                                    taiwan_keywords,
+                                                )
+                                    if not matched_taiwan:
+                                        continue
+                                    if not matched_person and all_person_keywords:
+                                        matched_person = [all_person_keywords[0]]
+                                else:
+                                    continue
+                            if self.relevance_service.is_taiwan_time_only_reference(text):
+                                continue
+                            found += 1
+
+                            source_url = str(item.get("url") or "").strip()
+                            if not source_url:
+                                continue
+                            if self._has_existing_person_source_url(person.id, source_url):
+                                skipped_existing += 1
+                                continue
+                            source_domain = domain_from_url(source_url)
+                            source_type = "official" if source_domain in {"president.gov.tw", "mofa.gov.tw"} else "media"
+
+                            payload = {
+                                "person_id": person.id,
+                                "participant_ids": [person.id],
+                                "title": str(item.get("title") or source_url),
+                                "source_title": str(item.get("title") or source_url),
+                                "date_published": item.get("published_at"),
+                                "source_url": source_url,
+                                "source_type": source_type,
+                                "statement_type": "statement",
+                                "excerpt": str(item.get("summary") or "")[:1000],
+                                "full_text": str(item.get("summary") or "")[:5000],
+                                "raw_text": str(item.get("summary") or ""),
+                                "is_primary_source": source_type == "official",
+                                "parser_identity": PARSER_IDENTITY,
+                                "raw_payload": {
+                                    "seeded_from": PARSER_IDENTITY,
+                                    "monitor_trigger": trigger,
+                                    "monitor_domain": domain,
+                                    "monitor_query": query,
+                                    "monitor_lookback_days": lookback_days,
+                                    "monitor_window_start": window_start.isoformat(),
+                                    "monitor_window_end_exclusive": window_end.isoformat(),
+                                    "matched_person_keywords": matched_person,
+                                    "matched_taiwan_keywords": matched_taiwan,
+                                },
+                            }
+                            _, is_created = self.statements_service.ingest_statement(payload)
+                            if is_created:
+                                created += 1
+                            else:
+                                updated += 1
+
+                        total_found += found
+                        total_created += created
+                        total_updated += updated
+                        total_skipped_existing += skipped_existing
+                        query_logs.append(
+                            {
+                                "domain": domain,
+                                "query": query,
+                                "lookback_days": lookback_days,
+                                "window_start": window_start.isoformat(),
+                                "window_end_exclusive": window_end.isoformat(),
+                                "items_found": found,
+                                "items_added": created,
+                                "items_updated": updated,
+                                "items_skipped_existing": skipped_existing,
+                            }
+                        )
 
             if include_global_news:
-                global_query = self.build_query(person_keywords, taiwan_keywords, domain=None)
-                global_items = self._collect_rss_items(
+                global_taiwan_keywords = self._clean_keywords(list(taiwan_keywords) + ["台海"])
+                global_query = self.build_query(all_person_keywords or person_keywords, global_taiwan_keywords, domain=None)
+                global_items = self._collect_google_news_report_items(
                     client,
-                    rss_url=build_google_news_rss_url(query=global_query, hl="zh-TW", gl="TW", ceid="TW:zh-Hant"),
-                    domain="",
+                    person_keywords=all_person_keywords or person_keywords,
+                    lookback_days=window_days,
+                    start_date=window_start,
+                    end_date=window_end,
                 )
                 found = 0
                 created = 0
                 updated = 0
                 skipped_existing = 0
                 for item in global_items:
-                    if not self._within_lookback(item.get("published_at"), lookback_days):
+                    if not self._within_date_window(item.get("published_at"), window_start, window_end):
                         continue
                     source_url = str(item.get("url") or "").strip()
                     if not source_url:
@@ -450,24 +494,13 @@ class PersonTaiwanEventMonitorService:
                         continue
                     text = self._merge_text(item.get("title"), item.get("summary"))
                     matched_person = self._matched_keywords(text, all_person_keywords)
-                    matched_taiwan = self._matched_keywords(text, taiwan_keywords)
-                    if not matched_taiwan:
-                        source_url_for_check = str(item.get("url") or "").strip()
-                        if source_url_for_check:
-                            full_text = self._fetch_full_article_text(client, source_url_for_check, article_text_cache)
-                            if full_text:
-                                matched_taiwan = self._matched_keywords(
-                                    self._merge_text(item.get("title"), full_text),
-                                    taiwan_keywords,
-                                )
-                        if not matched_taiwan:
-                            continue
-                    if not matched_person and all_person_keywords:
-                        matched_person = [all_person_keywords[0]]
+                    matched_taiwan = self._matched_keywords(text, global_taiwan_keywords)
+                    if not matched_person or not matched_taiwan:
+                        continue
                     if self.relevance_service.is_taiwan_time_only_reference(text):
                         continue
                     found += 1
-                    source_domain = domain_from_url(source_url)
+                    source_domain = str(item.get("source_domain") or domain_from_url(source_url))
                     source_type = "official" if source_domain in {"president.gov.tw", "mofa.gov.tw"} else "media"
                     payload = {
                         "person_id": person.id,
@@ -486,11 +519,14 @@ class PersonTaiwanEventMonitorService:
                         "raw_payload": {
                             "seeded_from": PARSER_IDENTITY,
                             "monitor_trigger": trigger,
-                            "monitor_domain": "__all__",
+                            "monitor_domain": "__google_news__",
                             "monitor_query": global_query,
                             "monitor_lookback_days": lookback_days,
+                            "monitor_window_start": window_start.isoformat(),
+                            "monitor_window_end_exclusive": window_end.isoformat(),
                             "matched_person_keywords": matched_person,
                             "matched_taiwan_keywords": matched_taiwan,
+                            "source_domain_hint": source_domain,
                         },
                     }
                     _, is_created = self.statements_service.ingest_statement(payload)
@@ -504,9 +540,11 @@ class PersonTaiwanEventMonitorService:
                 total_skipped_existing += skipped_existing
                 query_logs.append(
                     {
-                        "domain": "__all__",
+                        "domain": "__google_news__",
                         "query": global_query,
                         "lookback_days": lookback_days,
+                        "window_start": window_start.isoformat(),
+                        "window_end_exclusive": window_end.isoformat(),
                         "items_found": found,
                         "items_added": created,
                         "items_updated": updated,
@@ -524,6 +562,8 @@ class PersonTaiwanEventMonitorService:
             "created": total_created,
             "updated": total_updated,
             "queries": query_logs,
+            "window_start": window_start.isoformat(),
+            "window_end_exclusive": window_end.isoformat(),
             "message": "completed",
         }
         self._save_run_record(person, run_record)
@@ -601,6 +641,8 @@ class PersonTaiwanEventMonitorService:
         person_keywords: list[str],
         all_person_keywords: list[str],
         lookback_days: int,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> list[dict[str, Any]]:
         normalized_domain = str(domain or "").strip().lower()
         if normalized_domain in {"cna.com.tw", "mofa.gov.tw", "president.gov.tw"}:
@@ -611,6 +653,8 @@ class PersonTaiwanEventMonitorService:
                 all_person_keywords or person_keywords,
                 lookback_days,
                 query=query,
+                start_date=start_date,
+                end_date=end_date,
             )
         rss_url = build_google_news_rss_url(query=query, hl="zh-TW", gl="TW", ceid="TW:zh-Hant")
         return self._collect_rss_items(client, rss_url=rss_url, domain=normalized_domain)
@@ -623,11 +667,14 @@ class PersonTaiwanEventMonitorService:
         person_keywords: list[str],
         lookback_days: int,
         query: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> list[dict[str, Any]]:
-        end = datetime.utcnow().date() + timedelta(days=1)
-        start = end - timedelta(days=max(1, int(lookback_days)))
-        cna_limit = self._cna_limit_for_lookback(lookback_days)
-        max_pages = self._max_pages_for_lookback(lookback_days)
+        end = end_date or (datetime.utcnow().date() + timedelta(days=1))
+        start = start_date or (end - timedelta(days=max(1, int(lookback_days))))
+        window_days = max(1, (end - start).days)
+        cna_limit = self._cna_limit_for_lookback(window_days)
+        max_pages = self._max_pages_for_lookback(window_days)
         hits = []
         try:
             if domain == "cna.com.tw":
@@ -641,6 +688,7 @@ class PersonTaiwanEventMonitorService:
                         limit=cna_limit,
                         require_taiwan_keyword=True,
                         require_dated_url=False,
+                        wnewslist_max_pages=max_pages,
                     )
                 except TypeError:
                     hits = discover_cna(
@@ -727,8 +775,10 @@ class PersonTaiwanEventMonitorService:
             fallback_items = self._collect_cna_google_fallback_items(
                 client,
                 person_keywords=person_keywords,
-                lookback_days=lookback_days,
+                lookback_days=window_days,
                 base_query=query or "",
+                start_date=start,
+                end_date=end,
             )
             for item in fallback_items:
                 url = str(item.get("url") or "").strip()
@@ -741,6 +791,60 @@ class PersonTaiwanEventMonitorService:
                 items.append(item)
         return items
 
+    def _collect_google_news_report_items(
+        self,
+        client: httpx.Client,
+        *,
+        person_keywords: list[str],
+        lookback_days: int,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict[str, Any]]:
+        end = end_date or (datetime.utcnow().date() + timedelta(days=1))
+        start = start_date or (end - timedelta(days=max(1, int(lookback_days))))
+        window_days = max(1, (end - start).days)
+        slice_days = 10 if window_days > 10 else window_days
+        try:
+            hits = _discover_google_news_report_hits(
+                client,
+                person_terms=person_keywords,
+                start=start,
+                end=end,
+                slice_days=slice_days,
+            )
+        except Exception:
+            hits = []
+
+        items: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for hit in hits:
+            url = str(getattr(hit, "url", "") or "").strip()
+            if not url:
+                continue
+            key = self._url_key(url)
+            if key in seen:
+                continue
+            seen.add(key)
+            published_at = None
+            published_date = str(getattr(hit, "published_date", "") or "").strip()
+            if published_date:
+                try:
+                    day = datetime.strptime(published_date, "%Y-%m-%d").date()
+                    published_at = datetime(day.year, day.month, day.day)
+                except Exception:
+                    published_at = None
+            items.append(
+                {
+                    "url": url,
+                    "title": str(getattr(hit, "title", "") or url),
+                    "summary": str(getattr(hit, "excerpt", "") or ""),
+                    "published_at": published_at,
+                    "source_domain": str(getattr(hit, "source", "") or ""),
+                    "query_enforced_match": True,
+                }
+            )
+        return items
+
     def _collect_cna_google_fallback_items(
         self,
         client: httpx.Client,
@@ -748,7 +852,11 @@ class PersonTaiwanEventMonitorService:
         person_keywords: list[str],
         lookback_days: int,
         base_query: str,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> list[dict[str, Any]]:
+        end = end_date or (datetime.utcnow().date() + timedelta(days=1))
+        start = start_date or (end - timedelta(days=max(1, int(lookback_days))))
         query_candidates: list[str] = []
         if base_query:
             query_candidates.append(base_query)
@@ -766,7 +874,7 @@ class PersonTaiwanEventMonitorService:
                     key = self._url_key(url)
                     if not key or key in seen_keys:
                         continue
-                    if not self._within_lookback(item.get("published_at"), lookback_days):
+                    if not self._within_date_window(item.get("published_at"), start, end):
                         continue
                     seen_keys.add(key)
                     item["query_enforced_match"] = True
@@ -797,7 +905,11 @@ class PersonTaiwanEventMonitorService:
             return 120
         if days >= 180:
             return 90
-        return 40
+        if days > 90:
+            return 40
+        if days > 31:
+            return 24
+        return 12
 
     def _has_existing_person_source_url(self, person_id: int, source_url: str) -> bool:
         url = str(source_url or "").strip()
@@ -904,6 +1016,62 @@ class PersonTaiwanEventMonitorService:
         except Exception:
             days = DEFAULT_LOOKBACK_DAYS
         return max(1, min(3650, days))
+
+    def _normalize_optional_date_text(self, value: Any) -> str | None:
+        if value in (None, ""):
+            return None
+        if isinstance(value, datetime):
+            return value.date().isoformat()
+        if isinstance(value, date):
+            return value.isoformat()
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            return date.fromisoformat(text[:10]).isoformat()
+        except ValueError:
+            return None
+
+    def _parse_config_date(self, value: Any) -> date | None:
+        normalized = self._normalize_optional_date_text(value)
+        if not normalized:
+            return None
+        try:
+            return date.fromisoformat(normalized)
+        except ValueError:
+            return None
+
+    def _resolve_monitor_window(
+        self,
+        config: dict[str, Any],
+        lookback_days: int,
+        use_fixed_date_window: bool = True,
+    ) -> tuple[date, date]:
+        today_end = datetime.utcnow().date() + timedelta(days=1)
+        configured_start = self._parse_config_date(config.get("date_start")) if use_fixed_date_window else None
+        configured_end = self._parse_config_date(config.get("date_end")) if use_fixed_date_window else None
+        if configured_start or configured_end:
+            end = (configured_end + timedelta(days=1)) if configured_end else today_end
+            if configured_start:
+                start = configured_start
+            else:
+                start = end - timedelta(days=max(1, int(lookback_days)))
+        else:
+            end = today_end
+            start = end - timedelta(days=max(1, int(lookback_days)))
+        if end <= start:
+            end = start + timedelta(days=1)
+        return start, end
+
+    def _within_date_window(self, published_at: datetime | None, start: date, end: date) -> bool:
+        if not published_at:
+            return True
+        published = published_at
+        if published.tzinfo is not None:
+            published_day = published.astimezone(ZoneInfo("UTC")).date()
+        else:
+            published_day = published.date()
+        return start <= published_day < end
 
     def _within_lookback(self, published_at: datetime | None, lookback_days: int) -> bool:
         if not published_at:
