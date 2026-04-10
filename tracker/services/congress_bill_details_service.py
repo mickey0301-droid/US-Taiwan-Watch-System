@@ -102,6 +102,12 @@ class CongressBillDetailsService:
         )
         legislation.raw_payload = payload
 
+        if overview.get("title") and overview["title"] != legislation.title:
+            legislation.title = overview["title"]
+            result.updated_fields.append("title")
+        if overview.get("introduced_date"):
+            legislation.introduced_date = overview["introduced_date"]
+            result.updated_fields.append("introduced_date")
         if overview.get("status_text"):
             legislation.status_text = overview["status_text"]
             result.updated_fields.append("status_text")
