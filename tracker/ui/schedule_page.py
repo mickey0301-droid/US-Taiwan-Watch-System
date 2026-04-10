@@ -152,6 +152,12 @@ def render(lang: str, labels: dict[str, str]) -> None:
             selected_domains = st.multiselect("預設網域", options=DEFAULT_EVENT_DOMAINS, default=DEFAULT_EVENT_DOMAINS, key="schedule-event-now-domain-default")
             custom_domains_text = st.text_input("新增網域（可多個，逗號分隔）", value="", key="schedule-event-now-domain-custom")
             max_people = st.number_input("人物數上限（0=不限）", min_value=0, max_value=10000, value=0, step=10, key="schedule-event-now-max-people")
+            explicit_names_text = st.text_area(
+                "指定人物（留空=依範圍搜）",
+                value="",
+                help="可輸入人名，每行或逗號分隔。填入後會忽略「搜尋範圍」設定，直接搜尋這些人。",
+                key="schedule-event-now-explicit-names",
+            )
             btn_col, result_col = st.columns([2, 5])
             with btn_col:
                 submit_now_event = st.form_submit_button("立刻搜尋")
@@ -170,6 +176,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     taiwan_keywords=_parse_csv_lines(keywords_text),
                     domains=domains,
                     max_people=(None if int(max_people) <= 0 else int(max_people)),
+                    explicit_person_names=_parse_csv_lines(explicit_names_text),
                 )
                 st.session_state["schedule_event_now_last_result"] = result
             st.rerun()

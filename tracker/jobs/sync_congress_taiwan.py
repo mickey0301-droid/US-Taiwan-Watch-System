@@ -10,7 +10,7 @@ from tracker.config import get_settings
 from tracker.db import session_scope
 from tracker.services.legislation_service import LegislationService
 
-CONGRESSES = [118, 119]
+CONGRESSES = [117, 118, 119]
 PARSER_IDENTITY = "sync_congress_taiwan_v1"
 TAIWAN_KEYWORDS = ("taiwan", "台灣", "臺灣")
 
@@ -83,9 +83,52 @@ async def _fetch_congress_bills(
             if not isinstance(chunk, list) or not chunk:
                 break
             bills.extend([item for item in chunk if isinstance(item, dict)])
+            await asyncio.sleep(0.3)
             if len(chunk) < limit:
                 break
     return bills
+
+
+def _fetch_bill_subjects_text(api_key: str, congress: int, bill_type: str, number: str) -> str:
+    if not api_key or not congress or not bill_type or not number:
+        return ""
+    url = f"https://api.congress.gov/v3/bill/{int(congress)}/{bill_type.lower()}/{number}/subjects"
+    try:
+        response = httpx.get(
+            url,
+            params={"api_key": api_key, "format": "json"},
+            timeout=15.0,
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+        payload = response.json() if response.content else {}
+    except Exception:
+        return ""
+    subjects = payload.get("subjects") if isinstance(payload, dict) else None
+    if not isinstance(subjects, dict):
+        return ""
+    chunks: list[str] = []
+    for key in ("legislativeSubjects", "policyArea"):
+        value = subjects.get(key)
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    name = str(item.get("name") or "").strip()
+                    if name:
+                        chunks.append(name)
+                elif isinstance(item, str):
+                    text = item.strip()
+                    if text:
+                        chunks.append(text)
+        elif isinstance(value, dict):
+            name = str(value.get("name") or "").strip()
+            if name:
+                chunks.append(name)
+        elif isinstance(value, str):
+            text = value.strip()
+            if text:
+                chunks.append(text)
+    return " ".join(chunks)
 
 
 def _to_legislation_payload(item: dict[str, Any]) -> dict[str, Any]:
@@ -171,8 +214,22 @@ def run_sync_congress_taiwan() -> dict[str, Any]:
         filtered = []
         for item in bills:
             latest_action = item.get("latestAction") if isinstance(item.get("latestAction"), dict) else {}
-            text = " ".join([str(item.get("title") or ""), str(latest_action.get("text") or "")])
+            policy_area = item.get("policyArea") if isinstance(item.get("policyArea"), dict) else {}
+            text = " ".join(
+                [
+                    str(item.get("title") or ""),
+                    str(latest_action.get("text") or ""),
+                    str(policy_area.get("name") or ""),
+                ]
+            )
             if _contains_taiwan(text):
+                filtered.append(item)
+                continue
+            bill_type = str(item.get("type") or "").strip().lower()
+            number = str(item.get("number") or "").strip()
+            congress_num = int(item.get("congress") or congress)
+            subjects_text = _fetch_bill_subjects_text(settings.congress_api_key, congress_num, bill_type, number)
+            if _contains_taiwan(subjects_text):
                 filtered.append(item)
         all_taiwan_bills.extend(filtered)
         scan_meta.append({"congress": congress, "fetched": len(bills), "taiwan_related": len(filtered)})

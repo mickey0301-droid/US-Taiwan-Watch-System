@@ -10,7 +10,7 @@ from typing import Any
 
 import feedparser
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -82,6 +82,7 @@ class ScheduledCollectionService:
         domains: list[str],
         run_at: datetime,
         max_people: int | None = None,
+        offset_people: int | None = None,
         one_shot: bool = True,
         interval_minutes: int | None = None,
     ) -> CollectionSchedule:
@@ -105,6 +106,8 @@ class ScheduledCollectionService:
                 "end_at": end_at.isoformat(),
                 "taiwan_keywords": normalized_keywords,
                 "domains": normalized_domains,
+                "max_people": max_people if max_people and max_people > 0 else None,
+                "offset_people": offset_people if offset_people and offset_people > 0 else 0,
                 "one_shot": bool(one_shot),
                 "interval_minutes": max(5, int(interval_minutes or 1440)),
             },
@@ -158,6 +161,8 @@ class ScheduledCollectionService:
         taiwan_keywords: list[str],
         domains: list[str],
         max_people: int | None = None,
+        offset_people: int | None = None,
+        explicit_person_names: list[str] | None = None,
     ) -> dict[str, Any]:
         payload = {
             "person_scope": person_scope or "all_current",
@@ -166,6 +171,8 @@ class ScheduledCollectionService:
             "taiwan_keywords": self._normalize_keywords(taiwan_keywords),
             "domains": self._normalize_domains(domains),
             "max_people": max_people if max_people and max_people > 0 else None,
+            "offset_people": offset_people if offset_people and offset_people > 0 else 0,
+            "explicit_person_names": [n.strip() for n in (explicit_person_names or []) if str(n or "").strip()],
         }
         return self._run_event_keyword_search(payload, schedule_id=None)
 
@@ -266,9 +273,38 @@ class ScheduledCollectionService:
         person_scope = str(payload.get("person_scope") or "all_current")
         max_people = payload.get("max_people")
         max_people_int = int(max_people) if isinstance(max_people, int) and max_people > 0 else None
+        offset_people = payload.get("offset_people")
+        offset_people_int = int(offset_people) if isinstance(offset_people, int) and offset_people > 0 else 0
+        explicit_names = [str(n or "").strip() for n in (payload.get("explicit_person_names") or []) if str(n or "").strip()]
         taiwan_keywords = self._normalize_keywords(payload.get("taiwan_keywords"))
         domains = self._normalize_domains(payload.get("domains"))
-        people = self._list_people_by_scope(person_scope, max_people=max_people_int)
+        if explicit_names:
+            lowered = [name.casefold() for name in explicit_names]
+            full_name_conditions = [func.lower(Person.full_name) == value for value in lowered]
+            people_rows = self.session.execute(
+                select(Person.id, Person.full_name).where(
+                    Person.is_current.is_(True),
+                    or_(*full_name_conditions),
+                )
+            ).all()
+            found_ids = {pid for pid, _ in people_rows}
+            alias_conditions = [func.lower(Alias.alias) == value for value in lowered]
+            alias_rows = self.session.execute(
+                select(Person.id, Person.full_name)
+                .join(Alias, Alias.person_id == Person.id)
+                .where(
+                    Person.is_current.is_(True),
+                    or_(*alias_conditions),
+                )
+            ).all()
+            merged_rows = list(people_rows)
+            for pid, full_name in alias_rows:
+                if pid not in found_ids:
+                    merged_rows.append((pid, full_name))
+                    found_ids.add(pid)
+            people = merged_rows
+        else:
+            people = self._list_people_by_scope(person_scope, max_people=max_people_int, offset_people=offset_people_int)
         if not people:
             return {
                 "status": "success",
@@ -386,6 +422,8 @@ class ScheduledCollectionService:
             "status": "success",
             "person_scope": person_scope,
             "people_scanned": len(people),
+            "offset_people": offset_people_int,
+            "explicit_person_names": explicit_names,
             "found": found,
             "created": created,
             "updated": updated,
@@ -744,10 +782,12 @@ class ScheduledCollectionService:
             with httpx.Client(headers=headers, follow_redirects=True, verify=False) as insecure_client:
                 for person_id, full_name in people:
                     person_terms = aliases_map.get(person_id, [full_name])
+                    lookback_days = max(1, int((end - start).days))
+                    max_pages = self._max_pages_for_lookback(lookback_days)
                     hits = dedupe_hits(
                         discover_cna(client, insecure_client, person_terms=person_terms, start=start, end=end)
-                        + discover_mofa(client, insecure_client, person_terms=person_terms, start=start, end=end, max_pages=30)
-                        + discover_president(client, insecure_client, person_terms=person_terms, start=start, end=end, max_pages=30)
+                        + discover_mofa(client, insecure_client, person_terms=person_terms, start=start, end=end, max_pages=max_pages)
+                        + discover_president(client, insecure_client, person_terms=person_terms, start=start, end=end, max_pages=max_pages)
                     )
                     discovered_count += len(hits)
                     for hit in hits:
@@ -816,7 +856,7 @@ class ScheduledCollectionService:
             months = [datetime.utcnow().month]
         return sorted(set(months))
 
-    def _list_people_by_scope(self, person_scope: str, max_people: int | None = None) -> list[tuple[int, str]]:
+    def _list_people_by_scope(self, person_scope: str, max_people: int | None = None, offset_people: int = 0) -> list[tuple[int, str]]:
         stmt = (
             select(Person.id, Person.full_name)
             .join(Appointment, Appointment.person_id == Person.id)
@@ -843,12 +883,41 @@ class ScheduledCollectionService:
         else:
             stmt = stmt.where(Office.level == "federal")
 
-        rows = self.session.execute(stmt.order_by(Person.full_name.asc())).all()
-        dedup: dict[int, tuple[int, str]] = {}
-        for person_id, full_name in rows:
-            if person_id not in dedup:
-                dedup[person_id] = (person_id, full_name)
-        people = list(dedup.values())
+        # Also select role_title for priority ranking.
+        stmt_with_role = stmt.add_columns(Appointment.role_title)
+        rows = self.session.execute(stmt_with_role.order_by(Person.full_name.asc())).all()
+
+        priority_role_keywords = [
+            "President",
+            "Vice President",
+            "Secretary of State",
+            "National Security Advisor",
+            "Secretary of Defense",
+            "Director of National Intelligence",
+            "Chief of Staff",
+            "Trade Representative",
+            "Secretary of the Treasury",
+            "Ambassador",
+            "Senator",
+            "Representative",
+        ]
+
+        def _role_rank(role_title: str | None) -> int:
+            lower = str(role_title or "").lower()
+            for idx, keyword in enumerate(priority_role_keywords):
+                if keyword.lower() in lower:
+                    return idx
+            return len(priority_role_keywords)
+
+        dedup: dict[int, tuple[int, str, int]] = {}
+        for person_id, full_name, role_title in rows:
+            rank = _role_rank(role_title)
+            if person_id not in dedup or rank < dedup[person_id][2]:
+                dedup[person_id] = (person_id, full_name, rank)
+        people_with_rank = sorted(dedup.values(), key=lambda x: (x[2], x[1]))
+        people = [(pid, name) for pid, name, _ in people_with_rank]
+        if offset_people and offset_people > 0:
+            people = people[offset_people:]
         if max_people and max_people > 0:
             people = people[:max_people]
         return people
@@ -885,22 +954,22 @@ class ScheduledCollectionService:
 
     def _normalize_person_search_terms(self, full_name: str, aliases: list[str] | Any) -> list[str]:
         base_name = str(full_name or "").strip()
-        terms = [base_name] + [str(alias or "").strip() for alias in (aliases or []) if str(alias or "").strip()]
-        if self._is_trump_name(base_name):
-            return list(dict.fromkeys(terms))
-        output: list[str] = []
+        raw_terms = [base_name] + [
+            str(alias or "").strip()
+            for alias in (aliases or [])
+            if str(alias or "").strip()
+        ]
         seen: set[str] = set()
-        for term in terms:
-            if not self._is_english_full_name(term):
+        output: list[str] = []
+        for term in raw_terms:
+            if not term:
                 continue
             key = term.casefold()
             if key in seen:
                 continue
             seen.add(key)
             output.append(term)
-        if output:
-            return output
-        return [base_name] if base_name else []
+        return output if output else ([base_name] if base_name else [])
 
     def _is_trump_name(self, full_name: str) -> bool:
         return "trump" in str(full_name or "").casefold()
@@ -998,15 +1067,17 @@ class ScheduledCollectionService:
                     break
             return dedupe_hits(aggregate)
         if domain == "mofa.gov.tw":
+            max_pages = self._max_pages_for_lookback(lookback_days)
             try:
-                return discover_mofa(client, insecure_client, person_terms=person_terms, start=start, end=end, max_pages=30)
+                return discover_mofa(client, insecure_client, person_terms=person_terms, start=start, end=end, max_pages=max_pages)
             except TypeError:
-                return discover_mofa(client, insecure_client, person_terms, start, end, 30)
+                return discover_mofa(client, insecure_client, person_terms, start, end, max_pages)
         if domain == "president.gov.tw":
+            max_pages = self._max_pages_for_lookback(lookback_days)
             try:
-                return discover_president(client, insecure_client, person_terms=person_terms, start=start, end=end, max_pages=30)
+                return discover_president(client, insecure_client, person_terms=person_terms, start=start, end=end, max_pages=max_pages)
             except TypeError:
-                return discover_president(client, insecure_client, person_terms, start, end, 30)
+                return discover_president(client, insecure_client, person_terms, start, end, max_pages)
         return self._discover_generic_domain_hits(
             domain=domain,
             client=client,
@@ -1072,6 +1143,18 @@ class ScheduledCollectionService:
         if days >= 180:
             return 400
         return 300
+
+    def _max_pages_for_lookback(self, lookback_days: int) -> int:
+        days = max(1, int(lookback_days or 1))
+        if days >= 1800:
+            return 220
+        if days >= 1000:
+            return 180
+        if days >= 365:
+            return 120
+        if days >= 180:
+            return 90
+        return 40
 
     def _resolve_possible_google_news_link(self, client: httpx.Client, link: str) -> str:
         if not link:

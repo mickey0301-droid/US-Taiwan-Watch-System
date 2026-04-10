@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from scripts.discover_restricted_source_events import discover_cna, discover_mofa, discover_president
-from tracker.models import Person, StatementParticipant, StatementSource, SyncRun
+from tracker.models import Alias, Person, StatementParticipant, StatementSource, SyncRun
 from tracker.services.statements_service import StatementsService
 from tracker.utils.web import build_google_news_rss_url, domain_from_url, parse_datetime
 
@@ -60,6 +60,11 @@ class PersonTaiwanEventMonitorService:
                     keywords.append(alias)
         else:
             keywords = self._filter_person_keywords(person, [person.full_name])
+            # Also append Chinese aliases for all people, not just Trump.
+            for alias in list(chinese_aliases or []):
+                alias = str(alias or "").strip()
+                if alias and alias not in keywords:
+                    keywords.append(alias)
         return {
             "enabled": False,
             "person_keywords": keywords,
@@ -281,6 +286,18 @@ class PersonTaiwanEventMonitorService:
             fallback_name = str(person.full_name or "").strip()
             if fallback_name:
                 all_person_keywords = [fallback_name]
+        # Augment with DB aliases (includes Chinese names) so monitors work
+        # even when person_keywords in config only has English names.
+        try:
+            db_aliases = self.session.execute(
+                select(Alias.alias).where(Alias.person_id == person.id)
+            ).scalars().all()
+            for _alias in db_aliases:
+                _alias_str = str(_alias or "").strip()
+                if _alias_str and _alias_str not in all_person_keywords:
+                    all_person_keywords.append(_alias_str)
+        except Exception:
+            pass
         # Keep an English full-name subset for Google-style query quality,
         # but preserve full keyword set (including Chinese aliases) for
         # direct-site search and in-article matching.
@@ -306,101 +323,103 @@ class PersonTaiwanEventMonitorService:
         article_text_cache: dict[str, str] = {}
 
         with httpx.Client(headers=self._http_headers, follow_redirects=True, timeout=25.0) as client:
-            for domain in domains:
-                query = self.build_query(person_keywords, taiwan_keywords, domain=domain)
-                items = self._collect_domain_items(
-                    client=client,
-                    domain=domain,
-                    query=query,
-                    person_keywords=person_keywords,
-                    all_person_keywords=all_person_keywords,
-                    lookback_days=lookback_days,
-                )
-                found = 0
-                created = 0
-                updated = 0
-                skipped_existing = 0
-                for item in items:
-                    if not self._within_lookback(item.get("published_at"), lookback_days):
-                        continue
-                    text = self._merge_text(item.get("title"), item.get("summary"))
-                    matched_person = self._matched_keywords(text, all_person_keywords)
-                    matched_taiwan = self._matched_keywords(text, taiwan_keywords)
-                    if not matched_person or not matched_taiwan:
-                        if bool(item.get("query_enforced_match")):
-                            # For source-query-matched items, keep Taiwan keyword
-                            # strict in article text, while allowing person
-                            # keyword fallback to the configured primary name.
-                            if not matched_taiwan:
-                                source_url_for_check = str(item.get("url") or "").strip()
-                                if source_url_for_check:
-                                    full_text = self._fetch_full_article_text(client, source_url_for_check, article_text_cache)
-                                    if full_text:
-                                        matched_taiwan = self._matched_keywords(
-                                            self._merge_text(item.get("title"), full_text),
-                                            taiwan_keywords,
-                                        )
-                            if not matched_taiwan:
-                                continue
-                            if not matched_person and all_person_keywords:
-                                matched_person = [all_person_keywords[0]]
-                        else:
+            with httpx.Client(headers=self._http_headers, follow_redirects=True, timeout=25.0, verify=False) as insecure_client:
+                for domain in domains:
+                    query = self.build_query(person_keywords, taiwan_keywords, domain=domain)
+                    items = self._collect_domain_items(
+                        client=client,
+                        insecure_client=insecure_client,
+                        domain=domain,
+                        query=query,
+                        person_keywords=person_keywords,
+                        all_person_keywords=all_person_keywords,
+                        lookback_days=lookback_days,
+                    )
+                    found = 0
+                    created = 0
+                    updated = 0
+                    skipped_existing = 0
+                    for item in items:
+                        if not self._within_lookback(item.get("published_at"), lookback_days):
                             continue
-                    found += 1
+                        text = self._merge_text(item.get("title"), item.get("summary"))
+                        matched_person = self._matched_keywords(text, all_person_keywords)
+                        matched_taiwan = self._matched_keywords(text, taiwan_keywords)
+                        if not matched_person or not matched_taiwan:
+                            if bool(item.get("query_enforced_match")):
+                                # For source-query-matched items, keep Taiwan keyword
+                                # strict in article text, while allowing person
+                                # keyword fallback to the configured primary name.
+                                if not matched_taiwan:
+                                    source_url_for_check = str(item.get("url") or "").strip()
+                                    if source_url_for_check:
+                                        full_text = self._fetch_full_article_text(client, source_url_for_check, article_text_cache)
+                                        if full_text:
+                                            matched_taiwan = self._matched_keywords(
+                                                self._merge_text(item.get("title"), full_text),
+                                                taiwan_keywords,
+                                            )
+                                if not matched_taiwan:
+                                    continue
+                                if not matched_person and all_person_keywords:
+                                    matched_person = [all_person_keywords[0]]
+                            else:
+                                continue
+                        found += 1
 
-                    source_url = str(item.get("url") or "").strip()
-                    if not source_url:
-                        continue
-                    if self._has_existing_person_source_url(person.id, source_url):
-                        skipped_existing += 1
-                        continue
-                    source_domain = domain_from_url(source_url)
-                    source_type = "official" if source_domain in {"president.gov.tw", "mofa.gov.tw"} else "media"
+                        source_url = str(item.get("url") or "").strip()
+                        if not source_url:
+                            continue
+                        if self._has_existing_person_source_url(person.id, source_url):
+                            skipped_existing += 1
+                            continue
+                        source_domain = domain_from_url(source_url)
+                        source_type = "official" if source_domain in {"president.gov.tw", "mofa.gov.tw"} else "media"
 
-                    payload = {
-                        "person_id": person.id,
-                        "participant_ids": [person.id],
-                        "title": str(item.get("title") or source_url),
-                        "source_title": str(item.get("title") or source_url),
-                        "date_published": item.get("published_at"),
-                        "source_url": source_url,
-                        "source_type": source_type,
-                        "statement_type": "statement",
-                        "excerpt": str(item.get("summary") or "")[:1000],
-                        "full_text": str(item.get("summary") or "")[:5000],
-                        "raw_text": str(item.get("summary") or ""),
-                        "is_primary_source": source_type == "official",
-                        "parser_identity": PARSER_IDENTITY,
-                        "raw_payload": {
-                            "seeded_from": PARSER_IDENTITY,
-                            "monitor_trigger": trigger,
-                            "monitor_domain": domain,
-                            "monitor_query": query,
-                            "monitor_lookback_days": lookback_days,
-                            "matched_person_keywords": matched_person,
-                            "matched_taiwan_keywords": matched_taiwan,
-                        },
-                    }
-                    _, is_created = self.statements_service.ingest_statement(payload)
-                    if is_created:
-                        created += 1
-                    else:
-                        updated += 1
+                        payload = {
+                            "person_id": person.id,
+                            "participant_ids": [person.id],
+                            "title": str(item.get("title") or source_url),
+                            "source_title": str(item.get("title") or source_url),
+                            "date_published": item.get("published_at"),
+                            "source_url": source_url,
+                            "source_type": source_type,
+                            "statement_type": "statement",
+                            "excerpt": str(item.get("summary") or "")[:1000],
+                            "full_text": str(item.get("summary") or "")[:5000],
+                            "raw_text": str(item.get("summary") or ""),
+                            "is_primary_source": source_type == "official",
+                            "parser_identity": PARSER_IDENTITY,
+                            "raw_payload": {
+                                "seeded_from": PARSER_IDENTITY,
+                                "monitor_trigger": trigger,
+                                "monitor_domain": domain,
+                                "monitor_query": query,
+                                "monitor_lookback_days": lookback_days,
+                                "matched_person_keywords": matched_person,
+                                "matched_taiwan_keywords": matched_taiwan,
+                            },
+                        }
+                        _, is_created = self.statements_service.ingest_statement(payload)
+                        if is_created:
+                            created += 1
+                        else:
+                            updated += 1
 
-                total_found += found
-                total_created += created
-                total_updated += updated
-                query_logs.append(
-                    {
-                        "domain": domain,
-                        "query": query,
-                        "lookback_days": lookback_days,
-                        "items_found": found,
-                        "items_added": created,
-                        "items_updated": updated,
-                        "items_skipped_existing": skipped_existing,
-                    }
-                )
+                    total_found += found
+                    total_created += created
+                    total_updated += updated
+                    query_logs.append(
+                        {
+                            "domain": domain,
+                            "query": query,
+                            "lookback_days": lookback_days,
+                            "items_found": found,
+                            "items_added": created,
+                            "items_updated": updated,
+                            "items_skipped_existing": skipped_existing,
+                        }
+                    )
 
             if include_global_news:
                 global_query = self.build_query(person_keywords, taiwan_keywords, domain=None)
@@ -565,6 +584,7 @@ class PersonTaiwanEventMonitorService:
     def _collect_domain_items(
         self,
         client: httpx.Client,
+        insecure_client: httpx.Client,
         domain: str,
         query: str,
         person_keywords: list[str],
@@ -575,6 +595,7 @@ class PersonTaiwanEventMonitorService:
         if normalized_domain in {"cna.com.tw", "mofa.gov.tw", "president.gov.tw"}:
             return self._collect_direct_site_items(
                 client,
+                insecure_client,
                 normalized_domain,
                 all_person_keywords or person_keywords,
                 lookback_days,
@@ -586,6 +607,7 @@ class PersonTaiwanEventMonitorService:
     def _collect_direct_site_items(
         self,
         client: httpx.Client,
+        insecure_client: httpx.Client,
         domain: str,
         person_keywords: list[str],
         lookback_days: int,
@@ -601,7 +623,7 @@ class PersonTaiwanEventMonitorService:
                 try:
                     hits = discover_cna(
                         client,
-                        client,
+                        insecure_client,
                         person_terms=person_keywords,
                         start=start,
                         end=end,
@@ -612,7 +634,7 @@ class PersonTaiwanEventMonitorService:
                 except TypeError:
                     hits = discover_cna(
                         client,
-                        client,
+                        insecure_client,
                         person_terms=person_keywords,
                         start=start,
                         end=end,
@@ -622,7 +644,7 @@ class PersonTaiwanEventMonitorService:
                 try:
                     hits = discover_mofa(
                         client,
-                        client,
+                        insecure_client,
                         person_terms=person_keywords,
                         start=start,
                         end=end,
@@ -632,7 +654,7 @@ class PersonTaiwanEventMonitorService:
                 except TypeError:
                     hits = discover_mofa(
                         client,
-                        client,
+                        insecure_client,
                         person_terms=person_keywords,
                         start=start,
                         end=end,
@@ -642,7 +664,7 @@ class PersonTaiwanEventMonitorService:
                 try:
                     hits = discover_president(
                         client,
-                        client,
+                        insecure_client,
                         person_terms=person_keywords,
                         start=start,
                         end=end,
@@ -652,7 +674,7 @@ class PersonTaiwanEventMonitorService:
                 except TypeError:
                     hits = discover_president(
                         client,
-                        client,
+                        insecure_client,
                         person_terms=person_keywords,
                         start=start,
                         end=end,
