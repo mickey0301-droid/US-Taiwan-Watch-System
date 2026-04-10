@@ -12,6 +12,7 @@ from tracker.config import use_google_sheet_primary_mode
 from tracker.db import session_scope
 from tracker.models import Legislation, Person
 from tracker.services.google_sheet_read_service import GoogleSheetReadService
+from tracker.services.legislation_ai_enrichment_service import LegislationAIEnrichmentService
 from tracker.services.legislation_service import LegislationService
 from tracker.services.manual_legislation_ingest_service import ManualLegislationIngestService
 from tracker.ui.navigation import render_person_links
@@ -190,6 +191,19 @@ def _render_manual_legislation_ingest_form(session, lang: str) -> None:
 
 
 def _render_legislation_detail(selected: Legislation, service: LegislationService, people_by_id: dict[int, Person], lang: str) -> None:
+    flash_key = f"legislation-ai-enrich-flash-{selected.id}"
+    flash = st.session_state.pop(flash_key, None)
+    if flash:
+        message = str(flash.get("message") or "")
+        if flash.get("ok"):
+            st.success(message)
+        else:
+            st.error(message)
+        details = flash.get("details") or {}
+        if details:
+            with st.expander("Gemini 補資料明細" if lang == "zh-TW" else "Gemini enrichment details"):
+                st.json(details)
+
     if st.button("返回法案列表" if lang == "zh-TW" else "Back to legislation list", key=f"legislation-back-{selected.id}"):
         _clear_legislation_id()
         st.rerun()
@@ -221,6 +235,37 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
             st.markdown(f"`{'法案全文' if lang == 'zh-TW' else 'Bill text'}`：[{'法案全文' if lang == 'zh-TW' else 'Bill text'}]({bill_text_url})")
         if latest_action:
             st.markdown(f"`{'最新動作' if lang == 'zh-TW' else 'Latest action'}`：{latest_action}")
+
+        if st.button(
+            "用 Gemini 查詢並補資料" if lang == "zh-TW" else "Research and enrich with Gemini",
+            key=f"legislation-gemini-enrich-{selected.id}",
+        ):
+            try:
+                with st.spinner("Gemini 正在查詢官方資料並更新法案..." if lang == "zh-TW" else "Gemini is researching and updating this bill..."):
+                    enrichment = LegislationAIEnrichmentService(service.session).enrich_with_gemini(int(selected.id))
+                    service.session.commit()
+                st.session_state[f"legislation-ai-enrich-flash-{selected.id}"] = {
+                    "ok": enrichment.ok,
+                    "message": (
+                        f"{enrichment.message} 更新欄位 {len(enrichment.updated_fields)} 個、連結提案人 +{enrichment.sponsors_linked}、共同提案人 +{enrichment.cosponsors_linked}、略過 {len(enrichment.skipped_sponsors)} 個。"
+                        if lang == "zh-TW"
+                        else f"{enrichment.message} Updated {len(enrichment.updated_fields)} fields, linked sponsors +{enrichment.sponsors_linked}, cosponsors +{enrichment.cosponsors_linked}, skipped {len(enrichment.skipped_sponsors)}."
+                    ),
+                    "details": {
+                        "updated_fields": enrichment.updated_fields,
+                        "sponsors_linked": enrichment.sponsors_linked,
+                        "cosponsors_linked": enrichment.cosponsors_linked,
+                        "skipped_sponsors": enrichment.skipped_sponsors,
+                        "sources": enrichment.sources,
+                    },
+                }
+            except Exception as exc:
+                service.session.rollback()
+                st.session_state[f"legislation-ai-enrich-flash-{selected.id}"] = {
+                    "ok": False,
+                    "message": f"Gemini 補資料失敗：{type(exc).__name__}: {exc}" if lang == "zh-TW" else f"Gemini enrichment failed: {type(exc).__name__}: {exc}",
+                }
+            st.rerun()
 
         st.markdown(f"`{'提案人' if lang == 'zh-TW' else 'Sponsor'}`：")
         if sponsors:

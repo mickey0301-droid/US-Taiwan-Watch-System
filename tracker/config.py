@@ -25,6 +25,8 @@ class AppSettings(BaseModel):
     google_sheet_id: str | None = None
     openai_api_key: str | None = None
     openai_model: str = "gpt-4.1-mini"
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-2.5-flash"
     congress_current_number: int = 119
     log_level: str = "INFO"
     timezone: str = "Asia/Taipei"
@@ -125,6 +127,12 @@ def get_settings() -> AppSettings:
     openai_model = os.getenv("OPENAI_MODEL") or _streamlit_secret("OPENAI_MODEL")
     if openai_model:
         raw["openai_model"] = openai_model
+    gemini_api_key = os.getenv("GEMINI_API_KEY") or _streamlit_secret("GEMINI_API_KEY")
+    if gemini_api_key:
+        raw["gemini_api_key"] = gemini_api_key
+    gemini_model = os.getenv("GEMINI_MODEL") or _streamlit_secret("GEMINI_MODEL")
+    if gemini_model:
+        raw["gemini_model"] = gemini_model
     google_sheet_primary_mode = _bool_env_or_secret("GOOGLE_SHEET_PRIMARY_MODE")
     if google_sheet_primary_mode is not None:
         raw["google_sheet_primary_mode"] = google_sheet_primary_mode

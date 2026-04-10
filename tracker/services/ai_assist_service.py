@@ -18,6 +18,10 @@ class AIAssistService:
     def enabled(self) -> bool:
         return bool(self.settings.openai_api_key)
 
+    @property
+    def gemini_enabled(self) -> bool:
+        return bool(self.settings.gemini_api_key)
+
     def chinese_name_for_person(self, full_name: str, office_title: str | None = None, jurisdiction: str | None = None) -> str | None:
         if not self.enabled or not full_name.strip():
             return None
@@ -162,6 +166,49 @@ class AIAssistService:
         if legislation_type not in allowed_types:
             legislation_type = "other"
         return {"level": level, "chamber": chamber, "legislation_type": legislation_type}
+
+    def research_legislation_metadata_with_gemini(
+        self,
+        current: dict[str, Any],
+        page_title: str,
+        page_body: str,
+        source_url: str,
+    ) -> dict[str, Any] | None:
+        if not self.gemini_enabled:
+            return None
+        prompt = (
+            "You are enriching a US federal/state legislation database for a Taiwan-related civic dashboard. "
+            "Use the official URL, provided page excerpt, and Google Search when helpful. "
+            "Return strict JSON only. Do not invent unsupported facts; use null or [] when unknown. "
+            "Prefer official legislature, Congress.gov, or government sources. "
+            "Keys: title, bill_number, level, jurisdiction_name, chamber, legislation_type, summary, status_text, "
+            "introduced_date, last_action_date, sponsor_names, cosponsor_names, is_taiwan_related, relevance_score, sources. "
+            "Dates must be YYYY-MM-DD. level must be federal/state/other. chamber must be senate/house/unknown. "
+            "legislation_type must be bill/resolution/joint_resolution/concurrent_resolution/other. "
+            "summary should be one concise Traditional Chinese sentence. "
+            "sources must be an array of objects with title and url for pages supporting the extracted data.\n\n"
+            f"Current database record JSON:\n{json.dumps(current, ensure_ascii=False)}\n\n"
+            f"Official/source URL: {source_url}\n"
+            f"Fetched page title: {page_title}\n"
+            f"Fetched page text excerpt:\n{page_body[:10000]}\n"
+        )
+        result = _gemini_grounded_json(
+            api_key=self.settings.gemini_api_key or "",
+            model=self.settings.gemini_model,
+            prompt=prompt,
+            max_output_tokens=1200,
+        )
+        if not result:
+            return None
+        payload = _parse_json_object(result.get("text") or "")
+        if not isinstance(payload, dict):
+            return None
+        sanitized = _sanitize_legislation_metadata(payload)
+        sources = _clean_source_list(payload.get("sources"))
+        if not sources:
+            sources = _grounding_sources(result.get("raw") or {})
+        sanitized["sources"] = sources
+        return sanitized
 
 
 @lru_cache(maxsize=512)
