@@ -905,6 +905,7 @@ class ManualUrlImportService:
                         "role": role,
                         "source_url": source_url,
                         "source_type": self._source_type(source_url),
+                        "allow_seed_person": False,
                     }
                 )
         return sponsors

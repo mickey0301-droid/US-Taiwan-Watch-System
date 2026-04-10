@@ -118,13 +118,14 @@ class LegislationService:
     def ensure_legislation_sponsor(self, legislation_id: int, sponsor_payload: dict[str, Any], legislation_payload: dict[str, Any]) -> bool:
         try:
             person = self._find_or_seed_person(sponsor_payload, legislation_payload)
-        except InvalidPersonNameError:
+        except InvalidPersonNameError as exc:
             skipped = list(legislation_payload.setdefault("skipped_sponsors", []))
             skipped.append(
                 {
                     "full_name": sponsor_payload.get("full_name"),
                     "role": sponsor_payload.get("role", "sponsor"),
-                    "reason": "invalid_person_name",
+                    "reason": exc.category or "invalid_person_name",
+                    "detail": exc.reason,
                 }
             )
             legislation_payload["skipped_sponsors"] = skipped
@@ -210,6 +211,13 @@ class LegislationService:
                     alias_type="chinese_name",
                 )
             return person
+
+        if sponsor_payload.get("allow_seed_person") is False:
+            raise InvalidPersonNameError(
+                full_name,
+                "Person not found; AI-extracted manual bill sponsors are not auto-created",
+                "person_not_found",
+            )
 
         role_title = sponsor_payload.get("role_title") or ("State Legislator" if legislation_payload.get("level") == "state" else "Legislator")
         raw_payload = {
