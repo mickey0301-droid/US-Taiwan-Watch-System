@@ -2764,14 +2764,26 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     daily_time=daily_time,
                     lookback_days=int(lookback_days),
                 )
-                queued_run = monitor_service.enqueue_manual_run(person.id)
                 session.flush()
                 session.commit()
-                st.session_state[monitor_flash_key] = (
-                    f"已排入監測佇列（任務 #{queued_run.id}），請稍候自動執行"
-                    if lang == "zh-TW"
-                    else f"Queued monitor run (job #{queued_run.id}); it will be processed shortly."
-                )
+                # Run directly in this request (with spinner) instead of queuing,
+                # so the user gets immediate feedback without waiting for the scheduler.
+                spinner_msg = "正在執行監測搜尋，請稍候…" if lang == "zh-TW" else "Running monitor search, please wait…"
+                with st.spinner(spinner_msg):
+                    run_result = monitor_service.run_for_person(person.id, trigger="manual")
+                    session.commit()
+                if run_result.ok:
+                    st.session_state[monitor_flash_key] = (
+                        f"監測完成：找到 {run_result.found} 篇、新增 {run_result.created} 篇、更新 {run_result.updated} 篇"
+                        if lang == "zh-TW"
+                        else f"Done: found {run_result.found}, created {run_result.created}, updated {run_result.updated}"
+                    )
+                else:
+                    st.session_state[monitor_flash_key] = (
+                        f"監測執行失敗：{run_result.error}"
+                        if lang == "zh-TW"
+                        else f"Monitor run failed: {run_result.error}"
+                    )
                 st.rerun()
 
             latest_monitor_config = monitor_service.get_person_monitor_config(person, chinese_aliases=chinese_aliases)
