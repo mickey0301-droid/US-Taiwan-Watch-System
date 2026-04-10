@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import sqlite3
 from functools import lru_cache
 from pathlib import Path
@@ -97,10 +98,42 @@ def _prefer_populated_sqlite_database(database_url: str) -> str:
 def _normalize_database_url(database_url: str) -> str:
     normalized = str(database_url or "").strip()
     if normalized.startswith("postgres://"):
-        return f"postgresql+psycopg://{normalized.removeprefix('postgres://')}"
-    if normalized.startswith("postgresql://") and "+psycopg" not in normalized:
-        return normalized.replace("postgresql://", "postgresql+psycopg://", 1)
+        normalized = f"postgresql+psycopg://{normalized.removeprefix('postgres://')}"
+    elif normalized.startswith("postgresql://") and "+psycopg" not in normalized:
+        normalized = normalized.replace("postgresql://", "postgresql+psycopg://", 1)
+    if normalized.startswith("postgresql+psycopg://"):
+        normalized = _prefer_ipv4_hostaddr(normalized)
     return normalized
+
+
+def _prefer_ipv4_hostaddr(database_url: str) -> str:
+    from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+    parsed = urlparse(database_url)
+    hostname = (parsed.hostname or "").strip()
+    if not hostname:
+        return database_url
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if query.get("hostaddr"):
+        return database_url
+    hostaddr = _resolve_ipv4_address(hostname)
+    if not hostaddr:
+        return database_url
+    query["hostaddr"] = hostaddr
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
+@lru_cache(maxsize=128)
+def _resolve_ipv4_address(hostname: str) -> str | None:
+    try:
+        infos = socket.getaddrinfo(hostname, None, socket.AF_INET, socket.SOCK_STREAM)
+    except OSError:
+        return None
+    for info in infos:
+        sockaddr = info[4]
+        if sockaddr and sockaddr[0]:
+            return str(sockaddr[0])
+    return None
 
 
 @lru_cache(maxsize=1)
