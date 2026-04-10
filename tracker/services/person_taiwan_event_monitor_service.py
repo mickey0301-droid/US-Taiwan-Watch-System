@@ -18,6 +18,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from scripts.discover_restricted_source_events import discover_cna, discover_mofa, discover_president
 from tracker.models import Alias, Person, StatementParticipant, StatementSource, SyncRun
+from tracker.services.relevance_service import RelevanceService
 from tracker.services.statements_service import StatementsService
 from tracker.utils.web import build_google_news_rss_url, domain_from_url, parse_datetime
 
@@ -47,6 +48,7 @@ class PersonTaiwanEventMonitorService:
     def __init__(self, session: Session, timezone: str = "Asia/Taipei") -> None:
         self.session = session
         self.statements_service = StatementsService(session)
+        self.relevance_service = RelevanceService()
         self.timezone = timezone
         self._tz = ZoneInfo(timezone)
         self._http_headers = {"User-Agent": "Mozilla/5.0 (compatible; UTWBot/1.0; +https://github.com/mickey0301-droid/US-Taiwan-Watch-System)"}
@@ -367,6 +369,8 @@ class PersonTaiwanEventMonitorService:
                                     matched_person = [all_person_keywords[0]]
                             else:
                                 continue
+                        if self.relevance_service.is_taiwan_time_only_reference(text):
+                            continue
                         found += 1
 
                         source_url = str(item.get("url") or "").strip()
@@ -460,6 +464,8 @@ class PersonTaiwanEventMonitorService:
                             continue
                     if not matched_person and all_person_keywords:
                         matched_person = [all_person_keywords[0]]
+                    if self.relevance_service.is_taiwan_time_only_reference(text):
+                        continue
                     found += 1
                     source_domain = domain_from_url(source_url)
                     source_type = "official" if source_domain in {"president.gov.tw", "mofa.gov.tw"} else "media"

@@ -24,6 +24,7 @@ from scripts.discover_restricted_source_events import (
 from tracker.config import get_settings
 from tracker.models import Alias, Appointment, CollectionSchedule, Office, Person, StatementParticipant, StatementSource
 from tracker.utils.web import build_google_news_rss_url
+from tracker.services.relevance_service import RelevanceService
 from tracker.services.statements_service import StatementsService
 
 try:
@@ -40,6 +41,7 @@ DEFAULT_TAIWAN_KEYWORDS = ["台灣", "臺灣", "Taiwan", "taiwan", "Taipei", "�
 class ScheduledCollectionService:
     def __init__(self, session: Session) -> None:
         self.session = session
+        self.relevance_service = RelevanceService()
 
     def list_schedules(self) -> list[CollectionSchedule]:
         return self.session.execute(select(CollectionSchedule).order_by(CollectionSchedule.updated_at.desc())).scalars().all()
@@ -351,6 +353,9 @@ class ScheduledCollectionService:
                     hits = dedupe_hits(collected_hits)
                     found += len(hits)
                     for hit in hits:
+                        merged_text = f"{(hit.title or '').strip()} {(hit.excerpt or '').strip()}"
+                        if self.relevance_service.is_taiwan_time_only_reference(merged_text):
+                            continue
                         if self._statement_source_exists(person_id, hit.url):
                             skipped_existing += 1
                             counter = query_counters.get(hit.source)
@@ -1104,6 +1109,8 @@ class ScheduledCollectionService:
             title = str(getattr(entry, "title", "") or "").strip()
             summary = str(getattr(entry, "summary", "") or "").strip()
             merged_text = f"{title} {summary}"
+            if self.relevance_service.is_taiwan_time_only_reference(merged_text):
+                continue
             if not (self._contains_any_keyword(merged_text, person_terms) and self._contains_any_keyword(merged_text, taiwan_keywords)):
                 continue
             published_struct = getattr(entry, "published_parsed", None)

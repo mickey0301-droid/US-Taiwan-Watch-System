@@ -23,13 +23,6 @@ class StatementsService:
 
     @staticmethod
     def _is_taiwan_event(statement: Statement) -> bool:
-        if (statement.relevance_score or 0) > 0:
-            return True
-        payload = statement.raw_payload or {}
-        if isinstance(payload, dict):
-            seeded_from = str(payload.get("seeded_from", ""))
-            if seeded_from.startswith("manual_taiwan_") or seeded_from == "manual_url_ingest_v1":
-                return True
         text = "\n".join(
             [
                 statement.title or "",
@@ -38,6 +31,15 @@ class StatementsService:
                 statement.raw_text or "",
             ]
         )
+        if RelevanceService.is_taiwan_time_only_reference(text):
+            return False
+        if (statement.relevance_score or 0) > 0:
+            return True
+        payload = statement.raw_payload or {}
+        if isinstance(payload, dict):
+            seeded_from = str(payload.get("seeded_from", ""))
+            if seeded_from.startswith("manual_taiwan_") or seeded_from == "manual_url_ingest_v1":
+                return True
         lowered = text.lower()
         return "taiwan" in lowered or "台灣" in text
 
