@@ -18,6 +18,7 @@ from tracker.models import Legislation, LegislationSource, Statement, StatementP
 from tracker.services.ai_assist_service import AIAssistService
 from tracker.services.legislation_service import LegislationService
 from tracker.services.officials_service import InvalidPersonNameError, OfficialsService
+from tracker.services.postgres_sequence_service import sync_postgres_id_sequences
 from tracker.services.statements_service import StatementsService
 from tracker.utils.source_types import is_government_url
 from tracker.utils.text import compact_whitespace
@@ -363,6 +364,16 @@ class ManualUrlImportService:
     def import_legislation_from_urls(self, raw_urls: str) -> ManualImportResult:
         urls = self.parse_urls(raw_urls)
         result = ManualImportResult(items=[])
+        sync_postgres_id_sequences(
+            self.session,
+            (
+                "legislation",
+                "legislation_sources",
+                "legislation_sponsors",
+                "persons",
+                "aliases",
+            ),
+        )
         for url in urls:
             try:
                 page = self._fetch_page(url)
@@ -440,6 +451,7 @@ class ManualUrlImportService:
                     "sponsors": self._ai_legislation_sponsors(ai_details, final_url),
                 }
                 legislation, created = self.legislation_service.upsert_legislation(payload)
+                self.session.flush()
                 if created:
                     result.created += 1
                 else:

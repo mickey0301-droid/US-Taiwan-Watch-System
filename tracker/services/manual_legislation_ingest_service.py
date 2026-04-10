@@ -12,6 +12,7 @@ from tracker.models import Legislation, LegislationSource
 from tracker.services.congress_bill_details_service import CongressBillDetailsService
 from tracker.services.legislation_service import LegislationService
 from tracker.services.manual_url_import_service import ManualUrlImportService
+from tracker.services.postgres_sequence_service import sync_postgres_id_sequences
 from tracker.utils.congress_bills import canonical_congress_bill_page, congress_bill_url
 from tracker.utils.web import parse_datetime
 
@@ -93,6 +94,16 @@ class ManualLegislationIngestService:
     def import_from_urls(self, raw_urls: str | Iterable[str]) -> ManualLegislationBatchResult:
         urls = self.parse_urls(raw_urls)
         result = ManualLegislationBatchResult()
+        sync_postgres_id_sequences(
+            self.session,
+            (
+                "legislation",
+                "legislation_sources",
+                "legislation_sponsors",
+                "persons",
+                "aliases",
+            ),
+        )
         other_urls: list[str] = []
 
         for url in urls:
