@@ -44,13 +44,10 @@ class StatementsService:
     def list_recent_statements(self, limit: int = 20) -> list[Statement]:
         return self.session.execute(select(Statement).order_by(Statement.date_collected.desc()).limit(limit)).scalars().all()
 
-    def list_review_queue(self, limit: int = 200) -> list[Statement]:
-        stmt = (
-            select(Statement)
-            .where(Statement.review_status.in_(["pending", "needs_review"]))
-            .order_by(Statement.date_published.desc().nullslast(), Statement.date_collected.desc(), Statement.id.desc())
-            .limit(limit)
-        )
+    def list_review_queue(self, limit: int | None = 2000) -> list[Statement]:
+        stmt = select(Statement).order_by(func.coalesce(Statement.date_published, Statement.date_collected).desc(), Statement.id.desc())
+        if limit and limit > 0:
+            stmt = stmt.limit(limit)
         return self.session.execute(stmt).scalars().all()
 
     def list_recent_media_reports(self, person_id: int, limit: int = 20) -> list[Statement]:
@@ -255,7 +252,8 @@ class StatementsService:
             "full_text": payload.get("full_text"),
             "raw_text": raw_text,
             "relevance_score": score,
-            "review_status": "pending" if hits else "needs_review",
+            # Review queue is disabled: any discovered event is directly included.
+            "review_status": "confirmed",
             "dedupe_hash": self.dedupe_service.build_statement_hash(title, payload["source_url"], raw_text),
             "is_primary_source": payload.get("is_primary_source", True),
             "matched_keywords": {"hits": hits},

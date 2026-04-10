@@ -116,7 +116,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
     if use_google_sheet_primary_mode():
         if _render_google_sheet_fallback(lang, labels):
             return
-        st.info("No events need review right now." if lang != "zh-TW" else "目前沒有可顯示的事件資料。")
+        st.info("No events available right now." if lang != "zh-TW" else "目前沒有可顯示的事件資料。")
         return
     with session_scope() as session:
         service = StatementsService(session)
@@ -126,7 +126,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
         if not events:
             if _render_google_sheet_fallback(lang, labels):
                 return
-            empty_label = "目前沒有待審核事件。" if lang == "zh-TW" else "No events need review right now."
+            empty_label = "目前沒有事件資料。" if lang == "zh-TW" else "No events available right now."
             st.info(empty_label)
             return
 
@@ -134,7 +134,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
         year_label = "年份" if lang == "zh-TW" else "Year"
         month_label = "月份" if lang == "zh-TW" else "Month"
         category_label = "人物類別" if lang == "zh-TW" else "Person category"
-        no_events_in_filter = "此篩選條件下沒有待審核事件。" if lang == "zh-TW" else "No review events match this filter."
+        no_events_in_filter = "此篩選條件下沒有事件。" if lang == "zh-TW" else "No events match this filter."
 
         selected_year = st.selectbox(year_label, years)
         month_options = sorted(
@@ -312,7 +312,7 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
         if _sheet_event_matches_category(item, people_category, selected_category)
     ]
     if not filtered_events:
-        st.info("此篩選條件下沒有待審核事件。" if lang == "zh-TW" else "No review events match this filter.")
+        st.info("此篩選條件下沒有事件。" if lang == "zh-TW" else "No events match this filter.")
         return True
 
     filtered_events = sorted(
