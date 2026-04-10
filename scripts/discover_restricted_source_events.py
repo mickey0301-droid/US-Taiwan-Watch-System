@@ -376,9 +376,15 @@ def discover_cna(
             (article.select_one("meta[property='og:title']") or {}).get("content", "")
             or (article.select_one("h1") or {}).get_text(" ", strip=True)
         )
+        # Strip all <a> anchor text before extracting body.
+        # This prevents false positives where the person is mentioned only in
+        # "related articles" sidebar links at the bottom of a CNA article.
+        for a_tag in article.select("article a, .paragraph a"):
+            a_tag.decompose()
         body = _clean_text(" ".join(node.get_text(" ", strip=True) for node in article.select("article p, .paragraph p, .paragraph")))
         merged = _clean_text(f"{title} {body}")
-        if not _contains_any(merged, person_terms):
+        # Person must appear in title OR in non-link body text.
+        if not _contains_any(title, person_terms) and not _contains_any(body, person_terms):
             continue
         # Use substantive-Taiwan check: strips "台灣時間" before evaluating so
         # articles that only mention the Taiwan timezone are correctly rejected.
