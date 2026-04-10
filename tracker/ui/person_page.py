@@ -2773,10 +2773,13 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     run_result = monitor_service.run_for_person(person.id, trigger="manual")
                     session.commit()
                 if run_result.ok:
+                    skipped = run_result.skipped_existing or 0
+                    skipped_note = f"、略過（已存在）{skipped} 篇" if skipped else ""
+                    skipped_note_en = f", skipped existing: {skipped}" if skipped else ""
                     st.session_state[monitor_flash_key] = (
-                        f"監測完成：找到 {run_result.found} 篇、新增 {run_result.created} 篇、更新 {run_result.updated} 篇"
+                        f"監測完成：找到 {run_result.found} 篇、新增 {run_result.created} 篇、更新 {run_result.updated} 篇{skipped_note}"
                         if lang == "zh-TW"
-                        else f"Done: found {run_result.found}, created {run_result.created}, updated {run_result.updated}"
+                        else f"Done: found {run_result.found}, created {run_result.created}, updated {run_result.updated}{skipped_note_en}"
                     )
                 else:
                     st.session_state[monitor_flash_key] = (

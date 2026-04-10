@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
 
 from sqlalchemy import func, select
 from sqlalchemy import text as sql_text
@@ -178,6 +179,32 @@ class StatementsService:
         stmt = select(StatementParticipant).where(StatementParticipant.statement_id == statement_id).order_by(StatementParticipant.id.asc())
         return self.session.execute(stmt).scalars().all()
 
+    @staticmethod
+    def _extract_date_from_url(url: str) -> datetime | None:
+        """Fall back to extracting publication date from known URL patterns.
+
+        Handles:
+        - CNA:       /news/aopl/YYYYMMDDNNNN.aspx
+        - President: /en/news/press-release/YYYY/MM/DD/...
+        - MOFA:      /en/pC_103160YYYYMMDD...  (less reliable, skip)
+        """
+        text = str(url or "")
+        # CNA: 8-digit date prefix in filename before optional serial digits
+        m = re.search(r"/(\d{8})\d{0,6}\.aspx", text, re.I)
+        if m:
+            try:
+                return datetime.strptime(m.group(1), "%Y%m%d")
+            except ValueError:
+                pass
+        # President Office: /YYYY/MM/DD/ path segment
+        m = re.search(r"/(\d{4})/(\d{2})/(\d{2})/", text)
+        if m:
+            try:
+                return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            except ValueError:
+                pass
+        return None
+
     def ingest_statement(self, payload: dict) -> tuple[Statement, bool]:
         title = payload.get("title") or payload["source_url"]
         raw_text = payload.get("raw_text") or payload.get("full_text") or payload.get("excerpt") or ""
@@ -191,6 +218,9 @@ class StatementsService:
         )
         existing = self.session.execute(select(Statement).where(Statement.canonical_event_key == canonical_event_key)).scalar_one_or_none()
 
+        # If date_published not provided, try to extract from source URL.
+        date_published = payload.get("date_published") or self._extract_date_from_url(payload.get("source_url", ""))
+
         if existing:
             existing.date_collected = datetime.utcnow()
             existing.relevance_score = max(existing.relevance_score or 0.0, score)
@@ -200,8 +230,9 @@ class StatementsService:
                 existing.full_text = payload["full_text"]
             if payload.get("excerpt") and (not existing.excerpt or len(payload["excerpt"]) > len(existing.excerpt)):
                 existing.excerpt = payload["excerpt"]
-            if payload.get("date_published") and not existing.date_published:
-                existing.date_published = payload["date_published"]
+            # Backfill date_published if missing, using URL extraction as fallback.
+            if date_published and not existing.date_published:
+                existing.date_published = date_published
             self._promote_preferred_source(existing, payload)
             self._ensure_statement_source(existing.id, payload)
             self._ensure_statement_participants(existing.id, payload)
@@ -213,7 +244,7 @@ class StatementsService:
             "tracker_target_id": payload.get("tracker_target_id"),
             "title": title,
             "canonical_event_key": canonical_event_key,
-            "date_published": payload.get("date_published"),
+            "date_published": date_published,
             "date_collected": datetime.utcnow(),
             "source_url": payload["source_url"],
             "source_domain": domain_from_url(payload["source_url"]),

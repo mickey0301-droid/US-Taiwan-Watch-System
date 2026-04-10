@@ -37,6 +37,7 @@ class MonitorRunResult:
     found: int = 0
     created: int = 0
     updated: int = 0
+    skipped_existing: int = 0
     queries: list[dict[str, Any]] | None = None
     ok: bool = True
     error: str | None = None
@@ -320,6 +321,7 @@ class PersonTaiwanEventMonitorService:
         total_found = 0
         total_created = 0
         total_updated = 0
+        total_skipped_existing = 0
         article_text_cache: dict[str, str] = {}
 
         with httpx.Client(headers=self._http_headers, follow_redirects=True, timeout=25.0) as client:
@@ -409,6 +411,7 @@ class PersonTaiwanEventMonitorService:
                     total_found += found
                     total_created += created
                     total_updated += updated
+                    total_skipped_existing += skipped_existing
                     query_logs.append(
                         {
                             "domain": domain,
@@ -492,6 +495,7 @@ class PersonTaiwanEventMonitorService:
                 total_found += found
                 total_created += created
                 total_updated += updated
+                total_skipped_existing += skipped_existing
                 query_logs.append(
                     {
                         "domain": "__all__",
@@ -525,6 +529,7 @@ class PersonTaiwanEventMonitorService:
             found=total_found,
             created=total_created,
             updated=total_updated,
+            skipped_existing=total_skipped_existing,
             queries=query_logs,
             ok=True,
         )
