@@ -476,6 +476,12 @@ class ManualUrlImportService:
             raise ValueError("Invalid URL.")
         return value
 
+    def _safe_normalize_url(self, source_url: str | None) -> str | None:
+        try:
+            return self._normalize_url(str(source_url or ""))
+        except ValueError:
+            return None
+
     def _fetch_page(self, source_url: str) -> dict[str, object]:
         response = httpx.get(
             source_url,
@@ -658,42 +664,42 @@ class ManualUrlImportService:
         return "statement"
 
     def _find_person_by_url(self, source_url: str) -> Person | None:
-        normalized = self._normalize_url(source_url)
+        normalized = self._safe_normalize_url(source_url)
         if not normalized:
             return None
         rows = self.session.execute(select(Person).where(Person.source_url.is_not(None))).scalars().all()
         for person in rows:
-            if self._normalize_url(person.source_url) == normalized or self._normalize_url(person.canonical_official_url) == normalized:
+            if self._safe_normalize_url(person.source_url) == normalized or self._safe_normalize_url(person.canonical_official_url) == normalized:
                 return person
         return None
 
     def _find_statement_by_url(self, source_url: str) -> Statement | None:
-        normalized = self._normalize_url(source_url)
+        normalized = self._safe_normalize_url(source_url)
         if not normalized:
             return None
         rows = self.session.execute(select(Statement).where(Statement.source_url.is_not(None))).scalars().all()
         for item in rows:
-            if self._normalize_url(item.source_url) == normalized:
+            if self._safe_normalize_url(item.source_url) == normalized:
                 return item
         source_rows = self.session.execute(select(StatementSource).where(StatementSource.source_url.is_not(None))).scalars().all()
         for source in source_rows:
-            if self._normalize_url(source.source_url) == normalized:
+            if self._safe_normalize_url(source.source_url) == normalized:
                 statement = self.session.get(Statement, source.statement_id)
                 if statement:
                     return statement
         return None
 
     def _find_legislation_by_url(self, source_url: str) -> Legislation | None:
-        normalized = self._normalize_url(source_url)
+        normalized = self._safe_normalize_url(source_url)
         if not normalized:
             return None
         rows = self.session.execute(select(Legislation).where(Legislation.source_url.is_not(None))).scalars().all()
         for item in rows:
-            if self._normalize_url(item.source_url) == normalized:
+            if self._safe_normalize_url(item.source_url) == normalized:
                 return item
         source_rows = self.session.execute(select(LegislationSource).where(LegislationSource.source_url.is_not(None))).scalars().all()
         for source in source_rows:
-            if self._normalize_url(source.source_url) == normalized:
+            if self._safe_normalize_url(source.source_url) == normalized:
                 bill = self.session.get(Legislation, source.legislation_id)
                 if bill:
                     return bill
