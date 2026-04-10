@@ -136,9 +136,9 @@ def _render_manual_legislation_ingest_form(session, lang: str) -> None:
 
     title = "手動批次新增法案" if lang == "zh-TW" else "Manual Bill Batch Import"
     help_text = (
-        "貼上 Congress.gov 或州議會法案網址，一行一筆。Congress.gov 會自動補官方標題、摘要、狀態、提案人與共同提案人；州議會網址會抓頁面標題、摘要與來源後直接納入。"
+        "貼上 Congress.gov 或州議會法案網址，一行一筆。Congress.gov 會優先用官方資料補標題、摘要、狀態、提案人與共同提案人；州議會網址會抓頁面內容，並在有 OPENAI_API_KEY 時用 AI 補欄位後直接納入。"
         if lang == "zh-TW"
-        else "Paste Congress.gov or state legislature bill URLs, one per line. Congress.gov bills are enriched with official details, sponsors, and cosponsors; state URLs are imported from the page title, body, and source."
+        else "Paste Congress.gov or state legislature bill URLs, one per line. Congress.gov bills use official details first; state URLs are imported from page content and can use AI metadata extraction when OPENAI_API_KEY is configured."
     )
     with st.expander(title, expanded=False):
         st.caption(help_text)
@@ -170,13 +170,15 @@ def _render_manual_legislation_ingest_form(session, lang: str) -> None:
             st.error(("匯入失敗：" if lang == "zh-TW" else "Import failed: ") + f"{type(exc).__name__}: {exc}")
             return
 
-        level = "warning" if result.failed else "success"
+        level = "warning" if result.failed or result.detail_failed else "success"
         message = (
-            f"法案匯入完成：新增 {result.created}、更新 {result.updated}、Congress.gov 補詳情 {result.detail_ok}、"
-            f"提案人 +{result.sponsors_added}、共同提案人 +{result.cosponsors_added}、州議會/其他網址 {result.other_urls}、失敗 {result.failed}。"
+            f"法案匯入完成：新增 {result.created}、更新 {result.updated}、Congress.gov 官方補詳情 {result.detail_ok}、"
+            f"AI 補資料 {result.ai_detail_ok}、詳情未補齊 {result.detail_failed}、提案人 +{result.sponsors_added}、"
+            f"共同提案人 +{result.cosponsors_added}、州議會/其他網址 {result.other_urls}、加入失敗 {result.failed}。"
             if lang == "zh-TW"
-            else f"Bill import complete: created {result.created}, updated {result.updated}, Congress.gov details {result.detail_ok}, "
-            f"sponsors +{result.sponsors_added}, cosponsors +{result.cosponsors_added}, state/other URLs {result.other_urls}, failed {result.failed}."
+            else f"Bill import complete: created {result.created}, updated {result.updated}, Congress.gov official details {result.detail_ok}, "
+            f"AI details {result.ai_detail_ok}, detail incomplete {result.detail_failed}, sponsors +{result.sponsors_added}, "
+            f"cosponsors +{result.cosponsors_added}, state/other URLs {result.other_urls}, import failed {result.failed}."
         )
         st.session_state[flash_key] = {
             "level": level,

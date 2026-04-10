@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from functools import lru_cache
 import json
+import re
+from typing import Any
 
 import httpx
 
@@ -101,6 +103,32 @@ class AIAssistService:
         allowed = {"federal_official", "congress_member", "state_official", "state_legislator", "other"}
         return token if token in allowed else None
 
+    def extract_legislation_metadata(self, title: str, body: str, source_url: str) -> dict[str, Any] | None:
+        if not self.enabled:
+            return None
+        system_prompt = (
+            "Extract structured metadata for a U.S. federal or state legislative bill page. "
+            "Return strict JSON only. Do not invent details that are not supported by the provided text; use null or [] when unknown. "
+            "Keys: title, bill_number, level, jurisdiction_name, chamber, legislation_type, summary, status_text, "
+            "introduced_date, last_action_date, sponsor_names, cosponsor_names, is_taiwan_related, relevance_score. "
+            "Dates must be YYYY-MM-DD. level must be federal/state/other. chamber must be senate/house/unknown. "
+            "legislation_type must be bill/resolution/joint_resolution/concurrent_resolution/other. "
+            "summary should be one concise Traditional Chinese sentence if possible."
+        )
+        user_prompt = (
+            f"URL: {source_url}\n"
+            f"Page title: {title}\n"
+            f"Page text excerpt:\n{body[:7000]}\n\n"
+            "Task: Extract the metadata JSON now."
+        )
+        result = _responses_text(self.settings.openai_api_key or "", self.settings.openai_model, system_prompt, user_prompt, 900)
+        if not result:
+            return None
+        payload = _parse_json_object(result)
+        if not isinstance(payload, dict):
+            return None
+        return _sanitize_legislation_metadata(payload)
+
     def classify_legislation_scope(self, title: str, body: str, source_url: str) -> dict[str, str] | None:
         if not self.enabled:
             return None
@@ -177,3 +205,93 @@ def _responses_text(
     if isinstance(payload.get("response"), str):
         return payload["response"].strip()
     return json.dumps(payload, ensure_ascii=False)[:200]
+
+
+def _parse_json_object(value: str) -> dict[str, Any] | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        pass
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if not match:
+        return None
+    try:
+        parsed = json.loads(match.group(0))
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _clean_string(value: object, max_len: int | None = None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"null", "none", "unknown", "n/a", "na"}:
+        return None
+    text = re.sub(r"\s+", " ", text)
+    return text[:max_len].strip() if max_len else text
+
+
+def _clean_string_list(value: object, max_items: int = 100) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_items = re.split(r"[,;\n]+", value)
+    elif isinstance(value, list):
+        raw_items = value
+    else:
+        return []
+    results: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        text = _clean_string(item, 160)
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(text)
+        if len(results) >= max_items:
+            break
+    return results
+
+
+def _sanitize_legislation_metadata(payload: dict[str, Any]) -> dict[str, Any]:
+    level = (_clean_string(payload.get("level"), 20) or "other").lower()
+    if level not in {"federal", "state", "other"}:
+        level = "other"
+    chamber = (_clean_string(payload.get("chamber"), 20) or "unknown").lower()
+    if chamber not in {"senate", "house", "unknown"}:
+        chamber = "unknown"
+    legislation_type = (_clean_string(payload.get("legislation_type"), 40) or "other").lower()
+    if legislation_type not in {"bill", "resolution", "joint_resolution", "concurrent_resolution", "other"}:
+        legislation_type = "other"
+    relevance_raw = payload.get("relevance_score")
+    try:
+        relevance_score = max(0.0, min(1.0, float(relevance_raw)))
+    except (TypeError, ValueError):
+        relevance_score = None
+    is_taiwan_related = payload.get("is_taiwan_related")
+    if not isinstance(is_taiwan_related, bool):
+        is_taiwan_related = None
+    return {
+        "title": _clean_string(payload.get("title"), 500),
+        "bill_number": _clean_string(payload.get("bill_number"), 100),
+        "level": level,
+        "jurisdiction_name": _clean_string(payload.get("jurisdiction_name"), 255),
+        "chamber": chamber,
+        "legislation_type": legislation_type,
+        "summary": _clean_string(payload.get("summary"), 1800),
+        "status_text": _clean_string(payload.get("status_text"), 255),
+        "introduced_date": _clean_string(payload.get("introduced_date"), 20),
+        "last_action_date": _clean_string(payload.get("last_action_date"), 20),
+        "sponsor_names": _clean_string_list(payload.get("sponsor_names"), 20),
+        "cosponsor_names": _clean_string_list(payload.get("cosponsor_names"), 100),
+        "is_taiwan_related": is_taiwan_related,
+        "relevance_score": relevance_score,
+    }

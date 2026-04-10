@@ -351,14 +351,40 @@ class ManualUrlImportService:
                 title = str(page.get("title") or final_url)
                 body = str(page.get("body") or "")
                 meta = self._classify_legislation(final_url, title, body)
-                ai_scope = self.ai_assist_service.classify_legislation_scope(title=title, body=body, source_url=final_url) or {}
+                ai_details = self.ai_assist_service.extract_legislation_metadata(title=title, body=body, source_url=final_url) or {}
+                ai_scope = {}
+                if ai_details:
+                    ai_scope = {
+                        "level": ai_details.get("level"),
+                        "chamber": ai_details.get("chamber"),
+                        "legislation_type": ai_details.get("legislation_type"),
+                    }
+                else:
+                    ai_scope = self.ai_assist_service.classify_legislation_scope(title=title, body=body, source_url=final_url) or {}
+
                 if ai_scope.get("level") in {"federal", "state", "other"}:
                     meta["level"] = ai_scope["level"]
                 if ai_scope.get("chamber") in {"senate", "house"}:
                     meta["chamber"] = ai_scope["chamber"]
                 if ai_scope.get("legislation_type") and ai_scope["legislation_type"] != "other":
                     meta["legislation_type"] = ai_scope["legislation_type"]
+                if ai_details.get("title"):
+                    meta["title"] = ai_details["title"]
+                if ai_details.get("bill_number"):
+                    meta["bill_number"] = ai_details["bill_number"]
+                if ai_details.get("jurisdiction_name"):
+                    meta["jurisdiction_name"] = ai_details["jurisdiction_name"]
+
                 existing_legislation = self._find_legislation_by_url(final_url)
+                page_date = page.get("published_at").date() if isinstance(page.get("published_at"), datetime) else None
+                introduced_date = self._date_from_ai(ai_details.get("introduced_date")) or page_date
+                last_action_date = self._date_from_ai(ai_details.get("last_action_date")) or page_date
+                taiwan_related = ai_details.get("is_taiwan_related")
+                if not isinstance(taiwan_related, bool):
+                    taiwan_related = self._is_taiwan_related(f"{title} {body}")
+                relevance_score = ai_details.get("relevance_score")
+                if not isinstance(relevance_score, (int, float)):
+                    relevance_score = 1.0 if taiwan_related else 0.0
                 payload = {
                     "title": meta["title"],
                     "bill_number": meta.get("bill_number"),
@@ -367,20 +393,21 @@ class ManualUrlImportService:
                     "level": meta.get("level", "other"),
                     "jurisdiction_name": meta.get("jurisdiction_name"),
                     "chamber": meta.get("chamber"),
-                    "summary": body[:1800] or None,
-                    "status_text": None,
-                    "introduced_date": page.get("published_at").date() if isinstance(page.get("published_at"), datetime) else None,
-                    "last_action_date": page.get("published_at").date() if isinstance(page.get("published_at"), datetime) else None,
+                    "summary": ai_details.get("summary") or body[:1800] or None,
+                    "status_text": ai_details.get("status_text"),
+                    "introduced_date": introduced_date,
+                    "last_action_date": last_action_date,
                     "source_url": final_url,
                     "source_type": self._source_type(final_url),
                     "parser_identity": "manual_url_legislation_batch_v1",
-                    "relevance_score": 1.0 if self._is_taiwan_related(f"{title} {body}") else 0.0,
-                    "is_taiwan_related": self._is_taiwan_related(f"{title} {body}"),
+                    "relevance_score": float(relevance_score),
+                    "is_taiwan_related": bool(taiwan_related),
                     "raw_payload": {
                         "seeded_from": "manual_url_legislation_batch_v1",
                         "manual_input_url": url,
                         "auto_classification": meta,
                         "ai_classification": ai_scope,
+                        "ai_extracted_metadata": ai_details,
                     },
                     "sources": [
                         {
@@ -391,7 +418,7 @@ class ManualUrlImportService:
                             "raw_payload": {"manual_input_url": url},
                         }
                     ],
-                    "sponsors": [],
+                    "sponsors": self._ai_legislation_sponsors(ai_details, final_url),
                 }
                 legislation, created = self.legislation_service.upsert_legislation(payload)
                 if created:
@@ -407,6 +434,8 @@ class ManualUrlImportService:
                         "bill_number": legislation.bill_number,
                         "created": bool(created),
                         "ai_classification": ai_scope,
+                        "ai_details_used": bool(ai_details),
+                        "ai_sponsors": len(payload["sponsors"]),
                     }
                 )
             except Exception as exc:
@@ -722,6 +751,35 @@ class ManualUrlImportService:
                 normalized = re.sub(r"\s+", " ", match.group(1)).replace(" .", ".").strip()
                 return normalized
         return None
+
+    def _date_from_ai(self, value: object):
+        text = str(value or "").strip()
+        if not text:
+            return None
+        parsed = parse_datetime(text)
+        return parsed.date() if parsed else None
+
+    def _ai_legislation_sponsors(self, ai_details: dict[str, Any], source_url: str) -> list[dict[str, Any]]:
+        sponsors: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for role, key in (("sponsor", "sponsor_names"), ("cosponsor", "cosponsor_names")):
+            for name in ai_details.get(key) or []:
+                full_name = str(name or "").strip()
+                if not full_name:
+                    continue
+                dedupe_key = (role, full_name.casefold())
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                sponsors.append(
+                    {
+                        "full_name": full_name,
+                        "role": role,
+                        "source_url": source_url,
+                        "source_type": self._source_type(source_url),
+                    }
+                )
+        return sponsors
 
     def _is_taiwan_related(self, text: str) -> bool:
         lowered = str(text or "").lower()

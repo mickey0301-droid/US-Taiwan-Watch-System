@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Any, Iterable
 from urllib.parse import urlparse
 
 from sqlalchemy import select
@@ -13,6 +13,7 @@ from tracker.services.congress_bill_details_service import CongressBillDetailsSe
 from tracker.services.legislation_service import LegislationService
 from tracker.services.manual_url_import_service import ManualUrlImportService
 from tracker.utils.congress_bills import canonical_congress_bill_page, congress_bill_url
+from tracker.utils.web import parse_datetime
 
 
 PARSER_IDENTITY = "manual_legislation_batch_v1"
@@ -66,6 +67,8 @@ class ManualLegislationBatchResult:
     created: int = 0
     updated: int = 0
     detail_ok: int = 0
+    detail_failed: int = 0
+    ai_detail_ok: int = 0
     sponsors_added: int = 0
     cosponsors_added: int = 0
     failed: int = 0
@@ -107,6 +110,8 @@ class ManualLegislationIngestService:
             result.updated += int(generic_result.updated or 0)
             result.failed += int(generic_result.failed or 0)
             for item in generic_result.items or []:
+                if item.get("ai_details_used"):
+                    result.ai_detail_ok += 1
                 result.items.append({"kind": "state_or_other", **item})
                 if item.get("status") == "failed" and item.get("error"):
                     result.errors.append(str(item["error"]))
@@ -152,9 +157,18 @@ class ManualLegislationIngestService:
 
             enrichment = self.details_service.enrich_legislation(legislation)
             detail_errors = list(enrichment.errors or [])
+            ai_applied = False
+            ai_sponsors_added = 0
+            ai_cosponsors_added = 0
             if detail_errors:
-                result.failed += 1
-                result.errors.extend(f"{parsed.bill_number}: {error}" for error in detail_errors)
+                ai_applied, ai_sponsors_added, ai_cosponsors_added = self._apply_ai_fallback(legislation, parsed)
+                if ai_applied:
+                    result.ai_detail_ok += 1
+                    result.sponsors_added += ai_sponsors_added
+                    result.cosponsors_added += ai_cosponsors_added
+                else:
+                    result.detail_failed += 1
+                    result.errors.extend(f"{parsed.bill_number}: {error}" for error in detail_errors)
             else:
                 result.detail_ok += 1
                 result.sponsors_added += int(enrichment.sponsors_added or 0)
@@ -163,7 +177,7 @@ class ManualLegislationIngestService:
             result.items.append(
                 {
                     "kind": "congress",
-                    "status": "failed" if detail_errors else "ok",
+                    "status": "ok",
                     "url": parsed.input_url,
                     "official_url": parsed.official_url,
                     "legislation_id": int(legislation.id),
@@ -171,9 +185,10 @@ class ManualLegislationIngestService:
                     "title": legislation.title,
                     "created": bool(created),
                     "detail_ok": not detail_errors,
-                    "sponsors_added": int(enrichment.sponsors_added or 0),
-                    "cosponsors_added": int(enrichment.cosponsors_added or 0),
-                    "errors": detail_errors,
+                    "ai_details_used": bool(ai_applied),
+                    "detail_errors": detail_errors,
+                    "sponsors_added": int(enrichment.sponsors_added or 0) + ai_sponsors_added,
+                    "cosponsors_added": int(enrichment.cosponsors_added or 0) + ai_cosponsors_added,
                 }
             )
         except Exception as exc:
@@ -221,18 +236,79 @@ class ManualLegislationIngestService:
             "sponsors": [],
         }
 
+    def _apply_ai_fallback(self, legislation: Legislation, parsed: ParsedCongressBillUrl) -> tuple[bool, int, int]:
+        try:
+            page = self.generic_url_import_service._fetch_page(parsed.official_url)
+        except Exception:
+            return False, 0, 0
+        title = str(page.get("title") or legislation.title or parsed.official_url)
+        body = str(page.get("body") or "")
+        ai_details = self.generic_url_import_service.ai_assist_service.extract_legislation_metadata(
+            title=title,
+            body=body,
+            source_url=parsed.official_url,
+        )
+        if not ai_details:
+            return False, 0, 0
+
+        if ai_details.get("title"):
+            legislation.title = str(ai_details["title"])
+        if ai_details.get("summary") and not legislation.summary:
+            legislation.summary = str(ai_details["summary"])
+        if ai_details.get("status_text"):
+            legislation.status_text = str(ai_details["status_text"])
+        introduced_date = _date_from_ai(ai_details.get("introduced_date"))
+        last_action_date = _date_from_ai(ai_details.get("last_action_date"))
+        if introduced_date:
+            legislation.introduced_date = introduced_date
+        if last_action_date:
+            legislation.last_action_date = last_action_date
+
+        payload = dict(legislation.raw_payload or {})
+        payload["ai_fallback_metadata"] = ai_details
+        legislation.raw_payload = payload
+
+        sponsors_added = 0
+        cosponsors_added = 0
+        for role, key in (("sponsor", "sponsor_names"), ("cosponsor", "cosponsor_names")):
+            for full_name in _person_names(ai_details.get(key)):
+                before = len(self.legislation_service.list_sponsors(legislation.id))
+                self.legislation_service.ensure_legislation_sponsor(
+                    legislation.id,
+                    {
+                        "full_name": full_name,
+                        "role": role,
+                        "source_url": parsed.official_url,
+                        "source_type": "official",
+                    },
+                    {
+                        "level": legislation.level,
+                        "jurisdiction_name": legislation.jurisdiction_name,
+                        "source_url": parsed.official_url,
+                        "source_type": "official",
+                        "parser_identity": PARSER_IDENTITY,
+                    },
+                )
+                after = len(self.legislation_service.list_sponsors(legislation.id))
+                added = max(0, after - before)
+                if role == "sponsor":
+                    sponsors_added += added
+                else:
+                    cosponsors_added += added
+        return True, sponsors_added, cosponsors_added
+
     def _find_existing_congress_bill(self, parsed: ParsedCongressBillUrl) -> Legislation | None:
         direct = self.session.execute(
             select(Legislation).where(
                 (Legislation.bill_slug == parsed.bill_slug) | (Legislation.source_url == parsed.official_url)
             )
-        ).scalar_one_or_none()
+        ).scalars().first()
         if direct:
             return direct
 
         source = self.session.execute(
             select(LegislationSource).where(LegislationSource.source_url == parsed.official_url)
-        ).scalar_one_or_none()
+        ).scalars().first()
         if source:
             return self.session.get(Legislation, source.legislation_id)
         return None
@@ -306,3 +382,32 @@ def _normalize_url(value: str) -> str:
         parsed = parsed._replace(netloc="www.congress.gov", scheme="https")
         text = parsed.geturl()
     return text
+
+
+def _date_from_ai(value: object):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    parsed = parse_datetime(text)
+    return parsed.date() if parsed else None
+
+
+def _person_names(value: object) -> list[str]:
+    if isinstance(value, str):
+        raw_items = re.split(r"[,;\n]+", value)
+    elif isinstance(value, list):
+        raw_items = value
+    else:
+        return []
+    results: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        name = str(item or "").strip()
+        if not name:
+            continue
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(name)
+    return results
