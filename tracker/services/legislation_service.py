@@ -13,7 +13,7 @@ from tracker.models import (
     LegislationSponsor,
     Person,
 )
-from tracker.services.officials_service import OfficialsService
+from tracker.services.officials_service import InvalidPersonNameError, OfficialsService
 from tracker.utils.hashing import sha256_text
 
 
@@ -88,6 +88,11 @@ class LegislationService:
             self.ensure_legislation_source(legislation.id, source)
         for sponsor in payload.get("sponsors", []):
             self.ensure_legislation_sponsor(legislation.id, sponsor, payload)
+        if payload.get("skipped_sponsors"):
+            legislation.raw_payload = self._merge_raw_payload(
+                legislation.raw_payload,
+                {"skipped_sponsors": payload.get("skipped_sponsors")},
+            )
         return legislation, created
 
     def ensure_legislation_source(self, legislation_id: int, payload: dict[str, Any]) -> None:
@@ -110,8 +115,20 @@ class LegislationService:
             )
         )
 
-    def ensure_legislation_sponsor(self, legislation_id: int, sponsor_payload: dict[str, Any], legislation_payload: dict[str, Any]) -> None:
-        person = self._find_or_seed_person(sponsor_payload, legislation_payload)
+    def ensure_legislation_sponsor(self, legislation_id: int, sponsor_payload: dict[str, Any], legislation_payload: dict[str, Any]) -> bool:
+        try:
+            person = self._find_or_seed_person(sponsor_payload, legislation_payload)
+        except InvalidPersonNameError:
+            skipped = list(legislation_payload.setdefault("skipped_sponsors", []))
+            skipped.append(
+                {
+                    "full_name": sponsor_payload.get("full_name"),
+                    "role": sponsor_payload.get("role", "sponsor"),
+                    "reason": "invalid_person_name",
+                }
+            )
+            legislation_payload["skipped_sponsors"] = skipped
+            return False
         existing = self.session.execute(
             select(LegislationSponsor).where(
                 LegislationSponsor.legislation_id == legislation_id,
@@ -120,7 +137,7 @@ class LegislationService:
             )
         ).scalar_one_or_none()
         if existing:
-            return
+            return False
         self.session.add(
             LegislationSponsor(
                 legislation_id=legislation_id,
@@ -130,6 +147,7 @@ class LegislationService:
                 source_type=sponsor_payload.get("source_type"),
             )
         )
+        return True
 
     def list_years(self) -> list[int]:
         rows = self.session.execute(select(Legislation)).scalars().all()

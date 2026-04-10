@@ -456,6 +456,7 @@ class ManualUrlImportService:
                     result.created += 1
                 else:
                     result.updated += 1
+                skipped_sponsors = list(payload.get("skipped_sponsors") or [])
                 result.items.append(
                     {
                         "status": "ok",
@@ -466,7 +467,8 @@ class ManualUrlImportService:
                         "created": bool(created),
                         "ai_classification": ai_scope,
                         "ai_details_used": bool(ai_details),
-                        "ai_sponsors": len(payload["sponsors"]),
+                        "ai_sponsors": max(0, len(payload["sponsors"]) - len(skipped_sponsors)),
+                        "skipped_sponsors": skipped_sponsors,
                     }
                 )
             except Exception as exc:
