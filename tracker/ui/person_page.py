@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime
+import json
 import re
 import pandas as pd
 import streamlit as st
-from sqlalchemy import desc, func, select
+from sqlalchemy import case, desc, func, select, text
+from sqlalchemy.exc import IntegrityError
 
 from tracker.config import get_settings, use_google_sheet_primary_mode
 from tracker.db import session_scope
@@ -12,6 +15,7 @@ from tracker.services.ai_assist_service import AIAssistService
 from tracker.services.google_sheet_read_service import GoogleSheetReadService
 from tracker.services.manual_statement_ingest_service import ManualStatementIngestService
 from tracker.services.officials_service import OfficialsService
+from tracker.services.person_taiwan_event_monitor_service import PersonTaiwanEventMonitorService
 from tracker.services.statements_service import StatementsService
 from tracker.services.x_candidate_confirmation_service import XCandidateConfirmationService
 from tracker.ui.badges import render_source_badges
@@ -33,12 +37,14 @@ from tracker.utils.wikipedia_links import build_wikipedia_search_url, resolve_wi
 PERSON_CATEGORIES = {
     "federal_executive": {"label_zh": "聯邦政府部門官員", "label_en": "Federal executive officials", "level": "federal", "branch": "executive", "chamber": None},
     "federal_military": {"label_zh": "軍職人員", "label_en": "Military personnel", "level": "federal", "branch": "executive", "chamber": None},
+    "federal_legislative": {"label_zh": "聯邦議員", "label_en": "Federal legislators", "level": "federal", "branch": "legislative", "chamber": None},
     "federal_senate": {"label_zh": "聯邦參議員", "label_en": "U.S. Senators", "level": "federal", "branch": "legislative", "chamber": "senate"},
     "federal_house": {"label_zh": "聯邦眾議員", "label_en": "U.S. Representatives", "level": "federal", "branch": "legislative", "chamber": "house"},
     "state_executive": {"label_zh": "州政府官員", "label_en": "State executive officials", "level": "state", "branch": "executive", "chamber": None},
+    "state_legislative": {"label_zh": "州議員", "label_en": "State legislators", "level": "state", "branch": "legislative", "chamber": None},
     "state_senate": {"label_zh": "州參議員", "label_en": "State senators", "level": "state", "branch": "legislative", "chamber": "senate"},
     "state_house": {"label_zh": "州眾議員", "label_en": "State representatives", "level": "state", "branch": "legislative", "chamber": "house"},
-    "all": {"label_zh": "全部人物", "label_en": "All people", "level": None, "branch": None, "chamber": None},
+    "all": {"label_zh": "全部", "label_en": "All", "level": None, "branch": None, "chamber": None},
 }
 
 CABINET_DEPARTMENT_ORDER = [
@@ -107,6 +113,29 @@ DEPARTMENT_LABELS_ZH = {
     "U.S. Cyber Command": "美軍網路司令部",
     "U.S. Space Command": "美軍太空司令部",
     "Other": "其他",
+}
+
+POSITION_LABELS_ZH = {
+    "President of the United States": "美國總統",
+    "Vice President of the United States": "美國副總統",
+    "Chief of Staff": "幕僚長",
+    "White House Chief of Staff": "白宮幕僚長",
+    "National Security Adviser": "國家安全顧問",
+    "National Security Advisor": "國家安全顧問",
+    "Deputy National Security Adviser": "副國家安全顧問",
+    "Deputy National Security Advisor": "副國家安全顧問",
+    "Executive Secretary": "執行秘書",
+    "Governor": "州長",
+    "Lieutenant Governor": "副州長",
+    "Secretary of State": "州務卿",
+    "Attorney General": "州檢察長",
+    "Treasurer": "州財務長",
+    "Comptroller": "主計長",
+    "Auditor": "審計長",
+    "United States Senator": "聯邦參議員",
+    "United States Representative": "聯邦眾議員",
+    "State Senator": "州參議員",
+    "State Representative": "州眾議員",
 }
 
 WHITE_HOUSE_SUBDEPARTMENT_LABELS_ZH = {
@@ -236,6 +265,16 @@ def _category_label(category: dict, lang: str) -> str:
     return category["label_zh"] if lang == "zh-TW" else category["label_en"]
 
 
+def _visible_person_category_keys() -> list[str]:
+    return [
+        "federal_executive",
+        "federal_military",
+        "federal_legislative",
+        "state_executive",
+        "state_legislative",
+    ]
+
+
 def _department_label(department_name: str | None, lang: str) -> str:
     label = (department_name or "").strip()
     if not label:
@@ -243,6 +282,35 @@ def _department_label(department_name: str | None, lang: str) -> str:
     if lang != "zh-TW":
         return label
     return DEPARTMENT_LABELS_ZH.get(label, label)
+
+
+def _bilingual_text(english: str | None, chinese: str | None) -> str:
+    en = str(english or "").strip()
+    zh = str(chinese or "").strip()
+    if en and zh:
+        if en == zh:
+            return en
+        return f"{zh} / {en}"
+    return zh or en
+
+
+def _position_label_zh(position_name: str | None) -> str:
+    title = str(position_name or "").strip()
+    if not title:
+        return ""
+    if title in POSITION_LABELS_ZH:
+        return POSITION_LABELS_ZH[title]
+
+    lower = title.lower()
+    if lower.startswith("secretary of "):
+        return f"{title.replace('Secretary of ', '', 1)}部長"
+    if lower.startswith("deputy secretary of "):
+        return f"{title.replace('Deputy Secretary of ', '', 1)}副部長"
+    if lower.startswith("under secretary for "):
+        return f"{title.replace('Under Secretary for ', '', 1)}次長"
+    if lower.startswith("assistant secretary for "):
+        return f"{title.replace('Assistant Secretary for ', '', 1)}助理部長"
+    return ""
 
 
 def _subdepartment_label(subdepartment_name: str | None, lang: str, department_name: str | None = None) -> str:
@@ -286,6 +354,21 @@ def _clean_background_text(value: object) -> str:
     return text.strip(" ,;")
 
 
+def _coerce_payload_dict(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
 def _format_statement_rows(statements: list[Statement], lang: str, source_counts: dict[int, int] | None = None) -> pd.DataFrame:
     source_counts = source_counts or {}
     return pd.DataFrame(
@@ -314,12 +397,12 @@ def _get_base_people_query(category_key: str):
             Office.office_name,
             Jurisdiction.name,
             Appointment.raw_payload,
+            Appointment.district,
         )
         .join(Appointment, Appointment.person_id == Person.id)
         .join(Office, Office.id == Appointment.office_id)
         .outerjoin(Jurisdiction, Jurisdiction.id == Office.jurisdiction_id)
         .order_by(Person.full_name.asc())
-        .distinct()
     )
     if category["level"]:
         stmt = stmt.where(Office.level == category["level"])
@@ -328,6 +411,25 @@ def _get_base_people_query(category_key: str):
     if category["chamber"]:
         stmt = stmt.where(Office.chamber == category["chamber"])
     return stmt
+
+
+def _dedupe_people_rows(
+    rows: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]]
+) -> list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]]:
+    output: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]] = []
+    seen: set[tuple[object, ...]] = set()
+    for row in rows:
+        key = (
+            int(row[0]),
+            str(row[4] or "").strip(),
+            str(row[5] or "").strip(),
+            str(row[7] or "").strip(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(row)
+    return output
 
 
 def _get_people_for_category(
@@ -340,13 +442,13 @@ def _get_people_for_category(
     status_filter: str | None = None,
     minister_only: bool = False,
     include_military_roles: bool = False,
-) -> list[tuple[int, str, str | None, str | None, str, str | None, dict | None]]:
+) -> list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]]:
     stmt = _get_base_people_query(category_key)
     if state_filter:
         stmt = stmt.where(Jurisdiction.name == state_filter)
     if status_filter:
         stmt = stmt.where(Appointment.status == status_filter)
-    rows = session.execute(stmt).all()
+    rows = _dedupe_people_rows(session.execute(stmt).all())
     if category_key == "federal_military":
         rows = [row for row in rows if _is_military_role(row[4], row[6])]
     if department_filter and category_key == "federal_executive":
@@ -372,20 +474,637 @@ def _get_people_for_category(
 
 
 def _categories_with_state_filter() -> set[str]:
-    return {"federal_senate", "federal_house", "state_executive", "state_senate", "state_house"}
+    return {
+        "federal_legislative",
+        "federal_senate",
+        "federal_house",
+        "state_executive",
+        "state_legislative",
+        "state_senate",
+        "state_house",
+    }
 
 
 def _categories_with_department_filter() -> set[str]:
     return {"federal_executive", "federal_military"}
 
 
+def _legislative_categories() -> set[str]:
+    return {"federal_legislative", "federal_senate", "federal_house", "state_legislative", "state_senate", "state_house"}
+
+
+def _state_legislative_chamber_options(
+    session,
+    state_filter: str | None,
+) -> list[str]:
+    senate_rows = _get_people_for_category(session, "state_senate", state_filter=state_filter)
+    house_rows = _get_people_for_category(session, "state_house", state_filter=state_filter)
+
+    state_name = str(state_filter or "").strip().lower()
+    if state_name == "nebraska" and senate_rows and not house_rows:
+        return ["state_legislative"]
+
+    options = ["__all__"]
+    if senate_rows:
+        options.append("state_senate")
+    if house_rows:
+        options.append("state_house")
+
+    if len(options) == 1:
+        return ["state_legislative"]
+    return options
+
+
+def _category_office_filters(category_key: str) -> tuple[str | None, str | None, str | None]:
+    category = PERSON_CATEGORIES.get(category_key, {})
+    return (
+        str(category.get("level") or "") or None,
+        str(category.get("branch") or "") or None,
+        str(category.get("chamber") or "") or None,
+    )
+
+
+def _build_party_map_for_candidates(
+    session,
+    candidates: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]],
+    category_key: str,
+) -> dict[int, str]:
+    person_ids = sorted({int(row[0]) for row in candidates})
+    if not person_ids:
+        return {}
+    level_filter, branch_filter, chamber_filter = _category_office_filters(category_key)
+    stmt = (
+        select(Appointment.person_id, Appointment.party, Appointment.status, Appointment.id)
+        .join(Office, Office.id == Appointment.office_id)
+        .where(Appointment.person_id.in_(person_ids))
+    )
+    if level_filter:
+        stmt = stmt.where(Office.level == level_filter)
+    if branch_filter:
+        stmt = stmt.where(Office.branch == branch_filter)
+    if chamber_filter:
+        stmt = stmt.where(Office.chamber == chamber_filter)
+    stmt = stmt.order_by(
+        Appointment.person_id.asc(),
+        case((Appointment.status == "current", 0), else_=1),
+        Appointment.id.desc(),
+    )
+
+    party_map: dict[int, str] = {}
+    for person_id, party, _status, _appointment_id in session.execute(stmt).all():
+        if int(person_id) in party_map:
+            continue
+        party_text = str(party or "").strip()
+        if not party_text:
+            continue
+        party_map[int(person_id)] = party_text
+    return party_map
+
+
+def _build_taiwan_caucus_map_for_candidates(
+    session,
+    candidates: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]],
+    category_key: str,
+) -> dict[int, list[dict[str, object]]]:
+    person_ids = sorted({int(row[0]) for row in candidates})
+    if not person_ids:
+        return {}
+
+    chamber_filter = "house" if category_key == "federal_house" else "senate" if category_key == "federal_senate" else None
+    result: dict[int, list[dict[str, object]]] = {}
+    rows = session.execute(select(Person.id, Person.raw_payload).where(Person.id.in_(person_ids))).all()
+    for person_id, raw_payload in rows:
+        payload = raw_payload if isinstance(raw_payload, dict) else {}
+        memberships = payload.get("taiwan_caucus_memberships") or []
+        if not isinstance(memberships, list):
+            continue
+        filtered: list[dict[str, object]] = []
+        for item in memberships:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("group") or "").strip().lower() != "taiwan caucus":
+                continue
+            chamber = str(item.get("chamber") or "").strip().lower()
+            if chamber_filter and chamber and chamber != chamber_filter:
+                continue
+            filtered.append(item)
+        if filtered:
+            result[int(person_id)] = filtered
+    return result
+
+
+def _taiwan_caucus_option_label(congress: int, chamber: str, lang: str) -> str:
+    chamber_label = "眾議院" if chamber == "house" else "參議院"
+    if lang == "zh-TW":
+        return f"{congress} 屆（{chamber_label}）"
+    chamber_en = "House" if chamber == "house" else "Senate"
+    return f"{congress}th ({chamber_en})"
+
+
+def _district_sort_key(value: str | None) -> tuple[int, object]:
+    text = str(value or "").strip()
+    if not text:
+        return (2, "")
+    match = re.search(r"district\s*([0-9A-Za-z-]+)", text, flags=re.I)
+    normalized = match.group(1) if match else text
+    if normalized.isdigit():
+        return (0, int(normalized))
+    return (1, normalized.lower())
+
+
+def _normalize_name_tokens_for_match(name: str | None) -> list[str]:
+    text = str(name or "")
+    # Strip leadership suffixes like " -- Majority Leader".
+    text = text.split("--", 1)[0]
+    text = re.sub(r"[\"“”]", " ", text)
+    text = re.sub(r"[^A-Za-z\\s'\\-]", " ", text)
+    text = re.sub(r"\\s+", " ", text).strip().lower()
+    return [token for token in text.split(" ") if token]
+
+
+def _is_invalid_person_name(name: str | None) -> bool:
+    normalized = " ".join(_normalize_name_tokens_for_match(name))
+    if not normalized:
+        return True
+    blocked_phrases = {
+        "find my legislator",
+        "find legislator",
+        "find your legislator",
+        "legislator finder",
+        "california master plan",
+    }
+    if normalized in blocked_phrases:
+        return True
+    if any(token in normalized for token in {"district lookup", "member lookup", "search legislators", "master plan"}):
+        return True
+    return False
+
+
+def _strip_legislative_name_suffix(name: str | None) -> str:
+    text = str(name or "").strip()
+    if not text:
+        return ""
+    # Remove leadership/office suffix appended to names, e.g. " -- Majority Whip".
+    return re.sub(
+        r"\s*(?:--|—|-)\s*(?:majority|minority|assistant|president|speaker|leader|whip|pro tempore).*$",
+        "",
+        text,
+        flags=re.I,
+    ).strip()
+
+
+def _extract_legislative_name_suffix(name: str | None) -> str | None:
+    text = str(name or "").strip()
+    if not text:
+        return None
+    match = re.search(
+        r"(?:--|—|-)\s*((?:majority|minority|assistant|president|speaker|leader|whip|pro tempore).*)$",
+        text,
+        flags=re.I,
+    )
+    if not match:
+        return None
+    value = str(match.group(1) or "").strip()
+    return value or None
+
+
+def _leadership_title_label(title: str, lang: str) -> str:
+    normalized = str(title or "").strip().lower()
+    mapping = {
+        "majority leader": "多數黨領袖",
+        "minority leader": "少數黨領袖",
+        "majority whip": "多數黨黨鞭",
+        "minority whip": "少數黨黨鞭",
+        "assistant majority leader": "多數黨副領袖",
+        "assistant majority whip": "多數黨副黨鞭",
+        "assistant minority leader": "少數黨副領袖",
+        "assistant minority whip": "少數黨副黨鞭",
+        "president": "議長",
+        "president pro tempore": "臨時議長",
+        "speaker": "議長",
+    }
+    if lang == "zh-TW":
+        return mapping.get(normalized, title)
+    return title
+
+
+def _likely_same_legislator_name_variant(a: str | None, b: str | None) -> bool:
+    a_tokens = _normalize_name_tokens_for_match(a)
+    b_tokens = _normalize_name_tokens_for_match(b)
+    if len(a_tokens) < 2 or len(b_tokens) < 2:
+        return False
+    a_last = a_tokens[-1]
+    b_last = b_tokens[-1]
+    if not a_last or a_last != b_last:
+        return False
+    a_first = a_tokens[0]
+    b_first = b_tokens[0]
+    if a_first == b_first:
+        return True
+    return a_first[0] == b_first[0]
+
+
+def _surname_sort_key(full_name: str | None, family_name: str | None) -> tuple[str, str]:
+    family = str(family_name or "").strip().lower()
+    full = str(full_name or "").strip()
+    if family:
+        return (family, full.lower())
+    if not full:
+        return ("", "")
+    parts = full.split()
+    inferred_family = parts[-1].lower() if parts else ""
+    return (inferred_family, full.lower())
+
+
+def _state_sort_key(value: str | None) -> tuple[int, str]:
+    text = str(value or "").strip()
+    if not text:
+        return (1, "")
+    return (0, text.lower())
+
+
+def _normalize_legislative_position_title(office_title: str, selected_category: str) -> str:
+    title = str(office_title or "").strip()
+    lower = title.lower()
+    if selected_category in {"federal_legislative", "federal_house"}:
+        if any(token in lower for token in {"representative", "rep.", "rep ", "member"}):
+            return "United States Representative"
+    if selected_category in {"federal_legislative", "federal_senate"}:
+        if "senator" in lower:
+            return "United States Senator"
+    if selected_category in {"state_legislative", "state_house"}:
+        if any(token in lower for token in {"representative", "assembly", "delegate", "member"}):
+            return "State Representative"
+    if selected_category in {"state_legislative", "state_senate"}:
+        if "senator" in lower:
+            return "State Senator"
+    return title
+
+
+def _legislative_chamber_rank(office_name: str | None, appointment_payload: dict | None = None) -> int:
+    title = _display_office_name(office_name, appointment_payload).lower()
+    if "senat" in title:
+        return 0
+    if any(token in title for token in ("representative", "house", "assembly", "delegate")):
+        return 1
+    return 2
+
+
+def _render_selectable_roster_table(
+    table_df: pd.DataFrame,
+    *,
+    person_id_column: str,
+    key: str,
+    name_column: str | None = None,
+    name_sort_column: str | None = None,
+) -> int | None:
+    display_df = table_df.copy()
+    if name_column and name_sort_column and name_column in display_df.columns and name_sort_column in display_df.columns:
+        pairs = (
+            display_df[[name_column, name_sort_column]]
+            .drop_duplicates()
+            .sort_values([name_sort_column, name_column], kind="stable")
+        )
+        ordered_categories = [str(item) for item in pairs[name_column].tolist()]
+        display_df[name_column] = pd.Categorical(
+            display_df[name_column].astype(str),
+            categories=ordered_categories,
+            ordered=True,
+        )
+    display_df = display_df.drop(columns=[person_id_column, (name_sort_column or "")], errors="ignore")
+    event = st.dataframe(
+        display_df,
+        use_container_width=True,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key=key,
+    )
+    selected_rows = list((event.selection or {}).get("rows", [])) if event else []
+    if not selected_rows:
+        return None
+    row_idx = int(selected_rows[0])
+    if row_idx < 0 or row_idx >= len(table_df):
+        return None
+    target_person_id = int(table_df.iloc[row_idx][person_id_column])
+    return target_person_id
+
+
+def _render_member_roster(
+    candidates: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]],
+    lang: str,
+    selected_category: str,
+) -> int | None:
+    title = "成員名單" if lang == "zh-TW" else "Member roster"
+    st.markdown(f"**{title}**")
+    if not candidates:
+        st.caption("目前無資料" if lang == "zh-TW" else "No data yet")
+        return None
+
+    ordered = candidates
+    if selected_category == "state_senate":
+        multi_state = len({str(row[5] or "").strip() for row in candidates if str(row[5] or "").strip()}) > 1
+        ordered = sorted(
+            candidates,
+            key=lambda row: (
+                _state_sort_key(row[5]) if multi_state else (0, ""),
+                _district_sort_key(row[7]),
+                display_person_name(row[1], row[2], row[3]).lower(),
+            ),
+        )
+    elif selected_category == "federal_senate":
+        ordered = sorted(
+            candidates,
+            key=lambda row: (
+                _state_sort_key(row[5]),
+                _surname_sort_key(display_person_name(row[1], row[2], row[3]), row[3]),
+                display_person_name(row[1], row[2], row[3]).lower(),
+            ),
+        )
+    elif selected_category == "federal_legislative":
+        ordered = sorted(
+            candidates,
+            key=lambda row: (
+                _state_sort_key(row[5]),
+                _legislative_chamber_rank(row[4], row[6]),
+                _district_sort_key(row[7]),
+                _surname_sort_key(display_person_name(row[1], row[2], row[3]), row[3]),
+                display_person_name(row[1], row[2], row[3]).lower(),
+            ),
+        )
+    elif selected_category == "state_legislative":
+        multi_state = len({str(row[5] or "").strip() for row in candidates if str(row[5] or "").strip()}) > 1
+        ordered = sorted(
+            candidates,
+            key=lambda row: (
+                _state_sort_key(row[5]) if multi_state else (0, ""),
+                _legislative_chamber_rank(row[4], row[6]),
+                _district_sort_key(row[7]),
+                _surname_sort_key(display_person_name(row[1], row[2], row[3]), row[3]),
+                display_person_name(row[1], row[2], row[3]).lower(),
+            ),
+        )
+    elif selected_category == "state_house":
+        multi_state = len({str(row[5] or "").strip() for row in candidates if str(row[5] or "").strip()}) > 1
+        ordered = sorted(
+            candidates,
+            key=lambda row: (
+                _state_sort_key(row[5]) if multi_state else (0, ""),
+                _district_sort_key(row[7]),
+                display_person_name(row[1], row[2], row[3]).lower(),
+            ),
+        )
+    elif selected_category == "federal_house":
+        multi_state = len({str(row[5] or "").strip() for row in candidates if str(row[5] or "").strip()}) > 1
+        ordered = sorted(
+            candidates,
+            key=lambda row: (
+                _state_sort_key(row[5]) if multi_state else (0, ""),
+                _district_sort_key(row[7]),
+                display_person_name(row[1], row[2], row[3]).lower(),
+            ),
+        )
+    elif selected_category == "state_executive":
+        multi_state = len({str(row[5] or "").strip() for row in candidates if str(row[5] or "").strip()}) > 1
+        ordered = sorted(
+            candidates,
+            key=lambda row: (
+                _state_sort_key(row[5]) if multi_state else (0, ""),
+                _state_executive_role_rank(_display_office_name(row[4], row[6])),
+                display_person_name(row[1], row[2], row[3]).lower(),
+            ),
+        )
+    elif selected_category == "federal_executive":
+        ordered = sorted(
+            candidates,
+            key=lambda row: (
+                _executive_department_sort_key(_executive_hierarchy(row[4], row[6])[0]),
+                (_executive_hierarchy(row[4], row[6])[1] or "").lower(),
+                _executive_role_rank(_display_office_name(row[4], row[6])),
+                display_person_name(row[1], row[2], row[3]).lower(),
+            ),
+        )
+    elif selected_category == "federal_military":
+        ordered = sorted(
+            candidates,
+            key=lambda row: (
+                _military_department_sort_key(_executive_hierarchy(row[4], row[6])[0]),
+                (_executive_hierarchy(row[4], row[6])[1] or "").lower(),
+                _military_role_rank(row[4], row[6]),
+                display_person_name(row[1], row[2], row[3]).lower(),
+            ),
+        )
+
+    # Deduplicate by person and keep the highest-ranked row based on current ordering.
+    # Also suppress unspecified-district rows when a likely same person already appears with a specific district.
+    specific_district_names: list[str] = []
+    if selected_category in {"state_legislative", "state_senate", "state_house"}:
+        for row in ordered:
+            row_name = display_person_name(row[1], row[2], row[3])
+            if _is_invalid_person_name(row_name):
+                continue
+            district = str(row[7] or "").strip()
+            if district and district.lower() != "unspecified district":
+                specific_district_names.append(row_name)
+
+    seen_person_ids: set[int] = set()
+    deduped_ordered: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]] = []
+    for row in ordered:
+        person_id = int(row[0])
+        if person_id in seen_person_ids:
+            continue
+        row_name = display_person_name(row[1], row[2], row[3])
+        if _is_invalid_person_name(row_name):
+            continue
+        if selected_category in {"state_legislative", "state_senate", "state_house"}:
+            district = str(row[7] or "").strip()
+            if not district or district.lower() == "unspecified district":
+                if any(_likely_same_legislator_name_variant(row_name, existing_name) for existing_name in specific_district_names):
+                    continue
+        seen_person_ids.add(person_id)
+        deduped_ordered.append(row)
+    ordered = deduped_ordered
+
+    department_header_text = (
+        ("州" if lang == "zh-TW" else "State")
+        if selected_category in {"federal_legislative", "federal_senate", "federal_house", "state_legislative", "state_senate", "state_house"}
+        else ("部門" if lang == "zh-TW" else "Department")
+    )
+    name_header = "姓名" if lang == "zh-TW" else "Name"
+    position_header = "職位" if lang == "zh-TW" else "Position"
+    person_id_header = "__person_id__"
+    name_sort_header = "__name_sort__"
+    table_rows: list[dict[str, str]] = []
+
+    for row in ordered:
+        person_id = int(row[0])
+        name = display_person_name(row[1], row[2], row[3])
+        if _is_invalid_person_name(name):
+            continue
+        if selected_category in {"state_legislative", "state_senate", "state_house"}:
+            name = _strip_legislative_name_suffix(name)
+        office = _display_office_name(row[4], row[6])
+        office = _normalize_legislative_position_title(office, selected_category)
+        district = str(row[7] or "").strip()
+
+        hierarchy = _executive_hierarchy(row[4], row[6])
+        if selected_category in {"federal_executive", "federal_military"}:
+            top_department = hierarchy[0] or (row[5] or "")
+            if top_department == "White House":
+                department_en = hierarchy[1] or "White House Office"
+                department_zh = _subdepartment_label(department_en, "zh-TW", "White House")
+            else:
+                department_en = top_department
+                department_zh = _department_label(top_department, "zh-TW")
+        else:
+            department_en = str(row[5] or "")
+            department_zh = _department_label(department_en, "zh-TW")
+        department = _bilingual_text(department_en, department_zh)
+
+        office_zh = _position_label_zh(office)
+        if department_en == "Department of State" and _is_probable_person_name_title(office, name):
+            office_bilingual = _bilingual_text("Title pending", "職稱待補")
+        else:
+            office_bilingual = _bilingual_text(office, office_zh)
+
+        if selected_category in {"state_legislative", "state_senate", "state_house"}:
+            district_label = district or "Unspecified district"
+            position = f"{office_bilingual} (第{district_label}選區 / District {district_label})"
+        else:
+            position = office_bilingual
+
+        table_rows.append(
+            {
+                person_id_header: str(person_id),
+                name_sort_header: " ".join(
+                    [
+                        _surname_sort_key(name, row[3])[0],
+                        str(row[2] or "").strip().lower(),
+                        name.lower(),
+                    ]
+                ).strip(),
+                name_header: name,
+                department_header_text: department,
+                position_header: position,
+            }
+        )
+
+    if not table_rows:
+        st.caption("目前無資料" if lang == "zh-TW" else "No data yet")
+        return None
+
+    return _render_selectable_roster_table(
+        pd.DataFrame(table_rows),
+        person_id_column=person_id_header,
+        key=f"member-roster-table-{selected_category}",
+        name_column=name_header,
+        name_sort_column=name_sort_header,
+    )
+
+
+def _render_white_house_roster(
+    candidates: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]],
+    lang: str,
+) -> int | None:
+    title = "白宮成員名單" if lang == "zh-TW" else "White House roster"
+    st.markdown(f"**{title}**")
+    if not candidates:
+        st.caption("目前無資料" if lang == "zh-TW" else "No data yet")
+        return None
+
+    office_rows: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]] = []
+    nsc_rows: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]] = []
+    rows_by_person: dict[int, list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]]] = {}
+    for row in candidates:
+        rows_by_person.setdefault(int(row[0]), []).append(row)
+
+    # Keep each person only once across the two tables:
+    # if they have NSC roles, prefer showing the best NSC role;
+    # otherwise show the best White House Office role.
+    for person_rows in rows_by_person.values():
+        ordered_rows = sorted(
+            person_rows,
+            key=lambda row: (
+                _executive_role_rank(_display_office_name(row[4], row[6])),
+                display_person_name(row[1], row[2], row[3]).lower(),
+            ),
+        )
+        nsc_candidates = [row for row in ordered_rows if (_executive_hierarchy(row[4], row[6])[1] or "").strip() == "National Security Council"]
+        if nsc_candidates:
+            nsc_rows.append(nsc_candidates[0])
+        elif ordered_rows:
+            office_rows.append(ordered_rows[0])
+
+    def _render_table(
+        heading_zh: str,
+        heading_en: str,
+        rows: list[tuple[int, str, str | None, str | None, str, str | None, dict | None, str | None]],
+    ) -> int | None:
+        heading = _bilingual_text(heading_en, heading_zh)
+        st.markdown(f"_{heading}_")
+        if not rows:
+            st.caption("目前無資料" if lang == "zh-TW" else "No data yet")
+            return None
+        ordered = sorted(
+            rows,
+            key=lambda row: (
+                _executive_role_rank(_display_office_name(row[4], row[6])),
+                display_person_name(row[1], row[2], row[3]).lower(),
+            ),
+        )
+        headers = ("姓名", "部門", "職位") if lang == "zh-TW" else ("Name", "Department", "Position")
+        person_id_header = "__person_id__"
+        name_sort_header = "__name_sort__"
+        table_rows: list[dict[str, str]] = []
+        for row in ordered:
+            person_id = int(row[0])
+            name = display_person_name(row[1], row[2], row[3])
+            if _is_invalid_person_name(name):
+                continue
+            office = _display_office_name(row[4], row[6])
+            office_bilingual = _bilingual_text(office, _position_label_zh(office))
+            hierarchy = _executive_hierarchy(row[4], row[6])
+            subdepartment_en = (hierarchy[1] or "White House Office").strip()
+            subdepartment = _bilingual_text(subdepartment_en, _subdepartment_label(subdepartment_en, "zh-TW", "White House"))
+            table_rows.append(
+                {
+                    person_id_header: str(person_id),
+                    name_sort_header: " ".join(
+                        [
+                            _surname_sort_key(name, row[3])[0],
+                            str(row[2] or "").strip().lower(),
+                            name.lower(),
+                        ]
+                    ).strip(),
+                    headers[0]: name,
+                    headers[1]: subdepartment,
+                    headers[2]: office_bilingual,
+                }
+            )
+        if not table_rows:
+            st.caption("目前無資料" if lang == "zh-TW" else "No data yet")
+            return None
+        return _render_selectable_roster_table(
+            pd.DataFrame(table_rows),
+            person_id_column=person_id_header,
+            key=f"white-house-roster-table-{heading_en}",
+            name_column=headers[0],
+            name_sort_column=name_sort_header,
+        )
+
+    selected_person_id = _render_table("白宮辦公室", "White House Office", office_rows)
+    if selected_person_id:
+        return selected_person_id
+    return _render_table("國家安全會議", "National Security Council", nsc_rows)
+
+
 def _get_state_options(session, category_key: str) -> list[str]:
-    rows = session.execute(_get_base_people_query(category_key)).all()
+    rows = _dedupe_people_rows(session.execute(_get_base_people_query(category_key)).all())
     return sorted({row[5] for row in rows if row[5]})
 
 
 def _get_department_options(session, category_key: str) -> list[str]:
-    rows = session.execute(_get_base_people_query(category_key)).all()
+    rows = _dedupe_people_rows(session.execute(_get_base_people_query(category_key)).all())
     if category_key == "federal_military":
         rows = [row for row in rows if _is_military_role(row[4], row[6])]
     if category_key == "federal_executive":
@@ -398,7 +1117,7 @@ def _get_department_options(session, category_key: str) -> list[str]:
 
 
 def _get_subdepartment_options(session, category_key: str, department_filter: str) -> list[str]:
-    rows = session.execute(_get_base_people_query(category_key)).all()
+    rows = _dedupe_people_rows(session.execute(_get_base_people_query(category_key)).all())
     if category_key == "federal_military":
         rows = [row for row in rows if _is_military_role(row[4], row[6])]
     options = {
@@ -413,7 +1132,7 @@ def _get_subdepartment_options(session, category_key: str, department_filter: st
 
 
 def _get_unit_options(session, category_key: str, department_filter: str, subdepartment_filter: str) -> list[str]:
-    rows = session.execute(_get_base_people_query(category_key)).all()
+    rows = _dedupe_people_rows(session.execute(_get_base_people_query(category_key)).all())
     if category_key == "federal_military":
         rows = [row for row in rows if _is_military_role(row[4], row[6])]
     options = {
@@ -639,10 +1358,10 @@ def _executive_department_name(office_name: str | None) -> str:
 
 
 def _executive_hierarchy(office_name: str | None, appointment_payload: dict | None) -> tuple[str, str | None, str | None]:
-    payload = appointment_payload or {}
-    payload_office_title = payload.get("office_title") if isinstance(payload, dict) else None
-    department_name = payload.get("department_name") if isinstance(payload, dict) else None
-    top_department_name = payload.get("top_department_name") if isinstance(payload, dict) else None
+    payload = _coerce_payload_dict(appointment_payload)
+    payload_office_title = payload.get("office_title")
+    department_name = payload.get("department_name")
+    top_department_name = payload.get("top_department_name")
     top_department = (
         top_department_name
         or department_name
@@ -791,6 +1510,37 @@ def _executive_role_rank(office_name: str | None) -> tuple[int, str]:
     return (99, title)
 
 
+def _state_executive_role_rank(office_name: str | None) -> tuple[int, str]:
+    title = (office_name or "").lower().strip()
+    if ":" in title:
+        title = title.split(":", 1)[1].strip()
+    if "lieutenant governor" in title:
+        return (1, title)
+    if "governor" in title:
+        return (0, title)
+    if "secretary of state" in title or "secretary of the commonwealth" in title:
+        return (2, title)
+    if "attorney general" in title:
+        return (3, title)
+    if "state treasurer" in title or "treasurer" in title:
+        return (4, title)
+    if "state comptroller" in title or "comptroller" in title:
+        return (5, title)
+    if "auditor" in title:
+        return (6, title)
+    if "superintendent" in title:
+        return (7, title)
+    if "insurance commissioner" in title:
+        return (8, title)
+    if "agriculture commissioner" in title:
+        return (9, title)
+    if "commissioner" in title:
+        return (50, title)
+    if "director" in title:
+        return (60, title)
+    return (99, title)
+
+
 def _military_role_rank(office_name: str | None, appointment_payload: dict | None = None) -> tuple[int, str]:
     title = _display_office_name(office_name, appointment_payload).lower()
     if "chairman, joint chiefs of staff" in title or "chairman of the joint chiefs" in title:
@@ -857,20 +1607,64 @@ def _military_unit_sort_key(name: str | None) -> tuple[int, str]:
 
 
 def _display_office_name(office_name: str | None, appointment_payload: dict | None = None) -> str:
-    payload = appointment_payload or {}
-    payload_title = payload.get("office_title") if isinstance(payload, dict) else None
-    clean_title = " ".join(str(payload_title).split()).strip() if payload_title else ""
+    def _normalize_title(text: str) -> str:
+        value = " ".join(str(text or "").split()).strip()
+        if not value:
+            return ""
+        value = re.sub(r"\[\s*\d+\s*\]", "", value).strip()
+        value = re.sub(r"\s+", " ", value).strip()
+        value = re.sub(r"\s+\d+\s+FAM\s+[0-9A-Za-z.-]+$", "", value, flags=re.I).strip()
+        value = re.sub(r"^\((acting|interim)\)\s*,?\s*", r"\1 ", value, flags=re.I).strip()
+        value = re.sub(r"^(acting|interim)\s*[,:\-]?\s*", r"\1 ", value, flags=re.I).strip()
+        return value
+
+    payload = _coerce_payload_dict(appointment_payload)
+    payload_title = payload.get("office_title")
+    clean_title = _normalize_title(str(payload_title)) if payload_title else ""
     if clean_title:
         return clean_title
-    clean_office = " ".join(str(office_name or "").split()).strip()
+    clean_office = _normalize_title(str(office_name or ""))
     if clean_office.startswith(":"):
         clean_office = clean_office[1:].strip()
     if ":" in clean_office:
         prefix, suffix = clean_office.split(":", 1)
         if suffix.strip():
-            return suffix.strip()
-        return prefix.strip()
+            return _normalize_title(suffix.strip())
+        return _normalize_title(prefix.strip())
     return clean_office
+
+
+def _is_probable_person_name_title(title: str, person_name: str) -> bool:
+    title_text = str(title or "").strip()
+    name_text = str(person_name or "").strip()
+    if not title_text:
+        return False
+    if title_text.lower() == name_text.lower():
+        return True
+    words = [w for w in re.split(r"\s+", title_text) if w]
+    if len(words) < 2 or len(words) > 4:
+        return False
+    lower_title = title_text.lower()
+    role_keywords = (
+        "secretary",
+        "deputy",
+        "under secretary",
+        "assistant secretary",
+        "ambassador",
+        "coordinator",
+        "envoy",
+        "representative",
+        "director",
+        "advisor",
+        "adviser",
+        "officer",
+        "chief",
+        "counsel",
+        "commissioner",
+    )
+    if any(keyword in lower_title for keyword in role_keywords):
+        return False
+    return all(re.match(r"^[A-Z][A-Za-z'`.-]+$", word) for word in words)
 
 
 def _format_background_source(field_name: str, person_data: dict[str, object], labels: dict[str, str], lang: str) -> str | None:
@@ -977,14 +1771,15 @@ def _confirmed_x_profiles(raw_payload: dict[str, object]) -> list[dict[str, str]
     return [item for item in confirmed_profiles if isinstance(item, dict) and item.get("profile_url")]
 
 
-def _merged_confirmed_x_profiles(raw_payload: dict[str, object], social_profiles: dict[str, str]) -> list[dict[str, str]]:
+def _merged_confirmed_x_profiles(raw_payload: dict[str, object], social_profiles: object) -> list[dict[str, str]]:
     confirmed_profiles = list(_confirmed_x_profiles(raw_payload))
     existing_urls = {
         item.get("profile_url")
         for item in confirmed_profiles
         if isinstance(item, dict) and item.get("profile_url")
     }
-    official_x_url = (social_profiles or {}).get("x")
+    social_map = social_profiles if isinstance(social_profiles, dict) else {}
+    official_x_url = social_map.get("x")
     if official_x_url and official_x_url not in existing_urls:
         confirmed_profiles.insert(
             0,
@@ -1049,42 +1844,24 @@ def _query_person_name() -> str | None:
     return text or None
 
 
-def _name_lookup_candidates(raw_name: str) -> list[str]:
-    text = (raw_name or "").strip()
+def _lookup_person_by_name(session, raw_name: str) -> Person | None:
+    text = str(raw_name or "").strip()
     if not text:
-        return []
-    text = re.sub(r"\s+", " ", text).strip()
-    english_chunks = re.findall(r"[A-Za-z][A-Za-z'\"\\-\\.\\s]+", text)
-    candidates: list[str] = []
-    for chunk in english_chunks:
-        normalized = re.sub(r"\s+", " ", chunk).strip(" -|")
-        if len(normalized) >= 3:
-            candidates.append(normalized)
-    candidates.append(text)
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        key = candidate.lower()
-        if key not in seen:
-            deduped.append(candidate)
-            seen.add(key)
-    return deduped
-
-
-def _find_person_by_query_name(session, raw_name: str) -> Person | None:
-    for candidate in _name_lookup_candidates(raw_name):
-        matched_person = session.execute(
-            select(Person).where(func.lower(Person.full_name) == candidate.lower())
-        ).scalars().first()
-        if matched_person:
-            return matched_person
-        alias_match = session.execute(
+        return None
+    direct = session.execute(select(Person).where(func.lower(Person.full_name) == text.lower())).scalars().first()
+    if direct:
+        return direct
+    alias_match = (
+        session.execute(
             select(Person)
             .join(Alias, Alias.person_id == Person.id)
-            .where(func.lower(Alias.alias) == candidate.lower())
-        ).scalars().first()
-        if alias_match:
-            return alias_match
+            .where(func.lower(Alias.alias) == text.lower())
+        )
+        .scalars()
+        .first()
+    )
+    if alias_match:
+        return alias_match
     return None
 
 
@@ -1258,6 +2035,33 @@ def render(lang: str, labels: dict[str, str]) -> None:
     if total_people == 0 and _render_google_sheet_fallback_v2(lang, labels, pending_person_id):
         return
 
+    has_pending_person = False
+    if pending_person_id:
+        with session_scope() as session:
+            has_pending_person = session.get(Person, int(pending_person_id)) is not None
+
+    category_select_prompt_value = "__select__"
+    category_select_prompt_label = "請選擇" if lang == "zh-TW" else "Please select"
+    if has_pending_person:
+        selected_category = "all"
+    else:
+        category_options = [
+            category_select_prompt_value,
+            *_visible_person_category_keys(),
+        ]
+        selected_category_value = st.selectbox(
+            labels["person_category"],
+            category_options,
+            format_func=lambda key: (
+                category_select_prompt_label if key == category_select_prompt_value else _category_label(PERSON_CATEGORIES[key], lang)
+            ),
+        )
+        if selected_category_value == category_select_prompt_value:
+            st.info(category_select_prompt_label)
+            return
+        selected_category = selected_category_value
+
+
     with session_scope() as session:
         state_filter = None
         department_filter = None
@@ -1267,50 +2071,56 @@ def render(lang: str, labels: dict[str, str]) -> None:
         include_military_roles = False
         person = None
         person_id = None
+        select_prompt_value = "__select__"
+        select_prompt_label = "請選擇" if lang == "zh-TW" else "Please select"
 
         if pending_person_id:
             person = session.get(Person, int(pending_person_id))
             if person:
                 person_id = int(pending_person_id)
-        if person is None and pending_person_name:
-            person = _find_person_by_query_name(session, pending_person_name)
-            if person:
-                person_id = int(person.id)
-                st.query_params["person_id"] = str(person_id)
-        if person is None and pending_person_id:
-            st.error(
-                f"找不到指定人物（ID: {pending_person_id}）。請返回法案頁重試。"
-                if lang == "zh-TW"
-                else f"Person not found for ID {pending_person_id}. Please go back to legislation and try again."
-            )
-            return
+            else:
+                if pending_person_name:
+                    matched = _lookup_person_by_name(session, pending_person_name)
+                    if matched:
+                        person = matched
+                        person_id = int(matched.id)
+                        st.query_params["person_id"] = str(person_id)
+                if person is None:
+                    st.error(
+                        "找不到指定人物，請返回法案頁重試。"
+                        if lang == "zh-TW"
+                        else "The selected person was not found. Please return to legislation and try again."
+                    )
+                    return
 
-        selected_category = st.selectbox(
-            labels["person_category"],
-            list(PERSON_CATEGORIES.keys()),
-            format_func=lambda key: _category_label(PERSON_CATEGORIES[key], lang),
-        )
+        if person is None and selected_category == "federal_legislative":
+            chamber_label = "院別" if lang == "zh-TW" else "Chamber"
+            federal_legislative_selection = st.selectbox(
+                chamber_label,
+                ["__all__", "federal_senate", "federal_house"],
+                format_func=lambda item: labels["all"] if item == "__all__" else _category_label(PERSON_CATEGORIES[item], lang),
+                key="person-federal-legislative-chamber",
+            )
+            selected_category = "federal_legislative" if federal_legislative_selection == "__all__" else federal_legislative_selection
 
         if person is None and selected_category in _categories_with_department_filter():
             if selected_category == "federal_executive":
-                role_scope_label = "職級" if lang == "zh-TW" else "Role scope"
-                role_scope_options = (
-                    ["部長級與軍職", "部長級", "全部"]
-                    if lang == "zh-TW"
-                    else ["Minister-level + Military", "Minister-level", "All"]
-                )
-                role_scope = st.selectbox(role_scope_label, role_scope_options, index=0)
-                minister_only = role_scope in {"部長級與軍職", "部長級", "Minister-level + Military", "Minister-level"}
-                include_military_roles = role_scope in {"部長級與軍職", "Minister-level + Military"}
+                # Keep existing default behavior (equivalent to previous "All")
+                # while removing the role-scope selector from UI.
+                minister_only = False
+                include_military_roles = True
             department_options = _get_department_options(session, selected_category)
             if not department_options:
                 st.info(labels["no_people_loaded"])
                 return
             department_filter = st.selectbox(
                 labels["department"],
-                department_options,
-                format_func=lambda item: _department_label(item, lang),
+                [select_prompt_value, *department_options],
+                format_func=lambda item: (select_prompt_label if item == select_prompt_value else _department_label(item, lang)),
             )
+            if department_filter == select_prompt_value:
+                st.info(select_prompt_label)
+                return
             subdepartment_options = _get_subdepartment_options(session, selected_category, department_filter)
             if subdepartment_options:
                 subdepartment_label = "次部門" if lang == "zh-TW" else "Subdepartment"
@@ -1336,8 +2146,25 @@ def render(lang: str, labels: dict[str, str]) -> None:
             if not state_options:
                 st.info(labels["no_people_loaded"])
                 return
-            state_selection = st.selectbox(labels["state"], [labels["all"], *state_options])
+            state_selection = st.selectbox(labels["state"], [select_prompt_value, labels["all"], *state_options], format_func=lambda item: select_prompt_label if item == select_prompt_value else item)
+            if state_selection == select_prompt_value:
+                st.info(select_prompt_label)
+                return
             state_filter = None if state_selection == labels["all"] else state_selection
+
+        if person is None and selected_category == "state_legislative":
+            chamber_label = "院別" if lang == "zh-TW" else "Chamber"
+            state_chamber_options = _state_legislative_chamber_options(session, state_filter=state_filter)
+            if state_chamber_options == ["state_legislative"]:
+                selected_category = "state_legislative"
+            else:
+                state_legislative_selection = st.selectbox(
+                    chamber_label,
+                    state_chamber_options,
+                    format_func=lambda item: labels["all"] if item == "__all__" else _category_label(PERSON_CATEGORIES[item], lang),
+                    key=f"person-state-legislative-chamber-{state_filter or 'all'}",
+                )
+                selected_category = "state_legislative" if state_legislative_selection == "__all__" else state_legislative_selection
 
         if person is None:
             status_options = ["all", "current", "former"]
@@ -1370,6 +2197,105 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 st.info(labels["no_people_loaded"])
                 return
 
+            if selected_category == "state_executive" and state_filter is None:
+                role_label = "職務" if lang == "zh-TW" else "Role"
+                role_options = sorted(
+                    {
+                        _display_office_name(row[4], row[6])
+                        for row in candidates
+                        if str(_display_office_name(row[4], row[6]) or "").strip()
+                    },
+                    key=lambda role: (_state_executive_role_rank(role), str(role).lower()),
+                )
+                if role_options:
+                    selected_role = st.selectbox(
+                        role_label,
+                        [select_prompt_value, *role_options],
+                        format_func=lambda value: (
+                            select_prompt_label
+                            if value == select_prompt_value
+                            else (_bilingual_text(value, _position_label_zh(value)) if lang == "zh-TW" else value)
+                        ),
+                        key="person-state-executive-role-all-states",
+                    )
+                    if selected_role == select_prompt_value:
+                        st.info(select_prompt_label)
+                        return
+                    candidates = [
+                        row for row in candidates if _display_office_name(row[4], row[6]) == selected_role
+                    ]
+                    if not candidates:
+                        st.info(labels["no_people_loaded"])
+                        return
+
+            if selected_category in _legislative_categories():
+                party_map = _build_party_map_for_candidates(session, candidates, selected_category)
+                party_options = sorted({party for party in party_map.values() if party})
+                if party_options:
+                    party_label = "黨籍" if lang == "zh-TW" else "Party"
+                    party_selection = st.selectbox(
+                        party_label,
+                        [labels["all"], *party_options],
+                        key=f"person-party-{selected_category}",
+                    )
+                    if party_selection != labels["all"]:
+                        candidates = [row for row in candidates if party_map.get(int(row[0])) == party_selection]
+                        if not candidates:
+                            st.info(labels["no_people_loaded"])
+                            return
+            if selected_category in {"federal_legislative", "federal_senate", "federal_house"}:
+                caucus_map = _build_taiwan_caucus_map_for_candidates(session, candidates, selected_category)
+                caucus_options = []
+                caucus_seen: set[tuple[int, str]] = set()
+                for memberships in caucus_map.values():
+                    for membership in memberships:
+                        congress = int(membership.get("congress") or 0)
+                        chamber = str(membership.get("chamber") or "").strip().lower()
+                        if congress <= 0 or chamber not in {"house", "senate"}:
+                            continue
+                        key = (congress, chamber)
+                        if key in caucus_seen:
+                            continue
+                        caucus_seen.add(key)
+                        caucus_options.append(key)
+                caucus_options = sorted(caucus_options, key=lambda item: (-item[0], item[1]))
+                if caucus_options:
+                    caucus_label = "台灣連線"
+                    any_label = "任一屆（含歷年）" if lang == "zh-TW" else "Any congress (historical)"
+                    option_values = ["__all__", "__any__", *[f"{congress}:{chamber}" for congress, chamber in caucus_options]]
+                    def _format_caucus(value: str) -> str:
+                        if value == "__all__":
+                            return labels["all"]
+                        if value == "__any__":
+                            return any_label
+                        congress_text, chamber_text = value.split(":", 1)
+                        return _taiwan_caucus_option_label(int(congress_text), chamber_text, lang)
+
+                    selected_caucus = st.selectbox(
+                        caucus_label,
+                        option_values,
+                        format_func=_format_caucus,
+                        key=f"person-caucus-{selected_category}",
+                    )
+                    if selected_caucus != "__all__":
+                        if selected_caucus == "__any__":
+                            candidates = [row for row in candidates if int(row[0]) in caucus_map]
+                        else:
+                            congress_text, chamber_text = selected_caucus.split(":", 1)
+                            congress_value = int(congress_text)
+                            candidates = [
+                                row
+                                for row in candidates
+                                if any(
+                                    int(item.get("congress") or 0) == congress_value
+                                    and str(item.get("chamber") or "").strip().lower() == chamber_text
+                                    for item in caucus_map.get(int(row[0]), [])
+                                )
+                            ]
+                        if not candidates:
+                            st.info(labels["no_people_loaded"])
+                            return
+
             if selected_category == "federal_executive":
                 candidates = sorted(
                     candidates,
@@ -1389,21 +2315,63 @@ def render(lang: str, labels: dict[str, str]) -> None:
                         display_person_name(row[1], row[2], row[3]).lower(),
                     ),
                 )
+            elif selected_category == "state_executive":
+                candidates = sorted(
+                    candidates,
+                    key=lambda row: (
+                        _state_executive_role_rank(_display_office_name(row[4], row[6])),
+                        display_person_name(row[1], row[2], row[3]).lower(),
+                    ),
+                )
 
-            person_options = {
-                f"{display_person_name(row[1], row[2], row[3])} ({_display_office_name(row[4], row[6])})": row[0]
-                for row in candidates
-            }
-            selected_person_label = st.selectbox(labels["select_person"], list(person_options.keys()))
-            person_id = person_options[selected_person_label]
-            person = session.get(Person, int(person_id))
-            if not person:
-                st.info(labels["person_not_found"])
-                return
+            white_house_roster_only = (
+                selected_category == "federal_executive"
+                and department_filter == "White House"
+                and pending_person_id is None
+            )
+            if white_house_roster_only:
+                selected_person_id = _render_white_house_roster(candidates, lang=lang)
+                if not selected_person_id:
+                    return
+                person_id = int(selected_person_id)
+                person = session.get(Person, person_id)
+                if not person:
+                    st.info(labels["person_not_found"])
+                    return
+            elif selected_category in _categories_with_department_filter() or selected_category in {
+                "state_executive",
+                "state_legislative",
+                "state_senate",
+                "state_house",
+                "federal_legislative",
+                "federal_senate",
+                "federal_house",
+            }:
+                selected_person_id = _render_member_roster(candidates, lang=lang, selected_category=selected_category)
+                if not selected_person_id:
+                    return
+                person_id = int(selected_person_id)
+                person = session.get(Person, person_id)
+                if not person:
+                    st.info(labels["person_not_found"])
+                    return
 
+            if person is None:
+                person_options = {
+                    f"{display_person_name(row[1], row[2], row[3])} ({_display_office_name(row[4], row[6])})": row[0]
+                    for row in candidates
+                }
+                selected_person_label = st.selectbox(labels["select_person"], list(person_options.keys()))
+                person_id = person_options[selected_person_label]
+                person = session.get(Person, int(person_id))
+                if not person:
+                    st.info(labels["person_not_found"])
+                    return
+
+        person_raw_payload = person.raw_payload if isinstance(person.raw_payload, dict) else {}
         person_data = {
             "full_name": display_person_name(person.full_name, person.given_name, person.family_name),
-            "full_name_display": (person.raw_payload or {}).get("full_name_display"),
+            "full_name_display": person_raw_payload.get("full_name_display"),
             "portrait_url": person.portrait_url,
             "portrait_source_url": person.portrait_source_url,
             "portrait_source_type": person.portrait_source_type,
@@ -1420,14 +2388,48 @@ def render(lang: str, labels: dict[str, str]) -> None:
             "education": person.education,
             "career_history": person.career_history,
             "bio": person.bio,
-            "background_sources": (person.raw_payload or {}).get("background_sources", {}),
-            "raw_payload": person.raw_payload or {},
+            "background_sources": person_raw_payload.get("background_sources", {}),
+            "raw_payload": person_raw_payload,
         }
 
         statements_service = StatementsService(session)
         officials_service = OfficialsService(session)
         aliases = session.execute(select(Alias.alias).where(Alias.person_id == person.id, Alias.alias_type != "chinese_name")).scalars().all()
         chinese_aliases = officials_service.list_chinese_aliases(person.id)
+        appointment_source_rows = session.execute(
+            select(Appointment.source_url, Appointment.source_type, Appointment.parser_identity)
+            .where(Appointment.person_id == person.id, Appointment.source_url.is_not(None))
+            .order_by(Appointment.id.desc())
+        ).all()
+        source_links: list[dict[str, str]] = []
+        seen_source_urls: set[str] = set()
+
+        def _append_source(url: str | None, source_type: str | None, parser_identity: str | None) -> None:
+            url_text = str(url or "").strip()
+            if not url_text or url_text in seen_source_urls:
+                return
+            seen_source_urls.add(url_text)
+            source_links.append(
+                {
+                    "url": url_text,
+                    "source_type": str(source_type or "").strip(),
+                    "parser_identity": str(parser_identity or "").strip(),
+                }
+            )
+
+        _append_source(person.canonical_official_url, person.source_type, person.parser_identity)
+        _append_source(person.source_url, person.source_type, person.parser_identity)
+        for row_source_url, row_source_type, row_parser_identity in appointment_source_rows:
+            _append_source(row_source_url, row_source_type, row_parser_identity)
+        for item in (person_raw_payload.get("source_links") or []):
+            if not isinstance(item, dict):
+                continue
+            _append_source(
+                str(item.get("url") or ""),
+                str(item.get("source_type") or ""),
+                str(item.get("parser_identity") or ""),
+            )
+        person_data["source_links"] = source_links
         appointments = session.execute(
             select(Appointment.role_title, Appointment.party, Appointment.status, Appointment.start_date, Appointment.end_date, Appointment.district)
             .where(Appointment.person_id == person.id)
@@ -1455,7 +2457,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 current_appointment_row[2] if current_appointment_row else None,
                 current_appointment_row[4] if current_appointment_row else None,
             )
-            if selected_category in {"federal_senate", "federal_house"}
+            if selected_category in {"federal_legislative", "federal_senate", "federal_house"}
             else None
         )
 
@@ -1561,6 +2563,11 @@ def render(lang: str, labels: dict[str, str]) -> None:
             st.write(_clean_background_text(person_data["bio"]))
 
     with top_right:
+        alias_flash_key = f"chinese-alias-flash-{person.id}"
+        alias_flash = st.session_state.pop(alias_flash_key, None)
+        if alias_flash:
+            st.success(str(alias_flash))
+
         display_title = person_data["full_name"]
         generated_chinese_name = None
         if chinese_aliases:
@@ -1581,6 +2588,237 @@ def render(lang: str, labels: dict[str, str]) -> None:
             st.write(" / ".join(chinese_aliases) if lang == "zh-TW" else ", ".join(chinese_aliases))
         elif generated_chinese_name:
             st.caption("中文名由 AI 協助生成" if lang == "zh-TW" else "Chinese name generated with AI assistance")
+        leadership_title = _extract_legislative_name_suffix(person_data["full_name"])
+        if leadership_title:
+            leadership_label = "議會職務" if lang == "zh-TW" else "Leadership role"
+            st.write(f"{leadership_label}: {_leadership_title_label(leadership_title, lang)}")
+
+        with st.expander("編輯中文譯名" if lang == "zh-TW" else "Edit Chinese names"):
+            help_text = (
+                "可用逗號、頓號或換行分隔多個譯名"
+                if lang == "zh-TW"
+                else "Use commas or new lines to separate multiple names"
+            )
+            st.caption(help_text)
+            initial_alias_text = "\n".join(chinese_aliases or ([generated_chinese_name] if generated_chinese_name else []))
+            alias_input = st.text_area(
+                "中文譯名",
+                value=initial_alias_text,
+                key=f"edit-chinese-aliases-{person.id}",
+                height=100,
+            )
+            save_aliases = st.button(
+                "儲存中文譯名" if lang == "zh-TW" else "Save Chinese names",
+                key=f"save-chinese-aliases-{person.id}",
+            )
+            if save_aliases:
+                raw_parts = re.split(r"[\n,，、;/]+", str(alias_input or ""))
+                submitted_aliases: list[str] = []
+                seen_aliases: set[str] = set()
+                for part in raw_parts:
+                    alias_text = str(part or "").strip()
+                    if not alias_text or alias_text in seen_aliases:
+                        continue
+                    seen_aliases.add(alias_text)
+                    submitted_aliases.append(alias_text)
+
+                def _apply_alias_changes() -> None:
+                    existing_alias_rows = session.execute(
+                        select(Alias).where(
+                            Alias.person_id == person.id,
+                            Alias.alias_type == "chinese_name",
+                            Alias.is_current.is_(True),
+                        )
+                    ).scalars().all()
+                    for alias_row in existing_alias_rows:
+                        alias_row.is_current = False
+                        alias_row.last_seen_at = datetime.utcnow()
+
+                    for alias_text in submitted_aliases:
+                        officials_service.ensure_alias(
+                            person.id,
+                            alias_text,
+                            source_url="manual://person_page",
+                            source_type="manual",
+                            alias_type="chinese_name",
+                        )
+
+                try:
+                    _apply_alias_changes()
+                    session.flush()
+                    session.commit()
+                except IntegrityError:
+                    session.rollback()
+                    repaired = False
+                    if str(session.bind.url).startswith("postgresql"):
+                        try:
+                            session.execute(
+                                text(
+                                    "SELECT setval(pg_get_serial_sequence('aliases', 'id'), "
+                                    "GREATEST(COALESCE((SELECT MAX(id) FROM aliases), 0), 1), true)"
+                                )
+                            )
+                            session.commit()
+                            repaired = True
+                        except Exception:
+                            session.rollback()
+
+                    if repaired:
+                        try:
+                            _apply_alias_changes()
+                            session.flush()
+                            session.commit()
+                        except IntegrityError:
+                            session.rollback()
+                            st.error("儲存中文譯名失敗：資料重複或鍵值衝突，請稍後再試。")
+                            return
+                    else:
+                        st.error("儲存中文譯名失敗：資料庫鍵值衝突。")
+                        return
+
+                st.session_state[alias_flash_key] = "已更新中文譯名" if lang == "zh-TW" else "Chinese names updated"
+                st.rerun()
+
+        monitor_service = PersonTaiwanEventMonitorService(session)
+        monitor_config = monitor_service.get_person_monitor_config(person, chinese_aliases=chinese_aliases)
+        monitor_flash_key = f"person-monitor-flash-{person.id}"
+        monitor_flash = st.session_state.pop(monitor_flash_key, None)
+        if monitor_flash:
+            st.success(str(monitor_flash))
+        with st.expander("人物台灣事件監測" if lang == "zh-TW" else "Person Taiwan Event Monitor"):
+            st.caption(
+                "每日按設定關鍵字搜尋（人物關鍵字 AND 台灣關鍵字），逐網域查詢；找到就寫入事件，找不到也會記錄 0 則。"
+                if lang == "zh-TW"
+                else "Run daily keyword monitoring (person keywords AND Taiwan keywords) by domain; records are logged even when zero found."
+            )
+            enabled = st.checkbox(
+                "啟用每日監測" if lang == "zh-TW" else "Enable daily monitor",
+                value=bool(monitor_config.get("enabled")),
+                key=f"person-monitor-enabled-{person.id}",
+            )
+            person_keywords_input = st.text_area(
+                "人物關鍵字（逗號或換行分隔）" if lang == "zh-TW" else "Person keywords (comma/new line separated)",
+                value="\n".join(monitor_config.get("person_keywords") or []),
+                key=f"person-monitor-person-keywords-{person.id}",
+                height=80,
+            )
+            taiwan_keywords_input = st.text_area(
+                "台灣關鍵字（逗號或換行分隔）" if lang == "zh-TW" else "Taiwan keywords (comma/new line separated)",
+                value="\n".join(monitor_config.get("taiwan_keywords") or []),
+                key=f"person-monitor-taiwan-keywords-{person.id}",
+                height=70,
+            )
+            domains_input = st.text_area(
+                "搜尋網域（逗號或換行分隔）" if lang == "zh-TW" else "Domains (comma/new line separated)",
+                value="\n".join(monitor_config.get("domains") or []),
+                key=f"person-monitor-domains-{person.id}",
+                height=70,
+            )
+            daily_time = st.text_input(
+                "每日執行時間（HH:MM，台北時間）" if lang == "zh-TW" else "Daily run time (HH:MM, Taipei time)",
+                value=str(monitor_config.get("daily_time") or "09:00"),
+                key=f"person-monitor-daily-time-{person.id}",
+            )
+            lookback_days = st.number_input(
+                "搜尋回溯天數" if lang == "zh-TW" else "Lookback days",
+                min_value=1,
+                max_value=3650,
+                value=int(monitor_config.get("lookback_days") or 30),
+                step=1,
+                key=f"person-monitor-lookback-days-{person.id}",
+            )
+            col_save, col_run = st.columns(2)
+            with col_save:
+                save_monitor = st.button("儲存監測設定" if lang == "zh-TW" else "Save monitor settings", key=f"save-monitor-{person.id}")
+            with col_run:
+                run_monitor = st.button("立即執行監測" if lang == "zh-TW" else "Run now", key=f"run-monitor-{person.id}")
+
+            if save_monitor:
+                person_keywords = [item.strip() for item in re.split(r"[\n,，、;/]+", person_keywords_input or "") if item.strip()]
+                taiwan_keywords = [item.strip() for item in re.split(r"[\n,，、;/]+", taiwan_keywords_input or "") if item.strip()]
+                domains = [item.strip() for item in re.split(r"[\n,，、;/]+", domains_input or "") if item.strip()]
+                monitor_service.save_person_monitor_config(
+                    person,
+                    enabled=enabled,
+                    person_keywords=person_keywords,
+                    taiwan_keywords=taiwan_keywords,
+                    domains=domains,
+                    daily_time=daily_time,
+                    lookback_days=int(lookback_days),
+                )
+                session.flush()
+                session.commit()
+                st.session_state[monitor_flash_key] = "已儲存監測設定" if lang == "zh-TW" else "Monitor settings saved"
+                st.rerun()
+
+            if run_monitor:
+                person_keywords = [item.strip() for item in re.split(r"[\n,，、;/]+", person_keywords_input or "") if item.strip()]
+                taiwan_keywords = [item.strip() for item in re.split(r"[\n,，、;/]+", taiwan_keywords_input or "") if item.strip()]
+                domains = [item.strip() for item in re.split(r"[\n,，、;/]+", domains_input or "") if item.strip()]
+                monitor_service.save_person_monitor_config(
+                    person,
+                    enabled=enabled,
+                    person_keywords=person_keywords,
+                    taiwan_keywords=taiwan_keywords,
+                    domains=domains,
+                    daily_time=daily_time,
+                    lookback_days=int(lookback_days),
+                )
+                session.flush()
+                session.commit()
+                # Run directly in this request (with spinner) instead of queuing,
+                # so the user gets immediate feedback without waiting for the scheduler.
+                spinner_msg = "正在執行監測搜尋，請稍候…" if lang == "zh-TW" else "Running monitor search, please wait…"
+                with st.spinner(spinner_msg):
+                    run_result = monitor_service.run_for_person(person.id, trigger="manual")
+                    session.commit()
+                if run_result.ok:
+                    skipped = run_result.skipped_existing or 0
+                    skipped_note = f"、略過（已存在）{skipped} 篇" if skipped else ""
+                    skipped_note_en = f", skipped existing: {skipped}" if skipped else ""
+                    st.session_state[monitor_flash_key] = (
+                        f"監測完成：找到 {run_result.found} 篇、新增 {run_result.created} 篇、更新 {run_result.updated} 篇{skipped_note}"
+                        if lang == "zh-TW"
+                        else f"Done: found {run_result.found}, created {run_result.created}, updated {run_result.updated}{skipped_note_en}"
+                    )
+                else:
+                    st.session_state[monitor_flash_key] = (
+                        f"監測執行失敗：{run_result.error}"
+                        if lang == "zh-TW"
+                        else f"Monitor run failed: {run_result.error}"
+                    )
+                st.rerun()
+
+            latest_monitor_config = monitor_service.get_person_monitor_config(person, chinese_aliases=chinese_aliases)
+            last_result = latest_monitor_config.get("last_result") or {}
+            if last_result:
+                st.caption(
+                    (
+                        f"最近結果：找到 {int(last_result.get('found', 0))}、新增 {int(last_result.get('created', 0))}、更新 {int(last_result.get('updated', 0))}"
+                        if lang == "zh-TW"
+                        else f"Latest result: found {int(last_result.get('found', 0))}, created {int(last_result.get('created', 0))}, updated {int(last_result.get('updated', 0))}"
+                    )
+                )
+            latest_manual_run = monitor_service.get_latest_manual_run(person.id)
+            if latest_manual_run:
+                status = str(latest_manual_run.status or "")
+                if status in {"queued", "running"}:
+                    st.info(
+                        (
+                            f"手動任務 #{latest_manual_run.id} 目前狀態：{status}"
+                            if lang == "zh-TW"
+                            else f"Manual job #{latest_manual_run.id} status: {status}"
+                        )
+                    )
+            recent_runs = list(latest_monitor_config.get("runs") or [])[:5]
+            if recent_runs:
+                st.write("最近執行紀錄" if lang == "zh-TW" else "Recent runs")
+                for run in recent_runs:
+                    started_at = str(run.get("started_at") or "")
+                    found = int(run.get("found") or 0)
+                    created = int(run.get("created") or 0)
+                    updated = int(run.get("updated") or 0)
+                    st.write(f"- {started_at} ｜ found={found}, created={created}, updated={updated}")
 
         _render_db_person_highlights(
             recent_events=recent_statements,
@@ -1639,6 +2877,27 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 st.markdown(
                     f"[{congress_search_label}]({build_congress_member_search_url(person_data['full_name'], current_appointment)})"
                 )
+            caucus_memberships = (person_data.get("raw_payload") or {}).get("taiwan_caucus_memberships", [])
+            caucus_entries: list[str] = []
+            if isinstance(caucus_memberships, list):
+                seen_caucus: set[tuple[int, str]] = set()
+                for item in caucus_memberships:
+                    if not isinstance(item, dict):
+                        continue
+                    if str(item.get("group") or "").strip().lower() != "taiwan caucus":
+                        continue
+                    congress = int(item.get("congress") or 0)
+                    chamber = str(item.get("chamber") or "").strip().lower()
+                    if congress <= 0 or chamber not in {"house", "senate"}:
+                        continue
+                    key = (congress, chamber)
+                    if key in seen_caucus:
+                        continue
+                    seen_caucus.add(key)
+                    caucus_entries.append(_taiwan_caucus_option_label(congress, chamber, lang))
+            if caucus_entries:
+                caucus_label = "台灣連線"
+                st.write(f"{caucus_label}: {' / '.join(sorted(caucus_entries, reverse=True))}")
         if person_data["social_profiles"]:
             st.write(labels["social_profiles"])
             render_social_links(person_data["social_profiles"], key_prefix=f"person-social-{person_id}")
@@ -1650,6 +2909,19 @@ def render(lang: str, labels: dict[str, str]) -> None:
 
         st.write(f"{labels['primary_source']}: {source_bucket_label(person_data['source_type'], person_source_url, lang)}")
         st.write(f"{labels['official_page']}: {official_page_url or 'N/A'}")
+        all_sources_label = "所有來源" if lang == "zh-TW" else "All sources"
+        st.write(all_sources_label)
+        if person_data["source_links"]:
+            for source_item in person_data["source_links"]:
+                source_url = source_item.get("url") or ""
+                source_type = source_item.get("source_type") or None
+                parser_identity = source_item.get("parser_identity") or ""
+                display = source_bucket_label(source_type, source_url, lang)
+                if parser_identity:
+                    display = f"{display} ({parser_identity})"
+                st.markdown(f"- [{display}]({source_url})")
+        else:
+            st.write("N/A")
 
         st.write(labels["aliases"])
         st.write(", ".join(aliases) if aliases else "N/A")
@@ -1801,7 +3073,7 @@ def _render_google_sheet_fallback(lang: str, labels: dict[str, str], pending_per
         if lang != "zh-TW"
         else "目前使用 Google Sheet fallback 模式，雲端版先顯示已匯出的人物資料。"
     )
-    categories = list(PERSON_CATEGORIES.keys())
+    categories = [*_visible_person_category_keys(), "all"]
     selected_category = st.selectbox(
         labels["person_category"],
         categories,
@@ -1923,7 +3195,7 @@ def _render_google_sheet_fallback_v2(lang: str, labels: dict[str, str], pending_
         if lang != "zh-TW"
         else "目前使用 Google Sheet fallback 模式，雲端版先顯示已匯出的人物資料。"
     )
-    categories = list(PERSON_CATEGORIES.keys())
+    categories = [*_visible_person_category_keys(), "all"]
     selected_category = st.selectbox(
         labels["person_category"],
         categories,
@@ -2078,27 +3350,6 @@ def _render_sheet_person_highlights(
         st.caption("目前沒有訪台記錄。" if lang == "zh-TW" else "No Taiwan visit records yet.")
 
 
-def _list_recent_statement_event_rows(person_id: int, limit: int = 5) -> list[dict[str, object]]:
-    rows: list[dict[str, object]] = []
-    with session_scope() as session:
-        statements_service = StatementsService(session)
-        recent_events = statements_service.list_recent_taiwan_statements(int(person_id), limit=int(limit))
-        for item in recent_events:
-            event_date = item.date_published or item.date_collected
-            rows.append(
-                {
-                    "statement_id": item.id,
-                    "event_date_date": event_date,
-                    "title": item.title,
-                    "summary": item.excerpt or item.full_text or item.raw_text or item.title,
-                    "primary_source_type": item.source_type,
-                    "source_count_int": statements_service.get_source_count(item.id),
-                    "review_status": item.review_status,
-                }
-            )
-    return rows
-
-
 def _render_db_person_highlights(
     recent_events: list[Statement],
     recent_legislation: list[Legislation],
@@ -2161,6 +3412,27 @@ def _render_db_person_highlights(
             st.markdown(f"- `{event_date.strftime('%Y-%m-%d') if event_date else 'N/A'}`: {display_summary}")
     else:
         st.caption("目前沒有訪台記錄。" if lang == "zh-TW" else "No Taiwan visit records yet.")
+
+
+def _list_recent_statement_event_rows(person_id: int, limit: int = 5) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    with session_scope() as session:
+        statements_service = StatementsService(session)
+        recent_events = statements_service.list_recent_taiwan_statements(int(person_id), limit=int(limit))
+        for item in recent_events:
+            event_date = item.date_published or item.date_collected
+            rows.append(
+                {
+                    "statement_id": item.id,
+                    "event_date_date": event_date,
+                    "title": item.title,
+                    "summary": item.excerpt or item.full_text or item.raw_text or item.title,
+                    "primary_source_type": item.source_type,
+                    "source_count_int": statements_service.get_source_count(item.id),
+                    "review_status": item.review_status,
+                }
+            )
+    return rows
 
 
 def _truncate_text(value: str, limit: int) -> str:
@@ -2248,12 +3520,16 @@ def _sheet_person_matches_category(person: dict[str, object], category_key: str)
                 "u.s. space command",
             )
         )
+    if category_key == "federal_legislative":
+        return level == "federal" and branch == "legislative"
     if category_key == "federal_senate":
         return level == "federal" and branch == "legislative" and is_senate
     if category_key == "federal_house":
         return level == "federal" and branch == "legislative" and (is_house or not is_senate)
     if category_key == "state_executive":
         return level == "state" and branch == "executive"
+    if category_key == "state_legislative":
+        return level == "state" and branch == "legislative"
     if category_key == "state_senate":
         return level == "state" and branch == "legislative" and is_senate
     if category_key == "state_house":
