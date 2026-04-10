@@ -3,12 +3,12 @@ from __future__ import annotations
 from datetime import datetime
 import re
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy import text as sql_text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from tracker.models import Statement, StatementParticipant, StatementSource
+from tracker.models import Statement, StatementMention, StatementParticipant, StatementSource
 from tracker.services.dedupe_service import DedupeService
 from tracker.services.relevance_service import RelevanceService
 from tracker.utils.source_types import source_priority_key
@@ -156,6 +156,17 @@ class StatementsService:
         if statement:
             statement.review_status = review_status
             statement.updated_at = datetime.utcnow()
+
+    def delete_statement(self, statement_id: int) -> bool:
+        statement = self.session.get(Statement, int(statement_id))
+        if not statement:
+            return False
+        self.session.execute(delete(StatementSource).where(StatementSource.statement_id == statement.id))
+        self.session.execute(delete(StatementParticipant).where(StatementParticipant.statement_id == statement.id))
+        self.session.execute(delete(StatementMention).where(StatementMention.statement_id == statement.id))
+        self.session.execute(delete(Statement).where(Statement.id == statement.id))
+        self.session.flush()
+        return True
 
     def get_source_count(self, statement_id: int) -> int:
         stmt = select(func.count()).select_from(StatementSource).where(StatementSource.statement_id == statement_id)

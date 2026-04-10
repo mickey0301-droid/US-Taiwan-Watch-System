@@ -113,6 +113,9 @@ def _event_datetime_for_ui(statement) -> datetime | None:
 
 def render(lang: str, labels: dict[str, str]) -> None:
     st.header(labels["review_queue"])
+    flash_message = st.session_state.pop("event-delete-flash", None)
+    if flash_message:
+        st.success(str(flash_message))
     if use_google_sheet_primary_mode():
         if _render_google_sheet_fallback(lang, labels):
             return
@@ -227,6 +230,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 "representative_source_url": selected.source_url,
             }
             dashboard._render_event_card(index=index, event=event_payload, lang=lang)
+            _render_event_delete_controls(service=service, session=session, statement=selected, lang=lang)
 
         rows = [
             {
@@ -239,6 +243,42 @@ def render(lang: str, labels: dict[str, str]) -> None:
         ]
         summary_df = localize_dataframe(pd.DataFrame(rows), lang, value_columns=["review_status"])
         st.dataframe(summary_df, use_container_width=True)
+
+
+def _render_event_delete_controls(service: StatementsService, session, statement, lang: str) -> None:
+    label = "編輯 / 刪除" if lang == "zh-TW" else "Edit / Delete"
+    confirm_label = (
+        f"我確認要刪除事件 #{statement.id}"
+        if lang == "zh-TW"
+        else f"I confirm deleting event #{statement.id}"
+    )
+    button_label = "刪除此事件" if lang == "zh-TW" else "Delete this event"
+    warning = (
+        "刪除後會移除此事件、來源、人物關聯與 mention 紀錄。這個動作無法在介面中復原。"
+        if lang == "zh-TW"
+        else "Deleting removes this event, sources, person links, and mention records. This cannot be undone in the UI."
+    )
+    with st.expander(label):
+        st.warning(warning)
+        confirmed = st.checkbox(confirm_label, key=f"delete-statement-confirm-{statement.id}")
+        if st.button(button_label, key=f"delete-statement-button-{statement.id}", disabled=not confirmed):
+            title = str(getattr(statement, "title", "") or "").strip()
+            deleted = service.delete_statement(int(statement.id))
+            if deleted:
+                session.commit()
+                display_title = title[:80] + ("..." if len(title) > 80 else "")
+                st.session_state["event-delete-flash"] = (
+                    f"已刪除事件 #{statement.id}：{display_title}"
+                    if lang == "zh-TW"
+                    else f"Deleted event #{statement.id}: {display_title}"
+                )
+            else:
+                st.session_state["event-delete-flash"] = (
+                    f"事件 #{statement.id} 已不存在"
+                    if lang == "zh-TW"
+                    else f"Event #{statement.id} no longer exists"
+                )
+            st.rerun()
 
 
 def _render_google_sheet_fallback(lang: str, labels: dict[str, str]) -> bool:
