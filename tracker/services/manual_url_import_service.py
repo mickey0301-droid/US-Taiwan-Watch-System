@@ -524,13 +524,7 @@ class ManualUrlImportService:
             return None
 
     def _fetch_page(self, source_url: str) -> dict[str, object]:
-        response = httpx.get(
-            source_url,
-            timeout=25.0,
-            follow_redirects=True,
-            trust_env=False,
-            headers=self.http_headers,
-        )
+        response = self._get_with_ssl_fallback(source_url)
         response.raise_for_status()
         content_type = str(response.headers.get("content-type") or "").lower()
         final_url = str(response.url)
@@ -546,6 +540,24 @@ class ManualUrlImportService:
             "published_at": published_at,
             "body": body,
         }
+
+    def _get_with_ssl_fallback(self, source_url: str) -> httpx.Response:
+        request_kwargs = {
+            "timeout": 25.0,
+            "follow_redirects": True,
+            "trust_env": False,
+            "headers": self.http_headers,
+        }
+        try:
+            return httpx.get(source_url, **request_kwargs)
+        except httpx.ConnectError as exc:
+            if not self._is_ssl_certificate_error(exc):
+                raise
+            return httpx.get(source_url, verify=False, **request_kwargs)
+
+    def _is_ssl_certificate_error(self, exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "certificate_verify_failed" in message or "certificate verify failed" in message
 
     def _extract_pdf_page(self, response: httpx.Response) -> dict[str, object]:
         final_url = str(response.url)
