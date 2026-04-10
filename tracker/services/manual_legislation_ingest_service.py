@@ -155,58 +155,83 @@ class ManualLegislationIngestService:
         return urls
 
     def _import_congress_bill(self, parsed: ParsedCongressBillUrl, result: ManualLegislationBatchResult) -> None:
-        try:
-            existing = self._find_existing_congress_bill(parsed)
-            payload = self._congress_payload(parsed, existing)
-            legislation, created = self.legislation_service.upsert_legislation(payload)
-            self.session.flush()
+        last_exc: Exception | None = None
+        for attempt in range(2):
+            transaction = self.session.begin_nested()
+            try:
+                self._import_single_congress_bill(parsed, result)
+                transaction.commit()
+                return
+            except Exception as exc:
+                transaction.rollback()
+                last_exc = exc
+                if attempt == 0 and _looks_like_primary_key_collision(exc):
+                    sync_postgres_id_sequences(
+                        self.session,
+                        (
+                            "legislation",
+                            "legislation_sources",
+                            "legislation_sponsors",
+                            "persons",
+                            "aliases",
+                        ),
+                    )
+                    continue
+                break
 
-            if created:
-                result.created += 1
-            else:
-                result.updated += 1
-
-            enrichment = self.details_service.enrich_legislation(legislation)
-            detail_errors = list(enrichment.errors or [])
-            ai_applied = False
-            ai_sponsors_added = 0
-            ai_cosponsors_added = 0
-            if detail_errors:
-                ai_applied, ai_sponsors_added, ai_cosponsors_added = self._apply_ai_fallback(legislation, parsed)
-                if ai_applied:
-                    result.ai_detail_ok += 1
-                    result.sponsors_added += ai_sponsors_added
-                    result.cosponsors_added += ai_cosponsors_added
-                else:
-                    result.detail_failed += 1
-                    result.errors.extend(f"{parsed.bill_number}: {error}" for error in detail_errors)
-            else:
-                result.detail_ok += 1
-                result.sponsors_added += int(enrichment.sponsors_added or 0)
-                result.cosponsors_added += int(enrichment.cosponsors_added or 0)
-
-            result.items.append(
-                {
-                    "kind": "congress",
-                    "status": "ok",
-                    "url": parsed.input_url,
-                    "official_url": parsed.official_url,
-                    "legislation_id": int(legislation.id),
-                    "bill_number": legislation.bill_number,
-                    "title": legislation.title,
-                    "created": bool(created),
-                    "detail_ok": not detail_errors,
-                    "ai_details_used": bool(ai_applied),
-                    "detail_errors": detail_errors,
-                    "sponsors_added": int(enrichment.sponsors_added or 0) + ai_sponsors_added,
-                    "cosponsors_added": int(enrichment.cosponsors_added or 0) + ai_cosponsors_added,
-                }
-            )
-        except Exception as exc:
+        if last_exc is not None:
             result.failed += 1
-            error = f"{parsed.input_url}: {type(exc).__name__}: {exc}"
+            error = f"{parsed.input_url}: {type(last_exc).__name__}: {last_exc}"
             result.errors.append(error)
             result.items.append({"kind": "congress", "status": "failed", "url": parsed.input_url, "error": error})
+
+    def _import_single_congress_bill(self, parsed: ParsedCongressBillUrl, result: ManualLegislationBatchResult) -> None:
+        existing = self._find_existing_congress_bill(parsed)
+        payload = self._congress_payload(parsed, existing)
+        legislation, created = self.legislation_service.upsert_legislation(payload)
+        self.session.flush()
+
+        if created:
+            result.created += 1
+        else:
+            result.updated += 1
+
+        enrichment = self.details_service.enrich_legislation(legislation)
+        detail_errors = list(enrichment.errors or [])
+        ai_applied = False
+        ai_sponsors_added = 0
+        ai_cosponsors_added = 0
+        if detail_errors:
+            ai_applied, ai_sponsors_added, ai_cosponsors_added = self._apply_ai_fallback(legislation, parsed)
+            if ai_applied:
+                result.ai_detail_ok += 1
+                result.sponsors_added += ai_sponsors_added
+                result.cosponsors_added += ai_cosponsors_added
+            else:
+                result.detail_failed += 1
+                result.errors.extend(f"{parsed.bill_number}: {error}" for error in detail_errors)
+        else:
+            result.detail_ok += 1
+            result.sponsors_added += int(enrichment.sponsors_added or 0)
+            result.cosponsors_added += int(enrichment.cosponsors_added or 0)
+
+        result.items.append(
+            {
+                "kind": "congress",
+                "status": "ok",
+                "url": parsed.input_url,
+                "official_url": parsed.official_url,
+                "legislation_id": int(legislation.id),
+                "bill_number": legislation.bill_number,
+                "title": legislation.title,
+                "created": bool(created),
+                "detail_ok": not detail_errors,
+                "ai_details_used": bool(ai_applied),
+                "detail_errors": detail_errors,
+                "sponsors_added": int(enrichment.sponsors_added or 0) + ai_sponsors_added,
+                "cosponsors_added": int(enrichment.cosponsors_added or 0) + ai_cosponsors_added,
+            }
+        )
 
     def _congress_payload(self, parsed: ParsedCongressBillUrl, existing: Legislation | None) -> dict[str, object]:
         title = f"{parsed.bill_number} ({parsed.congress}th Congress)"
@@ -374,6 +399,11 @@ def parse_congress_bill_url(url: str) -> ParsedCongressBillUrl | None:
 
     return None
 
+
+
+def _looks_like_primary_key_collision(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "duplicate key value" in message and "_pkey" in message
 
 def _normalize_url(value: str) -> str:
     text = str(value or "").strip()

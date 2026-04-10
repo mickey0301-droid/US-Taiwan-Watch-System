@@ -364,6 +364,130 @@ class ManualUrlImportService:
     def import_legislation_from_urls(self, raw_urls: str) -> ManualImportResult:
         urls = self.parse_urls(raw_urls)
         result = ManualImportResult(items=[])
+        self._sync_legislation_import_sequences()
+        for url in urls:
+            last_exc: Exception | None = None
+            for attempt in range(2):
+                transaction = self.session.begin_nested()
+                try:
+                    item, created = self._import_single_legislation_url(url)
+                    transaction.commit()
+                    if created:
+                        result.created += 1
+                    else:
+                        result.updated += 1
+                    result.items.append(item)
+                    break
+                except Exception as exc:
+                    transaction.rollback()
+                    last_exc = exc
+                    if attempt == 0 and self._looks_like_primary_key_collision(exc):
+                        self._sync_legislation_import_sequences()
+                        continue
+                    result.failed += 1
+                    result.items.append({"status": "failed", "url": url, "error": f"{type(exc).__name__}: {exc}"})
+                    break
+            else:
+                if last_exc is not None:
+                    result.failed += 1
+                    result.items.append({"status": "failed", "url": url, "error": f"{type(last_exc).__name__}: {last_exc}"})
+        return result
+
+    def _import_single_legislation_url(self, url: str) -> tuple[dict[str, Any], bool]:
+        page = self._fetch_page(url)
+        final_url = str(page.get("final_url") or url)
+        title = str(page.get("title") or final_url)
+        body = str(page.get("body") or "")
+        meta = self._classify_legislation(final_url, title, body)
+        ai_details = self.ai_assist_service.extract_legislation_metadata(title=title, body=body, source_url=final_url) or {}
+        ai_scope = {}
+        if ai_details:
+            ai_scope = {
+                "level": ai_details.get("level"),
+                "chamber": ai_details.get("chamber"),
+                "legislation_type": ai_details.get("legislation_type"),
+            }
+        else:
+            ai_scope = self.ai_assist_service.classify_legislation_scope(title=title, body=body, source_url=final_url) or {}
+
+        if ai_scope.get("level") in {"federal", "state", "other"}:
+            meta["level"] = ai_scope["level"]
+        if ai_scope.get("chamber") in {"senate", "house"}:
+            meta["chamber"] = ai_scope["chamber"]
+        if ai_scope.get("legislation_type") and ai_scope["legislation_type"] != "other":
+            meta["legislation_type"] = ai_scope["legislation_type"]
+        if ai_details.get("title"):
+            meta["title"] = ai_details["title"]
+        if ai_details.get("bill_number"):
+            meta["bill_number"] = ai_details["bill_number"]
+        if ai_details.get("jurisdiction_name"):
+            meta["jurisdiction_name"] = ai_details["jurisdiction_name"]
+
+        existing_legislation = self._find_legislation_by_url(final_url)
+        page_date = page.get("published_at").date() if isinstance(page.get("published_at"), datetime) else None
+        introduced_date = self._date_from_ai(ai_details.get("introduced_date")) or page_date
+        last_action_date = self._date_from_ai(ai_details.get("last_action_date")) or page_date
+        taiwan_related = ai_details.get("is_taiwan_related")
+        if not isinstance(taiwan_related, bool):
+            taiwan_related = self._is_taiwan_related(f"{title} {body}")
+        relevance_score = ai_details.get("relevance_score")
+        if not isinstance(relevance_score, (int, float)):
+            relevance_score = 1.0 if taiwan_related else 0.0
+        payload = {
+            "title": meta["title"],
+            "bill_number": meta.get("bill_number"),
+            "bill_slug": existing_legislation.bill_slug if existing_legislation else meta.get("bill_slug"),
+            "legislation_type": meta.get("legislation_type"),
+            "level": meta.get("level", "other"),
+            "jurisdiction_name": meta.get("jurisdiction_name"),
+            "chamber": meta.get("chamber"),
+            "summary": ai_details.get("summary") or body[:1800] or None,
+            "status_text": ai_details.get("status_text"),
+            "introduced_date": introduced_date,
+            "last_action_date": last_action_date,
+            "source_url": final_url,
+            "source_type": self._source_type(final_url),
+            "parser_identity": "manual_url_legislation_batch_v1",
+            "relevance_score": float(relevance_score),
+            "is_taiwan_related": bool(taiwan_related),
+            "raw_payload": {
+                "seeded_from": "manual_url_legislation_batch_v1",
+                "manual_input_url": url,
+                "auto_classification": meta,
+                "ai_classification": ai_scope,
+                "ai_extracted_metadata": ai_details,
+            },
+            "sources": [
+                {
+                    "source_url": final_url,
+                    "source_type": self._source_type(final_url),
+                    "source_title": title,
+                    "parser_identity": "manual_url_legislation_batch_v1",
+                    "raw_payload": {"manual_input_url": url},
+                }
+            ],
+            "sponsors": self._ai_legislation_sponsors(ai_details, final_url),
+        }
+        legislation, created = self.legislation_service.upsert_legislation(payload)
+        self.session.flush()
+        skipped_sponsors = list(payload.get("skipped_sponsors") or [])
+        return (
+            {
+                "status": "ok",
+                "url": url,
+                "legislation_id": legislation.id,
+                "title": legislation.title,
+                "bill_number": legislation.bill_number,
+                "created": bool(created),
+                "ai_classification": ai_scope,
+                "ai_details_used": bool(ai_details),
+                "ai_sponsors": max(0, len(payload["sponsors"]) - len(skipped_sponsors)),
+                "skipped_sponsors": skipped_sponsors,
+            },
+            bool(created),
+        )
+
+    def _sync_legislation_import_sequences(self) -> None:
         sync_postgres_id_sequences(
             self.session,
             (
@@ -374,107 +498,10 @@ class ManualUrlImportService:
                 "aliases",
             ),
         )
-        for url in urls:
-            try:
-                page = self._fetch_page(url)
-                final_url = str(page.get("final_url") or url)
-                title = str(page.get("title") or final_url)
-                body = str(page.get("body") or "")
-                meta = self._classify_legislation(final_url, title, body)
-                ai_details = self.ai_assist_service.extract_legislation_metadata(title=title, body=body, source_url=final_url) or {}
-                ai_scope = {}
-                if ai_details:
-                    ai_scope = {
-                        "level": ai_details.get("level"),
-                        "chamber": ai_details.get("chamber"),
-                        "legislation_type": ai_details.get("legislation_type"),
-                    }
-                else:
-                    ai_scope = self.ai_assist_service.classify_legislation_scope(title=title, body=body, source_url=final_url) or {}
 
-                if ai_scope.get("level") in {"federal", "state", "other"}:
-                    meta["level"] = ai_scope["level"]
-                if ai_scope.get("chamber") in {"senate", "house"}:
-                    meta["chamber"] = ai_scope["chamber"]
-                if ai_scope.get("legislation_type") and ai_scope["legislation_type"] != "other":
-                    meta["legislation_type"] = ai_scope["legislation_type"]
-                if ai_details.get("title"):
-                    meta["title"] = ai_details["title"]
-                if ai_details.get("bill_number"):
-                    meta["bill_number"] = ai_details["bill_number"]
-                if ai_details.get("jurisdiction_name"):
-                    meta["jurisdiction_name"] = ai_details["jurisdiction_name"]
-
-                existing_legislation = self._find_legislation_by_url(final_url)
-                page_date = page.get("published_at").date() if isinstance(page.get("published_at"), datetime) else None
-                introduced_date = self._date_from_ai(ai_details.get("introduced_date")) or page_date
-                last_action_date = self._date_from_ai(ai_details.get("last_action_date")) or page_date
-                taiwan_related = ai_details.get("is_taiwan_related")
-                if not isinstance(taiwan_related, bool):
-                    taiwan_related = self._is_taiwan_related(f"{title} {body}")
-                relevance_score = ai_details.get("relevance_score")
-                if not isinstance(relevance_score, (int, float)):
-                    relevance_score = 1.0 if taiwan_related else 0.0
-                payload = {
-                    "title": meta["title"],
-                    "bill_number": meta.get("bill_number"),
-                    "bill_slug": existing_legislation.bill_slug if existing_legislation else meta.get("bill_slug"),
-                    "legislation_type": meta.get("legislation_type"),
-                    "level": meta.get("level", "other"),
-                    "jurisdiction_name": meta.get("jurisdiction_name"),
-                    "chamber": meta.get("chamber"),
-                    "summary": ai_details.get("summary") or body[:1800] or None,
-                    "status_text": ai_details.get("status_text"),
-                    "introduced_date": introduced_date,
-                    "last_action_date": last_action_date,
-                    "source_url": final_url,
-                    "source_type": self._source_type(final_url),
-                    "parser_identity": "manual_url_legislation_batch_v1",
-                    "relevance_score": float(relevance_score),
-                    "is_taiwan_related": bool(taiwan_related),
-                    "raw_payload": {
-                        "seeded_from": "manual_url_legislation_batch_v1",
-                        "manual_input_url": url,
-                        "auto_classification": meta,
-                        "ai_classification": ai_scope,
-                        "ai_extracted_metadata": ai_details,
-                    },
-                    "sources": [
-                        {
-                            "source_url": final_url,
-                            "source_type": self._source_type(final_url),
-                            "source_title": title,
-                            "parser_identity": "manual_url_legislation_batch_v1",
-                            "raw_payload": {"manual_input_url": url},
-                        }
-                    ],
-                    "sponsors": self._ai_legislation_sponsors(ai_details, final_url),
-                }
-                legislation, created = self.legislation_service.upsert_legislation(payload)
-                self.session.flush()
-                if created:
-                    result.created += 1
-                else:
-                    result.updated += 1
-                skipped_sponsors = list(payload.get("skipped_sponsors") or [])
-                result.items.append(
-                    {
-                        "status": "ok",
-                        "url": url,
-                        "legislation_id": legislation.id,
-                        "title": legislation.title,
-                        "bill_number": legislation.bill_number,
-                        "created": bool(created),
-                        "ai_classification": ai_scope,
-                        "ai_details_used": bool(ai_details),
-                        "ai_sponsors": max(0, len(payload["sponsors"]) - len(skipped_sponsors)),
-                        "skipped_sponsors": skipped_sponsors,
-                    }
-                )
-            except Exception as exc:
-                result.failed += 1
-                result.items.append({"status": "failed", "url": url, "error": f"{type(exc).__name__}: {exc}"})
-        return result
+    def _looks_like_primary_key_collision(self, exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "duplicate key value" in message and "_pkey" in message
 
     def _normalize_url(self, source_url: str) -> str:
         value = str(source_url or "").strip()
