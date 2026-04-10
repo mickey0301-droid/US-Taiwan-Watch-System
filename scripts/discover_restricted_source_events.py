@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Iterable
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -61,6 +61,123 @@ def _contains_taiwan_substantive(text: str) -> bool:
     """
     cleaned = _TAIWAN_TIMEZONE_RE.sub("", text)
     return _contains_any(cleaned, TAIWAN_KEYWORDS)
+
+
+def _contains_person_substantive(text: str, person_terms: Iterable[str]) -> bool:
+    lowered = text.casefold()
+    for term in person_terms:
+        candidate = (term or "").strip()
+        if not candidate:
+            continue
+        if candidate in {"范斯", "範斯"}:
+            if re.search(rf"{re.escape(candidate)}(?!高)", text):
+                return True
+            continue
+        if candidate.casefold() == "vance":
+            if "jd vance" in lowered or "j.d. vance" in lowered:
+                return True
+            continue
+        if candidate.casefold() in lowered:
+            return True
+    return False
+
+
+def _domain_from_url(value: str) -> str:
+    host = urlparse(str(value or "")).netloc.lower()
+    return host.removeprefix("www.")
+
+
+def _entry_published_date(entry: object) -> date | None:
+    published_struct = getattr(entry, "published_parsed", None) or getattr(entry, "updated_parsed", None)
+    if published_struct is None:
+        return None
+    try:
+        return datetime(*published_struct[:6]).date()
+    except Exception:
+        return None
+
+
+def _strip_google_source_suffix(title: str) -> str:
+    return re.sub(r"\s+[-|]\s+[^-|]+$", "", str(title or "")).strip()
+
+
+def _google_entry_summary_text(value: str) -> str:
+    soup = BeautifulSoup(str(value or ""), "html.parser")
+    for source_label in soup.select("font"):
+        source_label.decompose()
+    return _clean_text(soup.get_text(" ", strip=True))
+
+
+def _discover_google_news_report_hits(
+    client: httpx.Client,
+    person_terms: list[str],
+    start: date,
+    end: date,
+    hl: str = "zh-TW",
+    gl: str = "TW",
+    ceid: str = "TW:zh-Hant",
+) -> list[EventHit]:
+    if not _HAS_FEEDPARSER:
+        return []
+
+    focused_terms = [term for term in person_terms if term and term.strip()][:6]
+    if not focused_terms:
+        return []
+
+    urls_seen: set[str] = set()
+    hits: list[EventHit] = []
+    current = date(start.year, start.month, 1)
+    while current < end:
+        next_month = date(current.year + 1, 1, 1) if current.month == 12 else date(current.year, current.month + 1, 1)
+        slice_end = min(next_month, end + timedelta(days=1))
+        for term in focused_terms:
+            excluded = " -范斯高" if term in {"范斯", "範斯"} else ""
+            q = (
+                f'"{term}" (台灣 OR 臺灣 OR 台海 OR Taiwan OR "台灣議題")'
+                f"{excluded} after:{current.isoformat()} before:{slice_end.isoformat()}"
+            )
+            rss_url = (
+                f"{GOOGLE_NEWS_RSS_BASE}"
+                f"?q={quote_plus(q)}&hl={quote_plus(hl)}&gl={quote_plus(gl)}&ceid={quote_plus(ceid)}"
+            )
+            try:
+                resp = client.get(rss_url, timeout=25.0, follow_redirects=True)
+                parsed = _feedparser.parse(resp.text)
+            except Exception:
+                continue
+
+            for entry in getattr(parsed, "entries", []):
+                raw_title = str(getattr(entry, "title", "") or "").strip()
+                title = _strip_google_source_suffix(raw_title) or raw_title
+                summary = _google_entry_summary_text(str(getattr(entry, "summary", "") or ""))
+                text = _clean_text(f"{title} {summary}")
+                if not _contains_person_substantive(text, person_terms):
+                    continue
+                if not _contains_taiwan_substantive(text):
+                    continue
+                published = _entry_published_date(entry)
+                if not _in_range(published, start, end):
+                    continue
+                link = str(getattr(entry, "link", "") or "").strip()
+                if not link or link in urls_seen:
+                    continue
+                urls_seen.add(link)
+                source = getattr(entry, "source", None)
+                source_href = str(getattr(source, "href", "") or "").strip()
+                source_domain = _domain_from_url(source_href) or _domain_from_url(link) or "news.google.com"
+                hits.append(
+                    EventHit(
+                        source=source_domain,
+                        url=link,
+                        title=title or link,
+                        published_date=published.isoformat() if published else None,
+                        excerpt=summary[:EXCERPT_MAX_LEN],
+                    )
+                )
+        current = next_month
+        time.sleep(0.2)
+
+    return dedupe_hits(hits)
 
 
 def _parse_ymd(value: str) -> date | None:
@@ -239,17 +356,12 @@ def _discover_cna_urls_via_google_rss(
 
         for entry in getattr(parsed, "entries", []):
             raw_link = str(getattr(entry, "link", "") or "").strip()
-            # Google News wraps links in its own redirect – resolve them.
-            final = raw_link
-            if "news.google.com" in raw_link:
-                try:
-                    r = client.get(raw_link, timeout=15.0, follow_redirects=True)
-                    final = str(r.url)
-                except Exception:
-                    pass
-            if "cna.com.tw/news/" in final and final not in seen:
-                seen.add(final)
-                urls.append(final)
+            # Google RSS often returns opaque news.google.com wrappers. Do not
+            # chase them here; the broader Google News layer keeps those as
+            # media report hits. This CNA layer only accepts real CNA URLs.
+            if "cna.com.tw/news/" in raw_link and raw_link not in seen:
+                seen.add(raw_link)
+                urls.append(raw_link)
 
         current = next_month
         time.sleep(0.5)  # be polite to Google
@@ -384,7 +496,7 @@ def discover_cna(
         body = _clean_text(" ".join(node.get_text(" ", strip=True) for node in article.select("article p, .paragraph p, .paragraph")))
         merged = _clean_text(f"{title} {body}")
         # Person must appear in title OR in non-link body text.
-        if not _contains_any(title, person_terms) and not _contains_any(body, person_terms):
+        if not _contains_person_substantive(title, person_terms) and not _contains_person_substantive(body, person_terms):
             continue
         # Use substantive-Taiwan check: strips "台灣時間" before evaluating so
         # articles that only mention the Taiwan timezone are correctly rejected.
@@ -567,6 +679,7 @@ def main() -> None:
                         help="Use a rolling N-day window instead of --year/--months (0 = use year/months)")
     parser.add_argument("--no-wnewslist", action="store_true", help="Disable CNA WNewsList API layer")
     parser.add_argument("--no-google-rss", action="store_true", help="Disable Google News RSS layer")
+    parser.add_argument("--news-only", action="store_true", help="Only run broad Google News media-report discovery")
     args = parser.parse_args()
 
     if args.lookback_days > 0:
@@ -587,17 +700,23 @@ def main() -> None:
     headers = {"User-Agent": USER_AGENT}
     with httpx.Client(headers=headers, follow_redirects=True) as client:
         with httpx.Client(headers=headers, follow_redirects=True, verify=False) as insecure_client:
-            cna_hits = discover_cna(
-                client, insecure_client,
-                person_terms=person_terms,
-                start=start, end=end,
-                use_wnewslist=not args.no_wnewslist,
-                use_google_rss=not args.no_google_rss,
-            )
-            mofa_hits = discover_mofa(client, insecure_client, person_terms=person_terms, start=start, end=end, max_pages=args.max_pages)
-            president_hits = discover_president(client, insecure_client, person_terms=person_terms, start=start, end=end, max_pages=args.max_pages)
+            if args.news_only:
+                cna_hits = []
+                mofa_hits = []
+                president_hits = []
+            else:
+                cna_hits = discover_cna(
+                    client, insecure_client,
+                    person_terms=person_terms,
+                    start=start, end=end,
+                    use_wnewslist=not args.no_wnewslist,
+                    use_google_rss=False,
+                )
+                mofa_hits = discover_mofa(client, insecure_client, person_terms=person_terms, start=start, end=end, max_pages=args.max_pages)
+                president_hits = discover_president(client, insecure_client, person_terms=person_terms, start=start, end=end, max_pages=args.max_pages)
+            news_hits = [] if args.no_google_rss else _discover_google_news_report_hits(client, person_terms=person_terms, start=start, end=end)
 
-    all_hits = dedupe_hits(cna_hits + mofa_hits + president_hits)
+    all_hits = dedupe_hits(cna_hits + mofa_hits + president_hits + news_hits)
     payload = {
         "person_terms": person_terms,
         "range_start": start.isoformat(),
@@ -606,6 +725,7 @@ def main() -> None:
             "cna": len(cna_hits),
             "mofa": len(mofa_hits),
             "president": len(president_hits),
+            "google_news": len(news_hits),
             "total": len(all_hits),
         },
         "hits": [hit.__dict__ for hit in all_hits],
