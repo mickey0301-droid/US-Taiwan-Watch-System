@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import re
 from dataclasses import dataclass
@@ -21,6 +22,11 @@ from tracker.services.statements_service import StatementsService
 from tracker.utils.source_types import is_government_url
 from tracker.utils.text import compact_whitespace
 from tracker.utils.web import parse_datetime
+
+try:
+    from pypdf import PdfReader
+except Exception:  # pragma: no cover - dependency is optional at runtime
+    PdfReader = None
 
 
 @dataclass
@@ -106,6 +112,19 @@ class ManualUrlImportService:
         "Virginia", "Washington", "West Virginia", "Wisconsin", "Wyoming", "District of Columbia",
         "Guam", "Puerto Rico", "American Samoa", "Northern Mariana Islands", "U.S. Virgin Islands",
     ]
+    STATE_ABBREVIATIONS = {
+        "al": "Alabama", "ak": "Alaska", "az": "Arizona", "ar": "Arkansas", "ca": "California",
+        "co": "Colorado", "ct": "Connecticut", "de": "Delaware", "fl": "Florida", "ga": "Georgia",
+        "hi": "Hawaii", "id": "Idaho", "il": "Illinois", "in": "Indiana", "ia": "Iowa",
+        "ks": "Kansas", "ky": "Kentucky", "la": "Louisiana", "me": "Maine", "md": "Maryland",
+        "ma": "Massachusetts", "mi": "Michigan", "mn": "Minnesota", "ms": "Mississippi", "mo": "Missouri",
+        "mt": "Montana", "ne": "Nebraska", "nv": "Nevada", "nh": "New Hampshire", "nj": "New Jersey",
+        "nm": "New Mexico", "ny": "New York", "nc": "North Carolina", "nd": "North Dakota", "oh": "Ohio",
+        "ok": "Oklahoma", "or": "Oregon", "pa": "Pennsylvania", "ri": "Rhode Island", "sc": "South Carolina",
+        "sd": "South Dakota", "tn": "Tennessee", "tx": "Texas", "ut": "Utah", "vt": "Vermont",
+        "va": "Virginia", "wa": "Washington", "wv": "West Virginia", "wi": "Wisconsin", "wy": "Wyoming",
+        "dc": "District of Columbia",
+    }
 
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -466,16 +485,56 @@ class ManualUrlImportService:
             headers=self.http_headers,
         )
         response.raise_for_status()
+        content_type = str(response.headers.get("content-type") or "").lower()
+        final_url = str(response.url)
+        if "pdf" in content_type or final_url.lower().split("?", 1)[0].endswith(".pdf"):
+            return self._extract_pdf_page(response)
         soup = BeautifulSoup(response.text, "html.parser")
-        title = self._extract_title(soup, fallback=str(response.url))
+        title = self._extract_title(soup, fallback=final_url)
         published_at = self._extract_published_at(soup)
         body = self._extract_body_text(soup)
         return {
-            "final_url": str(response.url),
+            "final_url": final_url,
             "title": title,
             "published_at": published_at,
             "body": body,
         }
+
+    def _extract_pdf_page(self, response: httpx.Response) -> dict[str, object]:
+        final_url = str(response.url)
+        title = self._title_from_url(final_url)
+        body = ""
+        if PdfReader is not None:
+            try:
+                reader = PdfReader(io.BytesIO(response.content))
+                metadata_title = getattr(reader.metadata, "title", None) if reader.metadata else None
+                if metadata_title and str(metadata_title).strip():
+                    title = compact_whitespace(str(metadata_title))
+                pages: list[str] = []
+                for page in reader.pages[:60]:
+                    page_text = compact_whitespace(page.extract_text() or "")
+                    if page_text:
+                        pages.append(page_text)
+                body = compact_whitespace(" ".join(pages))
+            except Exception:
+                body = ""
+        published_at = parse_datetime(str(response.headers.get("last-modified") or ""))
+        return {
+            "final_url": final_url,
+            "title": title,
+            "published_at": published_at,
+            "body": body,
+        }
+
+    def _title_from_url(self, source_url: str) -> str:
+        parsed = urlparse(source_url)
+        path = parsed.path.rstrip("/")
+        if not path:
+            return source_url
+        filename = unquote(path.rsplit("/", 1)[-1])
+        filename = re.sub(r"\.pdf$", "", filename, flags=re.I)
+        filename = filename.replace("-", " ").replace("_", " ").strip()
+        return compact_whitespace(filename) or source_url
 
     def _extract_title(self, soup: BeautifulSoup, fallback: str) -> str:
         meta_candidates = [
@@ -713,19 +772,32 @@ class ManualUrlImportService:
 
         merged_text = f"{title} {body} {source_url}"
         lower = merged_text.lower()
-        level = "state" if any(token in lower for token in ("state senate", "state house", "general assembly", "legislature")) else "other"
+        level = "state" if any(token in lower for token in ("state senate", "state house", "general assembly", "legislature", ".state.")) else "other"
+        bill_number = self._extract_bill_number(title, f"{body} {source_url}")
         chamber = None
-        if "senate" in lower:
+        if bill_number and bill_number.upper().startswith(("SB", "SJR", "SCR", "SR")):
+            chamber = "senate"
+        elif bill_number and bill_number.upper().startswith(("HB", "HJR", "HCR", "HR")):
+            chamber = "house"
+        elif "senate" in lower:
             chamber = "senate"
         elif "house" in lower or "assembly" in lower:
             chamber = "house"
         jurisdiction = self._extract_state_name(merged_text)
-        bill_slug = re.sub(r"[^a-z0-9]+", "-", f"{jurisdiction or 'unknown'}-{title}".lower()).strip("-")
+        if "joint resolution" in lower or (bill_number and "JR" in bill_number.upper()):
+            legislation_type = "joint_resolution"
+        elif "concurrent resolution" in lower or (bill_number and "CR" in bill_number.upper()):
+            legislation_type = "concurrent_resolution"
+        elif "resolution" in lower or (bill_number and bill_number.upper().endswith("R")):
+            legislation_type = "resolution"
+        else:
+            legislation_type = "bill"
+        bill_slug = re.sub(r"[^a-z0-9]+", "-", f"{jurisdiction or 'unknown'}-{bill_number or title}".lower()).strip("-")
         return {
             "title": title,
-            "bill_number": self._extract_bill_number(title, body),
+            "bill_number": bill_number,
             "bill_slug": bill_slug[:240] if bill_slug else None,
-            "legislation_type": "resolution" if "resolution" in lower else "bill",
+            "legislation_type": legislation_type,
             "level": level,
             "jurisdiction_name": jurisdiction,
             "chamber": chamber,
@@ -735,6 +807,13 @@ class ManualUrlImportService:
         for state in self.STATE_NAMES:
             if re.search(rf"\b{re.escape(state)}\b", text, flags=re.I):
                 return state
+        lower = str(text or "").lower()
+        for pattern in (r"\.state\.([a-z]{2})\.us", r"legiscan\.com/([a-z]{2})/"):
+            match = re.search(pattern, lower, flags=re.I)
+            if match:
+                state = self.STATE_ABBREVIATIONS.get(match.group(1).lower())
+                if state:
+                    return state
         return None
 
     def _extract_bill_number(self, title: str, body: str) -> str | None:
@@ -744,11 +823,13 @@ class ManualUrlImportService:
             r"\b(S\.?\s*\d+)\b",
             r"\b(H\.?\s*Res\.?\s*\d+)\b",
             r"\b(S\.?\s*Res\.?\s*\d+)\b",
+            r"\b((?:HB|SB|HJR|SJR|HCR|SCR|HR|SR)\s*[-.]?\s*\d+)\b",
         ]
         for pattern in patterns:
             match = re.search(pattern, text, flags=re.I)
             if match:
-                normalized = re.sub(r"\s+", " ", match.group(1)).replace(" .", ".").strip()
+                normalized = re.sub(r"\s+", " ", match.group(1)).replace(" .", ".").replace(" -", "").strip()
+                normalized = re.sub(r"\b(HB|SB|HJR|SJR|HCR|SCR|HR|SR)\s+", r"\1 ", normalized, flags=re.I)
                 return normalized
         return None
 
