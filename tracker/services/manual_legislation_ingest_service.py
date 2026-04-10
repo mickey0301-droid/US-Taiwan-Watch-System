@@ -9,7 +9,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tracker.models import Legislation, LegislationSource
+from tracker.services.ai_assist_service import AIAssistService
 from tracker.services.congress_bill_details_service import CongressBillDetailsService
+from tracker.services.legislation_ai_enrichment_service import LegislationAIEnrichmentService
 from tracker.services.legislation_service import LegislationService
 from tracker.services.manual_url_import_service import ManualUrlImportService
 from tracker.services.postgres_sequence_service import sync_postgres_id_sequences
@@ -70,6 +72,8 @@ class ManualLegislationBatchResult:
     detail_ok: int = 0
     detail_failed: int = 0
     ai_detail_ok: int = 0
+    gemini_detail_ok: int = 0
+    gemini_detail_failed: int = 0
     sponsors_added: int = 0
     cosponsors_added: int = 0
     failed: int = 0
@@ -90,6 +94,8 @@ class ManualLegislationIngestService:
         self.legislation_service = LegislationService(session)
         self.details_service = CongressBillDetailsService(session)
         self.generic_url_import_service = ManualUrlImportService(session)
+        self.gemini_enrichment_service = LegislationAIEnrichmentService(session)
+        self.ai_assist_service = AIAssistService()
 
     def import_from_urls(self, raw_urls: str | Iterable[str]) -> ManualLegislationBatchResult:
         urls = self.parse_urls(raw_urls)
@@ -127,7 +133,44 @@ class ManualLegislationIngestService:
                 if item.get("status") == "failed" and item.get("error"):
                     result.errors.append(str(item["error"]))
 
+        self._run_gemini_background_enrichment(result)
         return result
+
+    def _run_gemini_background_enrichment(self, result: ManualLegislationBatchResult) -> None:
+        if not self.ai_assist_service.gemini_enabled:
+            return
+        for item in result.items:
+            if str(item.get("status") or "") != "ok":
+                continue
+            legislation_id = item.get("legislation_id")
+            if not legislation_id:
+                continue
+            transaction = self.session.begin_nested()
+            try:
+                enrichment = self.gemini_enrichment_service.enrich_with_gemini(int(legislation_id))
+                if enrichment.ok:
+                    transaction.commit()
+                    result.gemini_detail_ok += int(enrichment.ok)
+                    result.sponsors_added += int(enrichment.sponsors_linked or 0)
+                    result.cosponsors_added += int(enrichment.cosponsors_linked or 0)
+                    item["gemini_enriched"] = True
+                    item["gemini_updated_fields"] = list(enrichment.updated_fields or [])
+                    item["gemini_sources"] = list(enrichment.sources or [])
+                    if enrichment.skipped_sponsors:
+                        item["gemini_skipped_sponsors"] = list(enrichment.skipped_sponsors)
+                else:
+                    transaction.rollback()
+                    result.gemini_detail_failed += 1
+                    item["gemini_enriched"] = False
+                    item["gemini_error"] = enrichment.message
+                    if enrichment.message:
+                        result.errors.append(f"Gemini legislation {legislation_id}: {enrichment.message}")
+            except Exception as exc:
+                transaction.rollback()
+                result.gemini_detail_failed += 1
+                item["gemini_enriched"] = False
+                item["gemini_error"] = f"{type(exc).__name__}: {exc}"
+                result.errors.append(f"Gemini legislation {legislation_id}: {type(exc).__name__}: {exc}")
 
     def parse_urls(self, raw_urls: str | Iterable[str]) -> list[str]:
         if isinstance(raw_urls, str):
