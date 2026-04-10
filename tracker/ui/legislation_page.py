@@ -91,6 +91,23 @@ def render(lang: str, labels: dict[str, str]) -> None:
         selected_type = st.selectbox(type_label, list(type_options.keys()), format_func=lambda key: type_options[key])
 
         typed_rows = _dedupe_db_legislation_rows(_filter_db_rows_by_type(all_rows, selected_type))
+        if selected_type == "state":
+            state_label = "州" if lang == "zh-TW" else "State"
+            states = sorted(
+                {
+                    str(row.jurisdiction_name or "").strip()
+                    for row in typed_rows
+                    if str(row.jurisdiction_name or "").strip()
+                }
+            )
+            if states:
+                selected_state = st.selectbox(state_label, states, key="legislation-state-filter")
+                typed_rows = [
+                    row
+                    for row in typed_rows
+                    if str(row.jurisdiction_name or "").strip() == selected_state
+                ]
+
         years = _list_years(typed_rows)
         if not years:
             st.info("目前沒有符合條件的法案。" if lang == "zh-TW" else "No legislation matches this filter.")
@@ -137,9 +154,9 @@ def _render_manual_legislation_ingest_form(session, lang: str) -> None:
 
     title = "手動批次新增法案" if lang == "zh-TW" else "Manual Bill Batch Import"
     help_text = (
-        "貼上 Congress.gov 或州議會法案網址，一行一筆。Congress.gov 會優先用官方資料補標題、摘要、狀態、提案人與共同提案人；州議會網址會抓頁面內容，並在有 OPENAI_API_KEY 時用 AI 補欄位後直接納入。"
+        "貼上 Congress.gov 或州議會法案網址，一行一筆。系統會先用 OpenAI 抽基本欄位讓法案入庫，再在有 GEMINI_API_KEY 時自動用 Gemini 補背景資料、日期、狀態與提案人來源。Congress.gov 仍會優先使用官方資料。"
         if lang == "zh-TW"
-        else "Paste Congress.gov or state legislature bill URLs, one per line. Congress.gov bills use official details first; state URLs are imported from page content and can use AI metadata extraction when OPENAI_API_KEY is configured."
+        else "Paste Congress.gov or state legislature bill URLs, one per line. Bills are first seeded with OpenAI-extracted fields, then automatically enriched with Gemini background research when GEMINI_API_KEY is configured. Congress.gov bills still prefer official details first."
     )
     with st.expander(title, expanded=False):
         st.caption(help_text)
@@ -174,11 +191,11 @@ def _render_manual_legislation_ingest_form(session, lang: str) -> None:
         level = "warning" if result.failed or result.detail_failed else "success"
         message = (
             f"法案匯入完成：新增 {result.created}、更新 {result.updated}、Congress.gov 官方補詳情 {result.detail_ok}、"
-            f"AI 補資料 {result.ai_detail_ok}、詳情未補齊 {result.detail_failed}、提案人 +{result.sponsors_added}、"
+            f"OpenAI 補資料 {result.ai_detail_ok}、Gemini 背景補強 {result.gemini_detail_ok}、Gemini 失敗 {result.gemini_detail_failed}、詳情未補齊 {result.detail_failed}、提案人 +{result.sponsors_added}、"
             f"共同提案人 +{result.cosponsors_added}、州議會/其他網址 {result.other_urls}、加入失敗 {result.failed}。"
             if lang == "zh-TW"
             else f"Bill import complete: created {result.created}, updated {result.updated}, Congress.gov official details {result.detail_ok}, "
-            f"AI details {result.ai_detail_ok}, detail incomplete {result.detail_failed}, sponsors +{result.sponsors_added}, "
+            f"OpenAI details {result.ai_detail_ok}, Gemini background enrichment {result.gemini_detail_ok}, Gemini failed {result.gemini_detail_failed}, detail incomplete {result.detail_failed}, sponsors +{result.sponsors_added}, "
             f"cosponsors +{result.cosponsors_added}, state/other URLs {result.other_urls}, import failed {result.failed}."
         )
         st.session_state[flash_key] = {
