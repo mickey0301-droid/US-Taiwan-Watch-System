@@ -5,17 +5,30 @@ import json
 import re
 import time
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Iterable
 from urllib.parse import quote_plus
 
 import httpx
 from bs4 import BeautifulSoup
 
+try:
+    import feedparser as _feedparser  # optional – used for Google News RSS layer
+    _HAS_FEEDPARSER = True
+except ImportError:
+    _HAS_FEEDPARSER = False
+
 
 USER_AGENT = "Mozilla/5.0 (compatible; UTWBot/1.0; +https://github.com/mickey0301-droid/US-Taiwan-Watch-System)"
 TAIWAN_KEYWORDS = ("台灣", "臺灣", "台海", "taiwan", "taipei")
 EXCERPT_MAX_LEN = 5000
+
+# CNA's internal JSON API – returns paginated article listings by category.
+# POST request; paginated via `pageidx`.
+CNA_WNEWSLIST_URL = "https://www.cna.com.tw/cna2018api/api/WNewsList"
+# Categories most relevant for US-officials × Taiwan stories.
+CNA_RELEVANT_CATEGORIES = ("aopl", "acn", "aipl")  # international, cross-strait, politics
+GOOGLE_NEWS_RSS_BASE = "https://news.google.com/rss/search"
 
 
 @dataclass
@@ -34,6 +47,20 @@ def _clean_text(value: str) -> str:
 def _contains_any(text: str, needles: Iterable[str]) -> bool:
     lowered = text.casefold()
     return any((needle or "").casefold() in lowered for needle in needles if needle)
+
+
+# --- Pattern for timezone-only mentions ("台灣時間" / "臺灣時間" / "台灣標準時間") ---
+_TAIWAN_TIMEZONE_RE = re.compile(r"[台臺]灣(?:標準)?時間", re.UNICODE)
+
+
+def _contains_taiwan_substantive(text: str) -> bool:
+    """Return True if `text` mentions Taiwan in a substantive way.
+
+    Strips timezone-only phrases like "台灣時間 XX:XX" before checking, so an
+    article whose only Taiwan reference is a timezone note is correctly rejected.
+    """
+    cleaned = _TAIWAN_TIMEZONE_RE.sub("", text)
+    return _contains_any(cleaned, TAIWAN_KEYWORDS)
 
 
 def _parse_ymd(value: str) -> date | None:
@@ -76,6 +103,160 @@ def _safe_get(client: httpx.Client, insecure_client: httpx.Client, url: str, tim
         return response
 
 
+def _discover_cna_urls_via_wnewslist(
+    client: httpx.Client,
+    person_terms: list[str],
+    start: date,
+    end: date,
+    categories: tuple[str, ...] = CNA_RELEVANT_CATEGORIES,
+    max_pages: int = 40,
+) -> list[str]:
+    """Collect CNA article URLs using the WNewsList JSON API.
+
+    Unlike the HTML search page (which returns only ~20 results), this API
+    supports proper pagination via ``pageidx``.  We paginate until the oldest
+    article on a page predates ``start`` or until ``max_pages`` is exhausted.
+
+    Each item in the API response includes the headline, so we can quickly
+    pre-filter by person name *without* fetching the full article.
+
+    Best suited for lookback windows up to ~90 days.  For longer ranges use
+    ``_discover_cna_urls_via_google_rss`` instead.
+    """
+    person_lower = [t.casefold() for t in person_terms if t]
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    for category in categories:
+        for page in range(1, max_pages + 1):
+            body = {
+                "action": "0",
+                "category": category,
+                "tno": "",
+                "pagesize": 20,
+                "pageidx": page,
+            }
+            try:
+                resp = client.post(CNA_WNEWSLIST_URL, json=body, timeout=30.0)
+                resp.raise_for_status()
+                data = resp.json()
+                items: list[dict] = data.get("ResultData", {}).get("Items", []) or []
+            except Exception:
+                break
+            if not items:
+                break
+
+            oldest_on_page: date | None = None
+            for item in items:
+                page_url = str(item.get("PageUrl", "") or "").strip()
+                headline = str(item.get("HeadLine", "") or "").strip()
+                if not page_url:
+                    continue
+                full_url = page_url if page_url.startswith("http") else f"https://www.cna.com.tw{page_url}"
+                # Extract date from URL pattern /YYYYMMDDNNNN.aspx
+                dm = re.search(r"/(\d{8})\d*\.aspx", full_url, flags=re.I)
+                pub: date | None = None
+                if dm:
+                    try:
+                        pub = datetime.strptime(dm.group(1), "%Y%m%d").date()
+                    except ValueError:
+                        pass
+                if pub and (oldest_on_page is None or pub < oldest_on_page):
+                    oldest_on_page = pub
+                if not _in_range(pub, start, end):
+                    continue
+                # Pre-filter: headline must mention at least one person term
+                headline_lower = headline.casefold()
+                if person_lower and not any(t in headline_lower for t in person_lower):
+                    continue
+                if full_url not in seen:
+                    seen.add(full_url)
+                    urls.append(full_url)
+
+            # Early exit once we've passed the start of the window
+            if oldest_on_page and oldest_on_page < start:
+                break
+            time.sleep(0.3)
+
+    return urls
+
+
+def _discover_cna_urls_via_google_rss(
+    client: httpx.Client,
+    person_terms: list[str],
+    start: date,
+    end: date,
+    hl: str = "zh-TW",
+    gl: str = "TW",
+    ceid: str = "TW:zh-Hant",
+) -> list[str]:
+    """Collect CNA article URLs using Google News RSS with per-month date slicing.
+
+    Google News RSS is limited to ~100 results per query, so by splitting the
+    365-day window into monthly slices we can recover up to ~1 200 results total.
+
+    Requires ``feedparser`` to be installed.  Silently returns [] if not available.
+    """
+    if not _HAS_FEEDPARSER:
+        return []
+
+    # Build the OR-clause for person terms.  Limit to 4 to avoid URL length issues.
+    quoted = [f'"{t}"' for t in person_terms[:4] if t]
+    if not quoted:
+        return []
+    person_q = " OR ".join(quoted)
+    taiwan_q = "(台灣 OR 臺灣 OR Taiwan)"
+
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    # Iterate month by month inside the date window.
+    current = date(start.year, start.month, 1)
+    while current < end:
+        if current.month == 12:
+            next_month = date(current.year + 1, 1, 1)
+        else:
+            next_month = date(current.year, current.month + 1, 1)
+        slice_end = min(next_month, end + timedelta(days=1))
+
+        q = (
+            f"site:cna.com.tw ({person_q}) {taiwan_q} "
+            f"after:{current.isoformat()} before:{slice_end.isoformat()}"
+        )
+        rss_url = (
+            f"{GOOGLE_NEWS_RSS_BASE}"
+            f"?q={quote_plus(q)}&hl={quote_plus(hl)}&gl={quote_plus(gl)}&ceid={quote_plus(ceid)}"
+        )
+        try:
+            resp = client.get(rss_url, timeout=25.0, follow_redirects=True)
+            parsed = _feedparser.parse(resp.text)
+        except Exception:
+            try:
+                parsed = _feedparser.parse(rss_url)
+            except Exception:
+                current = next_month
+                continue
+
+        for entry in getattr(parsed, "entries", []):
+            raw_link = str(getattr(entry, "link", "") or "").strip()
+            # Google News wraps links in its own redirect – resolve them.
+            final = raw_link
+            if "news.google.com" in raw_link:
+                try:
+                    r = client.get(raw_link, timeout=15.0, follow_redirects=True)
+                    final = str(r.url)
+                except Exception:
+                    pass
+            if "cna.com.tw/news/" in final and final not in seen:
+                seen.add(final)
+                urls.append(final)
+
+        current = next_month
+        time.sleep(0.5)  # be polite to Google
+
+    return urls
+
+
 def discover_cna(
     client: httpx.Client,
     insecure_client: httpx.Client,
@@ -85,8 +266,21 @@ def discover_cna(
     limit: int = 300,
     require_taiwan_keyword: bool = True,
     require_dated_url: bool = True,
+    use_wnewslist: bool = True,
+    use_google_rss: bool = True,
+    wnewslist_max_pages: int = 40,
 ) -> list[EventHit]:
+    # ── Layer A: CNA hysearchws HTML search ────────────────────────────────────
+    # Returns ~20 results per query (no server-side pagination in the URL).
+    # High relevance but limited recall for long time windows.
     urls: list[str] = []
+    seen_urls: set[str] = set()
+
+    def _add_url(u: str) -> None:
+        if u and u not in seen_urls:
+            seen_urls.add(u)
+            urls.append(u)
+
     # Try all aliases instead of only the first term. CNA search relevance can
     # differ significantly between English and Chinese keywords.
     base_terms = list(dict.fromkeys([term.strip() for term in person_terms if term and term.strip()]))
@@ -129,16 +323,48 @@ def discover_cna(
         # JSON-LD, and inline JSON). Collect from all patterns.
         for match in re.findall(r"/news/[a-z0-9]+/\d+\.aspx", resp.text, flags=re.I):
             full = f"https://www.cna.com.tw{match}" if match.startswith("/") else match
-            if full not in urls:
-                urls.append(full)
+            _add_url(full)
         for match in re.findall(r"https://www\.cna\.com\.tw/news/[a-z0-9]+/\d+\.aspx", resp.text, flags=re.I):
-            if match not in urls:
-                urls.append(match)
+            _add_url(match)
         for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
             text = script.get_text(strip=True)
             for match in re.findall(r"https://www\.cna\.com\.tw/news/[a-z0-9]+/\d+\.aspx", text, flags=re.I):
-                if match not in urls:
-                    urls.append(match)
+                _add_url(match)
+
+    # ── Layer B: CNA WNewsList JSON API ────────────────────────────────────────
+    # Paginated category listing that gives far more recall than the HTML search.
+    # Most effective for shorter lookback windows (≤ 90 days); for longer windows
+    # the page count becomes excessive so we skip it.
+    lookback_days = (end - start).days
+    if use_wnewslist and lookback_days <= 90:
+        try:
+            for u in _discover_cna_urls_via_wnewslist(
+                client,
+                person_terms=base_terms,
+                start=start,
+                end=end,
+                max_pages=wnewslist_max_pages,
+            ):
+                _add_url(u)
+        except Exception:
+            pass
+
+    # ── Layer C: Google News RSS with monthly date slices ──────────────────────
+    # Each month yields up to 100 results; 12 months = up to 1 200 for a full year.
+    # Most effective for longer lookback windows where the WNewsList API is too slow.
+    if use_google_rss and lookback_days > 14:
+        try:
+            for u in _discover_cna_urls_via_google_rss(
+                client,
+                person_terms=base_terms,
+                start=start,
+                end=end,
+            ):
+                _add_url(u)
+        except Exception:
+            pass
+
+    # ── Fetch and filter each candidate URL ────────────────────────────────────
     hits: list[EventHit] = []
     for link in urls[:limit]:
         try:
@@ -154,7 +380,9 @@ def discover_cna(
         merged = _clean_text(f"{title} {body}")
         if not _contains_any(merged, person_terms):
             continue
-        if require_taiwan_keyword and not _contains_any(merged, TAIWAN_KEYWORDS):
+        # Use substantive-Taiwan check: strips "台灣時間" before evaluating so
+        # articles that only mention the Taiwan timezone are correctly rejected.
+        if require_taiwan_keyword and not _contains_taiwan_substantive(merged):
             continue
 
         published = None
@@ -324,34 +552,48 @@ def dedupe_hits(hits: list[EventHit]) -> list[EventHit]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Discover person+Taiwan events from CNA / MOFA / President Office directly (no Google News).")
-    parser.add_argument("--person", required=True, help="Primary person keyword, e.g. Donald Trump")
-    parser.add_argument("--aliases", default="川普,Trump,特朗普", help="Comma-separated aliases")
-    parser.add_argument("--year", type=int, required=True)
+    parser.add_argument("--person", required=True, help="Primary person keyword, e.g. 'JD Vance'")
+    parser.add_argument("--aliases", default="范斯,Vance", help="Comma-separated aliases (include Chinese)")
+    parser.add_argument("--year", type=int, required=False)
     parser.add_argument("--months", default="4,3,2,1", help="Comma-separated months")
     parser.add_argument("--max-pages", type=int, default=40, help="Max listing pages for MOFA/President")
+    parser.add_argument("--lookback-days", type=int, default=0,
+                        help="Use a rolling N-day window instead of --year/--months (0 = use year/months)")
+    parser.add_argument("--no-wnewslist", action="store_true", help="Disable CNA WNewsList API layer")
+    parser.add_argument("--no-google-rss", action="store_true", help="Disable Google News RSS layer")
     args = parser.parse_args()
 
-    months = [int(item.strip()) for item in str(args.months).split(",") if item.strip()]
-    months = [m for m in months if 1 <= m <= 12]
-    if not months:
-        raise SystemExit("No valid months.")
+    if args.lookback_days > 0:
+        end = date.today() + timedelta(days=1)
+        start = end - timedelta(days=args.lookback_days)
+    else:
+        if not args.year:
+            raise SystemExit("Must provide --year or --lookback-days")
+        months = [int(item.strip()) for item in str(args.months).split(",") if item.strip()]
+        months = [m for m in months if 1 <= m <= 12]
+        if not months:
+            raise SystemExit("No valid months.")
+        start, end = _month_bounds(args.year, months)
 
     person_terms = [args.person.strip()] + [item.strip() for item in str(args.aliases).split(",") if item.strip()]
     person_terms = list(dict.fromkeys(person_terms))
 
-    start, end = _month_bounds(args.year, months)
     headers = {"User-Agent": USER_AGENT}
     with httpx.Client(headers=headers, follow_redirects=True) as client:
         with httpx.Client(headers=headers, follow_redirects=True, verify=False) as insecure_client:
-            cna_hits = discover_cna(client, insecure_client, person_terms=person_terms, start=start, end=end)
+            cna_hits = discover_cna(
+                client, insecure_client,
+                person_terms=person_terms,
+                start=start, end=end,
+                use_wnewslist=not args.no_wnewslist,
+                use_google_rss=not args.no_google_rss,
+            )
             mofa_hits = discover_mofa(client, insecure_client, person_terms=person_terms, start=start, end=end, max_pages=args.max_pages)
             president_hits = discover_president(client, insecure_client, person_terms=person_terms, start=start, end=end, max_pages=args.max_pages)
 
     all_hits = dedupe_hits(cna_hits + mofa_hits + president_hits)
     payload = {
         "person_terms": person_terms,
-        "year": args.year,
-        "months": sorted(months),
         "range_start": start.isoformat(),
         "range_end_exclusive": end.isoformat(),
         "counts": {
