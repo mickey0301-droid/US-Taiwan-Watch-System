@@ -228,6 +228,17 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
         if details:
             with st.expander("Gemini 補資料明細" if lang == "zh-TW" else "Gemini enrichment details"):
                 st.json(details)
+                sources = details.get("sources") if isinstance(details, dict) else []
+                if isinstance(sources, list) and sources:
+                    st.markdown("`參考來源`：" if lang == "zh-TW" else "`Sources`:")
+                    for idx, source in enumerate(sources[:20], start=1):
+                        if not isinstance(source, dict):
+                            continue
+                        title = str(source.get("title") or source.get("url") or "").strip()
+                        url = str(source.get("url") or "").strip()
+                        if not url:
+                            continue
+                        st.markdown(f"{idx}. [{title or url}]({url})")
 
     if st.button("返回法案列表" if lang == "zh-TW" else "Back to legislation list", key=f"legislation-back-{selected.id}"):
         _clear_legislation_id()

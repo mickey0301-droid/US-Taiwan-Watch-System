@@ -206,7 +206,29 @@ class AIAssistService:
             payload = _fallback_legislation_metadata_from_text(result_text, current)
         if not isinstance(payload, dict):
             return None
+        if not payload.get("sponsor_names") and not payload.get("cosponsor_names"):
+            sponsor_probe = _research_legislation_sponsors_with_gemini(
+                api_key=self.settings.gemini_api_key or "",
+                model=self.settings.gemini_model,
+                source_url=source_url,
+                bill_number=_clean_string(current.get("bill_number"), 100) or "",
+                bill_title=_clean_string(current.get("title"), 500) or page_title,
+                page_body=page_body,
+            )
+            if isinstance(sponsor_probe, dict):
+                if sponsor_probe.get("sponsor_names"):
+                    payload["sponsor_names"] = sponsor_probe.get("sponsor_names")
+                if sponsor_probe.get("cosponsor_names"):
+                    payload["cosponsor_names"] = sponsor_probe.get("cosponsor_names")
+                if sponsor_probe.get("sources") and not payload.get("sources"):
+                    payload["sources"] = sponsor_probe.get("sources")
         sanitized = _sanitize_legislation_metadata(payload)
+        if not sanitized.get("sponsor_names") and not sanitized.get("cosponsor_names"):
+            fallback_sponsors = _extract_sponsors_from_text(result_text or page_body)
+            if fallback_sponsors.get("sponsor_names"):
+                sanitized["sponsor_names"] = fallback_sponsors["sponsor_names"]
+            if fallback_sponsors.get("cosponsor_names"):
+                sanitized["cosponsor_names"] = fallback_sponsors["cosponsor_names"]
         sources = _clean_source_list(payload.get("sources"))
         if not sources:
             sources = _grounding_sources(result.get("raw") or {})
@@ -318,6 +340,95 @@ def _fallback_legislation_metadata_from_text(text: str, current: dict[str, Any])
         "relevance_score": 0.8 if is_taiwan_related else None,
         "sources": [],
     }
+
+
+def _research_legislation_sponsors_with_gemini(
+    api_key: str,
+    model: str,
+    source_url: str,
+    bill_number: str,
+    bill_title: str,
+    page_body: str,
+) -> dict[str, Any] | None:
+    if not api_key:
+        return None
+    prompt = (
+        "Find sponsor and cosponsor names for the following legislation. "
+        "Use Google Search grounding and prioritize official legislature sources. "
+        "Return strict JSON only with keys sponsor_names, cosponsor_names, sources. "
+        "Each sponsor_names/cosponsor_names item must be full person name text only.\n\n"
+        f"Bill number: {bill_number}\n"
+        f"Bill title: {bill_title}\n"
+        f"Official/source URL: {source_url}\n"
+        f"Page excerpt:\n{(page_body or '')[:8000]}\n"
+    )
+    result = _gemini_grounded_json(
+        api_key=api_key,
+        model=model,
+        prompt=prompt,
+        max_output_tokens=700,
+    )
+    if not result:
+        return None
+    payload = _parse_json_object(str(result.get("text") or ""))
+    if not isinstance(payload, dict):
+        return None
+    return {
+        "sponsor_names": _clean_string_list(payload.get("sponsor_names"), 20),
+        "cosponsor_names": _clean_string_list(payload.get("cosponsor_names"), 100),
+        "sources": _clean_source_list(payload.get("sources")) or _grounding_sources(result.get("raw") or {}),
+    }
+
+
+def _extract_sponsors_from_text(text: str) -> dict[str, list[str]]:
+    raw = str(text or "")
+    if not raw.strip():
+        return {"sponsor_names": [], "cosponsor_names": []}
+
+    def _extract(patterns: list[str], limit: int) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for pattern in patterns:
+            for match in re.finditer(pattern, raw, flags=re.I):
+                candidate = _clean_person_name(match.group(1))
+                if not candidate:
+                    continue
+                key = candidate.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(candidate)
+                if len(out) >= limit:
+                    return out
+        return out
+
+    sponsor_names = _extract(
+        [
+            r"(?:sponsor|primary sponsor|chief sponsor)\s*[:：]\s*([A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+){1,4})",
+            r"sponsored by\s+([A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+){1,4})",
+            r"representative\s+([A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+){1,4})\s*\[[A-Z]\]",
+            r"senator\s+([A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+){1,4})\s*\[[A-Z]\]",
+        ],
+        20,
+    )
+    cosponsor_names = _extract(
+        [
+            r"(?:cosponsor|co-sponsor|co sponsor)s?\s*[:：]\s*([A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+){1,4})",
+            r"cosponsored by\s+([A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+){1,4})",
+        ],
+        100,
+    )
+    return {"sponsor_names": sponsor_names, "cosponsor_names": cosponsor_names}
+
+
+def _clean_person_name(value: str) -> str | None:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    text = re.sub(r"^[,\-–—:;]+|[,\-–—:;]+$", "", text)
+    if not text or len(text.split()) < 2:
+        return None
+    if any(ch.isdigit() for ch in text):
+        return None
+    return text[:120]
 
 
 def _clean_string(value: object, max_len: int | None = None) -> str | None:
