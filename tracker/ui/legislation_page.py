@@ -310,6 +310,16 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
     ) or selected.source_url
     bill_text_url = raw_payload.get("text_page_url")
     sponsors, cosponsors = _split_db_sponsors(service.list_sponsors(selected.id), people_by_id)
+    fallback_sponsor_names = _fallback_legislation_names_from_raw_payload(selected, role="sponsor")
+    fallback_cosponsor_names = _fallback_legislation_names_from_raw_payload(selected, role="cosponsor")
+    if sponsors:
+        fallback_sponsor_names = []
+    if cosponsors:
+        fallback_cosponsor_names = []
+    if fallback_sponsor_names and fallback_cosponsor_names:
+        sponsor_keys = {_normalize_person_name_key(name) for name in fallback_sponsor_names}
+        fallback_cosponsor_names = [name for name in fallback_cosponsor_names if _normalize_person_name_key(name) not in sponsor_keys]
+
     summary = _clean_legislation_summary_display(selected.summary or raw_payload.get("summary"))
     latest_action = str(raw_payload.get("latest_action_text") or "").strip()
     if _summary_too_similar_to_title(summary, str(selected.title or "")):
@@ -369,12 +379,16 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
         st.markdown(f"`{'提案人' if lang == 'zh-TW' else 'Sponsor'}`：")
         if sponsors:
             render_person_links(sponsors, lang, key_prefix=f"legislation-detail-sponsor-{selected.id}")
+        elif fallback_sponsor_names:
+            st.write("、".join(fallback_sponsor_names[:8]) if lang == "zh-TW" else ", ".join(fallback_sponsor_names[:8]))
         else:
             st.write("未提供" if lang == "zh-TW" else "Not available")
 
         st.markdown(f"`{'共同提案人' if lang == 'zh-TW' else 'Cosponsors'}`：")
         if cosponsors:
             render_person_links(cosponsors, lang, key_prefix=f"legislation-detail-cosponsor-{selected.id}")
+        elif fallback_cosponsor_names:
+            st.write("、".join(fallback_cosponsor_names[:12]) if lang == "zh-TW" else ", ".join(fallback_cosponsor_names[:12]))
         else:
             st.write("無" if lang == "zh-TW" else "None")
 
@@ -401,6 +415,32 @@ def _split_db_sponsors(records: list[object], people_by_id: dict[int, Person]) -
     deduped_sponsors = _dedupe_people_for_display(sponsors)
     deduped_cosponsors = [item for item in _dedupe_people_for_display(cosponsors) if all(item.get("person_id") != s.get("person_id") for s in deduped_sponsors)]
     return deduped_sponsors, deduped_cosponsors
+
+
+def _fallback_legislation_names_from_raw_payload(selected: Legislation, role: str) -> list[str]:
+    role_key = "cosponsor_names" if str(role or "").lower() == "cosponsor" else "sponsor_names"
+    raw_payload = _payload_dict(getattr(selected, "raw_payload", None))
+    metadata = _payload_dict(_payload_dict(raw_payload.get("ai_enrichment")).get("metadata"))
+    candidates = list(metadata.get(role_key) or [])
+    if not candidates:
+        candidates = list(raw_payload.get(role_key) or [])
+
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        name = str(item or "").strip()
+        if not name:
+            continue
+        normalized = _normalize_person_name_key(name)
+        if not normalized:
+            continue
+        if normalized in seen:
+            continue
+        if re.match(r"^(senator|representative|rep\.?|member)\s+[A-Za-z\-]+$", name, flags=re.I):
+            continue
+        seen.add(normalized)
+        names.append(name)
+    return names
 
 
 def _choose_legislation_source(sheet_rows: list[dict[str, object]], db_rows: list[Legislation]) -> str:
@@ -448,8 +488,23 @@ def _render_db_legislation_card(selected: Legislation, service: LegislationServi
         else:
             cosponsor_people.append(person_payload)
 
-    sponsor_text = dashboard._format_people_inline([sponsor_person], lang) if sponsor_person else ("未提供" if lang == "zh-TW" else "Not available")
-    cosponsor_text = _format_cosponsor_people(cosponsor_people, lang)
+    fallback_sponsor_names = _fallback_legislation_names_from_raw_payload(selected, role="sponsor")
+    fallback_cosponsor_names = _fallback_legislation_names_from_raw_payload(selected, role="cosponsor")
+    if sponsor_person:
+        fallback_sponsor_names = []
+    if cosponsor_people:
+        fallback_cosponsor_names = []
+    if fallback_sponsor_names and fallback_cosponsor_names:
+        sponsor_keys = {_normalize_person_name_key(name) for name in fallback_sponsor_names}
+        fallback_cosponsor_names = [name for name in fallback_cosponsor_names if _normalize_person_name_key(name) not in sponsor_keys]
+
+    sponsor_text = dashboard._format_people_inline([sponsor_person], lang) if sponsor_person else (("、".join(fallback_sponsor_names[:3]) if lang == "zh-TW" else ", ".join(fallback_sponsor_names[:3])) if fallback_sponsor_names else ("未提供" if lang == "zh-TW" else "Not available"))
+    if cosponsor_people:
+        cosponsor_text = _format_cosponsor_people(cosponsor_people, lang)
+    elif fallback_cosponsor_names:
+        cosponsor_text = ("、".join(fallback_cosponsor_names[:3]) if lang == "zh-TW" else ", ".join(fallback_cosponsor_names[:3]))
+    else:
+        cosponsor_text = "無" if lang == "zh-TW" else "None"
 
     raw_payload = _payload_dict(selected.raw_payload)
     official_link = raw_payload.get("congress_gov_url") or congress_bill_url(

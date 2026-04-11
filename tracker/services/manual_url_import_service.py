@@ -656,6 +656,16 @@ class ManualUrlImportService:
             ".news p",
             ".content p",
             ".article p",
+            "article li",
+            "main li",
+            "article td",
+            "main td",
+            "article th",
+            "main th",
+            "article dd",
+            "main dd",
+            "article dt",
+            "main dt",
         ]
         lines: list[str] = []
         for selector in selector_groups:
@@ -668,9 +678,9 @@ class ManualUrlImportService:
         if not lines:
             text = compact_whitespace(soup.get_text(" ", strip=True))
             text = re.sub(r"\s+", " ", text).strip()
-            return text[:5000]
+            return text[:20000]
         merged = compact_whitespace(" ".join(lines))
-        return merged[:5000]
+        return merged[:20000]
 
     def _infer_person_name(self, url: str, title: str) -> str:
         parsed = urlparse(url)

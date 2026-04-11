@@ -263,15 +263,33 @@ class AIAssistService:
             f"Official/source URL: {source_url}\n"
             f"Fetched page title: {page_title}\n"
             f"Fetched page text excerpt:\n{(page_body or '')[:10000]}\n\n"
-            "Task: Return the metadata JSON now."
+            "Task: Return the metadata JSON now.\n"
+            "If sponsor/cosponsor is missing in the fetched excerpt, use web search to find official bill pages and extract real names."
         )
-        result_text = _responses_text(
-            self.settings.openai_api_key or "",
-            self.settings.openai_model,
-            system_prompt,
-            user_prompt,
-            1000,
-        )
+        bill_number_hint = _clean_string(current.get("bill_number"), 100) or ""
+        title_hint = _clean_string(current.get("title"), 500) or _clean_string(page_title, 500) or ""
+        web_query = " ".join(part for part in [bill_number_hint, title_hint, "sponsor cosponsor legislature"] if part).strip()
+
+        result_text: str | None = None
+        try:
+            result_text = _responses_text_with_tools(
+                self.settings.openai_api_key or "",
+                self.settings.openai_model,
+                system_prompt,
+                f"{user_prompt}\n\nPreferred web query: {web_query}",
+                1000,
+                tools=(("type", "web_search_preview"),),
+            )
+        except Exception:
+            result_text = None
+        if not result_text:
+            result_text = _responses_text(
+                self.settings.openai_api_key or "",
+                self.settings.openai_model,
+                system_prompt,
+                user_prompt,
+                1000,
+            )
         if not result_text:
             return None
         payload = _parse_json_object(result_text)
@@ -303,22 +321,55 @@ def _responses_text(
     user_prompt: str,
     max_output_tokens: int,
 ) -> str | None:
+    return _responses_text_with_tools(
+        api_key=api_key,
+        model=model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        max_output_tokens=max_output_tokens,
+        tools=None,
+    )
+
+
+@lru_cache(maxsize=512)
+def _responses_text_with_tools(
+    api_key: str,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    max_output_tokens: int,
+    tools: tuple[tuple[str, str], ...] | None = None,
+) -> str | None:
     if not api_key:
         return None
+
+    tool_payload: list[dict[str, Any]] = []
+    if tools:
+        for pair in tools:
+            if not isinstance(pair, tuple) or len(pair) != 2:
+                continue
+            key, value = pair
+            if str(key or "").strip() == "type" and str(value or "").strip():
+                tool_payload.append({"type": str(value).strip()})
+
+    request_payload: dict[str, Any] = {
+        "model": model,
+        "input": [
+            {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
+            {"role": "user", "content": [{"type": "input_text", "text": user_prompt}]},
+        ],
+        "max_output_tokens": max_output_tokens,
+    }
+    if tool_payload:
+        request_payload["tools"] = tool_payload
+
     response = httpx.post(
         "https://api.openai.com/v1/responses",
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
-        json={
-            "model": model,
-            "input": [
-                {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
-                {"role": "user", "content": [{"type": "input_text", "text": user_prompt}]},
-            ],
-            "max_output_tokens": max_output_tokens,
-        },
+        json=request_payload,
         timeout=45.0,
     )
     response.raise_for_status()

@@ -112,6 +112,22 @@ class LegislationAIEnrichmentService:
                 return LegislationAIEnrichmentResult(ok=False, message=f"AI 補資料失敗：{provider_error}")
             return LegislationAIEnrichmentResult(ok=False, message="AI 沒有回傳可用的法案資料。")
 
+        guessed_sponsors, guessed_cosponsors = _extract_sponsor_names_from_page_body(page_body)
+        if not list(metadata.get("sponsor_names") or []) and guessed_sponsors:
+            metadata["sponsor_names"] = guessed_sponsors
+        if not list(metadata.get("cosponsor_names") or []) and guessed_cosponsors:
+            metadata["cosponsor_names"] = guessed_cosponsors
+
+        if _summary_quality_low(str(metadata.get("summary") or ""), str(legislation.title or "")) and self.ai_assist_service.enabled:
+            ai_summary = self.ai_assist_service.summarize_legislation(
+                bill_number=str(legislation.bill_number or ""),
+                title=str(legislation.title or ""),
+                summary=page_body[:3500],
+                latest_action=str(legislation.status_text or ""),
+            )
+            if ai_summary and not _summary_quality_low(ai_summary, str(legislation.title or "")):
+                metadata["summary"] = ai_summary
+
         updated_fields: list[str] = []
         for attr, key in (
             ("title", "title"),
@@ -269,6 +285,66 @@ def _merge_metadata_for_quality(primary: dict[str, Any], fallback: dict[str, Any
     if not primary_sources and fallback_sources:
         merged["sources"] = fallback_sources
     return merged
+
+
+def _clean_sponsor_token(value: str) -> str | None:
+    token = str(value or "").strip()
+    if not token:
+        return None
+    token = re.sub(r"\([^)]*\)", " ", token)
+    token = re.sub(r"\[[^\]]*\]", " ", token)
+    token = re.sub(r"^(?:senator|rep\.?|representative|assemblymember|delegate|member)\s+", "", token, flags=re.I)
+    token = re.sub(r"\s+", " ", token).strip(" ,;:-")
+    if len(token.split()) < 2:
+        return None
+    if any(ch.isdigit() for ch in token):
+        return None
+    return token[:160]
+
+
+def _split_names_blob(blob: str) -> list[str]:
+    parts = re.split(r"\s*(?:,|;|\band\b|\&|\/)\s*", str(blob or ""), flags=re.I)
+    results: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        cleaned = _clean_sponsor_token(part)
+        if not cleaned:
+            continue
+        key = cleaned.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(cleaned)
+    return results
+
+
+def _extract_sponsor_names_from_page_body(page_body: str) -> tuple[list[str], list[str]]:
+    text = str(page_body or "")
+    if not text:
+        return [], []
+
+    sponsor_patterns = [
+        r"(?:sponsor|primary sponsor|chief sponsor|introduced by|by)\s*[:：]\s*([^\n]{3,220})",
+        r"(?:sponsors?)\s*[-–—]\s*([^\n]{3,220})",
+    ]
+    cosponsor_patterns = [
+        r"(?:co-?sponsors?|coauthors?)\s*[:：]\s*([^\n]{3,300})",
+    ]
+
+    sponsors: list[str] = []
+    cosponsors: list[str] = []
+
+    for pattern in sponsor_patterns:
+        for match in re.finditer(pattern, text, flags=re.I):
+            sponsors.extend(_split_names_blob(match.group(1)))
+    for pattern in cosponsor_patterns:
+        for match in re.finditer(pattern, text, flags=re.I):
+            cosponsors.extend(_split_names_blob(match.group(1)))
+
+    dedupe = lambda values: list(dict.fromkeys([v for v in values if v]))
+    sponsors = dedupe(sponsors)
+    cosponsors = [name for name in dedupe(cosponsors) if name.casefold() not in {s.casefold() for s in sponsors}]
+    return sponsors[:20], cosponsors[:100]
 
 
 def _is_placeholder_legislator_name(name: str) -> bool:
