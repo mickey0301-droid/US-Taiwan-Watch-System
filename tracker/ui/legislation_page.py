@@ -173,7 +173,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
             _render_db_legislation_card(item, service, people_by_id, lang, idx)
 
 
-def _render_manual_legislation_feedback(flash: dict[str, object], lang: str) -> None:
+def _render_manual_legislation_feedback(flash: dict[str, object], lang: str, inside_expander: bool = False) -> None:
     message = str(flash.get("message") or "")
     level = str(flash.get("level") or "success")
     if level == "warning":
@@ -185,14 +185,23 @@ def _render_manual_legislation_feedback(flash: dict[str, object], lang: str) -> 
 
     errors = [str(item) for item in flash.get("errors") or [] if str(item).strip()]
     if errors:
-        with st.expander("錯誤明細" if lang == "zh-TW" else "Error details"):
+        if inside_expander:
+            st.markdown("**錯誤明細**" if lang == "zh-TW" else "**Error details**")
             for error in errors[:20]:
                 st.write(error)
+        else:
+            with st.expander("錯誤明細" if lang == "zh-TW" else "Error details"):
+                for error in errors[:20]:
+                    st.write(error)
 
     items = flash.get("items") or []
     if items:
-        with st.expander("匯入結果明細" if lang == "zh-TW" else "Import result details"):
+        if inside_expander:
+            st.markdown("**匯入結果明細**" if lang == "zh-TW" else "**Import result details**")
             st.json(items[:80])
+        else:
+            with st.expander("匯入結果明細" if lang == "zh-TW" else "Import result details"):
+                st.json(items[:80])
 
 
 def _merge_manual_legislation_batch_result(total: ManualLegislationBatchResult, part: ManualLegislationBatchResult) -> None:
@@ -296,7 +305,7 @@ def _render_manual_legislation_ingest_form(session, lang: str) -> None:
             "items": result.items[:80],
         }
         st.session_state[flash_key] = flash_payload
-        _render_manual_legislation_feedback(flash_payload, lang)
+        _render_manual_legislation_feedback(flash_payload, lang, inside_expander=True)
 
 
 def _render_legislation_detail(selected: Legislation, service: LegislationService, people_by_id: dict[int, Person], lang: str) -> None:
