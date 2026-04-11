@@ -198,7 +198,7 @@ class ManualUrlImportService:
                 person, created = self.officials_service.upsert_person(
                     {
                         "full_name": full_name,
-                        "source_url": final_url,
+                        "source_url": self._sanitize_text_field(final_url, 2048),
                         "source_type": self._source_type(final_url),
                         "seed_source_type": "manual_url",
                         "profile_status": "seeded",
@@ -320,7 +320,7 @@ class ManualUrlImportService:
                             "person_id": primary_person_id,
                             "participant_ids": participant_ids,
                             "title": title,
-                            "source_title": title,
+                            "source_title": self._sanitize_text_field(title, 500),
                             "date_published": page.get("published_at") if isinstance(page.get("published_at"), datetime) else None,
                             "source_url": final_url,
                             "source_type": source_type,
@@ -395,11 +395,12 @@ class ManualUrlImportService:
 
     def _import_single_legislation_url(self, url: str) -> tuple[dict[str, Any], bool]:
         page = self._fetch_page(url)
-        final_url = str(page.get("final_url") or url)
-        title = str(page.get("title") or final_url)
-        body = str(page.get("body") or "")
+        final_url = self._sanitize_text_field(page.get("final_url") or url, 2048)
+        title = self._sanitize_text_field(page.get("title") or final_url, 500)
+        body = self._sanitize_text_field(page.get("body") or "", 20000)
         meta = self._classify_legislation(final_url, title, body)
         ai_details = self.ai_assist_service.extract_legislation_metadata(title=title, body=body, source_url=final_url) or {}
+        ai_details = self._sanitize_json_payload(ai_details) if isinstance(ai_details, dict) else {}
         ai_scope = {}
         if ai_details:
             ai_scope = {
@@ -434,15 +435,15 @@ class ManualUrlImportService:
         if not isinstance(relevance_score, (int, float)):
             relevance_score = 1.0 if taiwan_related else 0.0
         payload = {
-            "title": meta["title"],
-            "bill_number": meta.get("bill_number"),
-            "bill_slug": existing_legislation.bill_slug if existing_legislation else meta.get("bill_slug"),
+            "title": self._sanitize_text_field(meta.get("title") or title, 500),
+            "bill_number": self._sanitize_text_field(meta.get("bill_number") or "", 100) or None,
+            "bill_slug": self._sanitize_text_field((existing_legislation.bill_slug if existing_legislation else meta.get("bill_slug")) or "", 255),
             "legislation_type": meta.get("legislation_type"),
             "level": meta.get("level", "other"),
-            "jurisdiction_name": meta.get("jurisdiction_name"),
+            "jurisdiction_name": self._sanitize_text_field(meta.get("jurisdiction_name") or "", 255) or None,
             "chamber": meta.get("chamber"),
-            "summary": ai_details.get("summary") or body[:1800] or None,
-            "status_text": ai_details.get("status_text"),
+            "summary": self._sanitize_text_field(ai_details.get("summary") or body[:1800] or "", 1800) or None,
+            "status_text": self._sanitize_text_field(ai_details.get("status_text") or "", 255) or None,
             "introduced_date": introduced_date,
             "last_action_date": last_action_date,
             "source_url": final_url,
@@ -450,20 +451,20 @@ class ManualUrlImportService:
             "parser_identity": "manual_url_legislation_batch_v1",
             "relevance_score": float(relevance_score),
             "is_taiwan_related": bool(taiwan_related),
-            "raw_payload": {
+            "raw_payload": self._sanitize_json_payload({
                 "seeded_from": "manual_url_legislation_batch_v1",
                 "manual_input_url": url,
                 "auto_classification": meta,
                 "ai_classification": ai_scope,
                 "ai_extracted_metadata": ai_details,
-            },
+            }),
             "sources": [
                 {
                     "source_url": final_url,
                     "source_type": self._source_type(final_url),
                     "source_title": title,
                     "parser_identity": "manual_url_legislation_batch_v1",
-                    "raw_payload": {"manual_input_url": url},
+                    "raw_payload": self._sanitize_json_payload({"manual_input_url": url}),
                 }
             ],
             "sponsors": self._ai_legislation_sponsors(ai_details, final_url),
@@ -517,6 +518,31 @@ class ManualUrlImportService:
             raise ValueError("Invalid URL.")
         return value
 
+    def _strip_nul(self, value: object) -> str:
+        text = str(value or "")
+        if not text:
+            return ""
+        text = text.replace("\x00", "")
+        text = re.sub(r"[\x01-\x08\x0b\x0c\x0e-\x1f]", " ", text)
+        return text
+
+    def _sanitize_text_field(self, value: object, max_len: int | None = None) -> str:
+        text = compact_whitespace(self._strip_nul(value))
+        if max_len is not None:
+            return text[:max_len]
+        return text
+
+    def _sanitize_json_payload(self, value: object) -> object:
+        if isinstance(value, dict):
+            return {str(self._strip_nul(k)): self._sanitize_json_payload(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._sanitize_json_payload(item) for item in value]
+        if isinstance(value, tuple):
+            return [self._sanitize_json_payload(item) for item in value]
+        if isinstance(value, str):
+            return self._strip_nul(value)
+        return value
+
     def _safe_normalize_url(self, source_url: str | None) -> str | None:
         try:
             return self._normalize_url(str(source_url or ""))
@@ -528,17 +554,25 @@ class ManualUrlImportService:
         response.raise_for_status()
         content_type = str(response.headers.get("content-type") or "").lower()
         final_url = str(response.url)
-        if "pdf" in content_type or final_url.lower().split("?", 1)[0].endswith(".pdf"):
-            return self._extract_pdf_page(response)
+        content_head = bytes(response.content[:5] if response.content else b"")
+        looks_like_pdf = content_head.startswith(b"%PDF-")
+        if "pdf" in content_type or final_url.lower().split("?", 1)[0].endswith(".pdf") or looks_like_pdf:
+            page = self._extract_pdf_page(response)
+            return {
+                "final_url": self._sanitize_text_field(page.get("final_url") or final_url, 2048),
+                "title": self._sanitize_text_field(page.get("title") or final_url, 500),
+                "published_at": page.get("published_at"),
+                "body": self._sanitize_text_field(page.get("body") or "", 20000),
+            }
         soup = BeautifulSoup(response.text, "html.parser")
         title = self._extract_title(soup, fallback=final_url)
         published_at = self._extract_published_at(soup)
         body = self._extract_body_text(soup)
         return {
-            "final_url": final_url,
-            "title": title,
+            "final_url": self._sanitize_text_field(final_url, 2048),
+            "title": self._sanitize_text_field(title, 500),
             "published_at": published_at,
-            "body": body,
+            "body": self._sanitize_text_field(body, 20000),
         }
 
     def _get_with_ssl_fallback(self, source_url: str) -> httpx.Response:
@@ -579,10 +613,10 @@ class ManualUrlImportService:
                 body = ""
         published_at = parse_datetime(str(response.headers.get("last-modified") or ""))
         return {
-            "final_url": final_url,
-            "title": title,
+            "final_url": self._sanitize_text_field(final_url, 2048),
+            "title": self._sanitize_text_field(title, 500),
             "published_at": published_at,
-            "body": body,
+            "body": self._sanitize_text_field(body, 20000),
         }
 
     def _title_from_url(self, source_url: str) -> str:
