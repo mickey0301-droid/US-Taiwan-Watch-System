@@ -14,7 +14,7 @@ from tracker.models import Legislation, Person
 from tracker.services.google_sheet_read_service import GoogleSheetReadService
 from tracker.services.legislation_ai_enrichment_service import LegislationAIEnrichmentService
 from tracker.services.legislation_service import LegislationService
-from tracker.services.manual_legislation_ingest_service import ManualLegislationIngestService
+from tracker.services.manual_legislation_ingest_service import ManualLegislationBatchResult, ManualLegislationIngestService
 from tracker.ui.navigation import render_person_links
 from tracker.ui import dashboard
 from tracker.utils.congress_bills import congress_bill_url
@@ -173,27 +173,50 @@ def render(lang: str, labels: dict[str, str]) -> None:
             _render_db_legislation_card(item, service, people_by_id, lang, idx)
 
 
+def _render_manual_legislation_feedback(flash: dict[str, object], lang: str) -> None:
+    message = str(flash.get("message") or "")
+    level = str(flash.get("level") or "success")
+    if level == "warning":
+        st.warning(message)
+    elif level == "error":
+        st.error(message)
+    else:
+        st.success(message)
+
+    errors = [str(item) for item in flash.get("errors") or [] if str(item).strip()]
+    if errors:
+        with st.expander("錯誤明細" if lang == "zh-TW" else "Error details"):
+            for error in errors[:20]:
+                st.write(error)
+
+    items = flash.get("items") or []
+    if items:
+        with st.expander("匯入結果明細" if lang == "zh-TW" else "Import result details"):
+            st.json(items[:80])
+
+
+def _merge_manual_legislation_batch_result(total: ManualLegislationBatchResult, part: ManualLegislationBatchResult) -> None:
+    total.congress_urls += int(part.congress_urls or 0)
+    total.other_urls += int(part.other_urls or 0)
+    total.created += int(part.created or 0)
+    total.updated += int(part.updated or 0)
+    total.detail_ok += int(part.detail_ok or 0)
+    total.detail_failed += int(part.detail_failed or 0)
+    total.ai_detail_ok += int(part.ai_detail_ok or 0)
+    total.gemini_detail_ok += int(part.gemini_detail_ok or 0)
+    total.gemini_detail_failed += int(part.gemini_detail_failed or 0)
+    total.sponsors_added += int(part.sponsors_added or 0)
+    total.cosponsors_added += int(part.cosponsors_added or 0)
+    total.failed += int(part.failed or 0)
+    total.errors.extend(list(part.errors or []))
+    total.items.extend(list(part.items or []))
+
+
 def _render_manual_legislation_ingest_form(session, lang: str) -> None:
     flash_key = "manual-legislation-ingest-flash"
     flash = st.session_state.pop(flash_key, None)
-    if flash:
-        message = str(flash.get("message") or "")
-        level = str(flash.get("level") or "success")
-        if level == "warning":
-            st.warning(message)
-        elif level == "error":
-            st.error(message)
-        else:
-            st.success(message)
-        errors = [str(item) for item in flash.get("errors") or [] if str(item).strip()]
-        if errors:
-            with st.expander("錯誤明細" if lang == "zh-TW" else "Error details"):
-                for error in errors[:10]:
-                    st.write(error)
-        items = flash.get("items") or []
-        if items:
-            with st.expander("匯入結果明細" if lang == "zh-TW" else "Import result details"):
-                st.json(items[:30])
+    if isinstance(flash, dict):
+        _render_manual_legislation_feedback(flash, lang)
 
     title = "手動批次新增法案" if lang == "zh-TW" else "Manual Bill Batch Import"
     help_text = (
@@ -222,14 +245,39 @@ def _render_manual_legislation_ingest_form(session, lang: str) -> None:
             st.warning("請先貼上至少一個法案網址。" if lang == "zh-TW" else "Paste at least one bill URL first.")
             return
 
-        try:
-            with st.spinner("正在加入法案並補上細節，請稍候..." if lang == "zh-TW" else "Importing and enriching bill details..."):
-                result = ManualLegislationIngestService(session).import_from_urls(raw_urls)
-                session.commit()
-        except Exception as exc:
-            session.rollback()
-            st.error(("匯入失敗：" if lang == "zh-TW" else "Import failed: ") + f"{type(exc).__name__}: {exc}")
+        service = ManualLegislationIngestService(session)
+        urls = service.parse_urls(raw_urls)
+        if not urls:
+            st.warning("找不到有效網址，請檢查格式。" if lang == "zh-TW" else "No valid URL detected. Please check the format.")
             return
+
+        result = ManualLegislationBatchResult()
+        with st.spinner("正在加入法案並補上細節，請稍候..." if lang == "zh-TW" else "Importing and enriching bill details..."):
+            progress_text = "正在處理網址..." if lang == "zh-TW" else "Processing URLs..."
+            progress = st.progress(0.0, text=progress_text)
+            total_urls = len(urls)
+            for idx, url in enumerate(urls, start=1):
+                last_exc: Exception | None = None
+                for attempt in range(3):
+                    try:
+                        partial = service.import_from_urls([url])
+                        session.commit()
+                        _merge_manual_legislation_batch_result(result, partial)
+                        last_exc = None
+                        break
+                    except Exception as exc:
+                        session.rollback()
+                        last_exc = exc
+                if last_exc is not None:
+                    error = f"{url}: {type(last_exc).__name__}: {last_exc}"
+                    result.failed += 1
+                    result.errors.append(error)
+                    result.items.append({"status": "failed", "url": url, "error": error})
+
+                progress.progress(
+                    idx / total_urls,
+                    text=(f"已處理 {idx}/{total_urls} 筆網址" if lang == "zh-TW" else f"Processed {idx}/{total_urls} URLs"),
+                )
 
         level = "warning" if result.failed or result.detail_failed else "success"
         message = (
@@ -241,12 +289,14 @@ def _render_manual_legislation_ingest_form(session, lang: str) -> None:
             f"OpenAI details {result.ai_detail_ok}, Gemini background enrichment {result.gemini_detail_ok}, Gemini failed {result.gemini_detail_failed}, detail incomplete {result.detail_failed}, sponsors +{result.sponsors_added}, "
             f"cosponsors +{result.cosponsors_added}, state/other URLs {result.other_urls}, import failed {result.failed}."
         )
-        st.session_state[flash_key] = {
+        flash_payload = {
             "level": level,
             "message": message,
-            "errors": result.errors[:10],
-            "items": result.items[:30],
+            "errors": result.errors[:20],
+            "items": result.items[:80],
         }
+        st.session_state[flash_key] = flash_payload
+        _render_manual_legislation_feedback(flash_payload, lang)
 
 
 def _render_legislation_detail(selected: Legislation, service: LegislationService, people_by_id: dict[int, Person], lang: str) -> None:
