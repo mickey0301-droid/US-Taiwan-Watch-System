@@ -342,3 +342,108 @@ def _sanitize_legislation_metadata(payload: dict[str, Any]) -> dict[str, Any]:
         "is_taiwan_related": is_taiwan_related,
         "relevance_score": relevance_score,
     }
+
+
+
+def _gemini_grounded_json(
+    api_key: str,
+    model: str,
+    prompt: str,
+    max_output_tokens: int = 1200,
+) -> dict[str, Any] | None:
+    if not api_key:
+        return None
+    model_name = (model or "").strip() or "gemini-2.5-flash"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "tools": [{"google_search": {}}],
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": int(max_output_tokens),
+            "responseMimeType": "application/json",
+        },
+    }
+    response = httpx.post(url, json=payload, timeout=60.0)
+    response.raise_for_status()
+    raw = response.json()
+    text = ""
+    try:
+        candidates = raw.get("candidates") or []
+        if candidates:
+            parts = ((candidates[0] or {}).get("content") or {}).get("parts") or []
+            for part in parts:
+                value = part.get("text")
+                if isinstance(value, str) and value.strip():
+                    text = value.strip()
+                    break
+    except Exception:
+        text = ""
+    if not text:
+        text = json.dumps(raw, ensure_ascii=False)
+    return {"text": text, "raw": raw}
+
+
+def gemini_grounded_json(
+    api_key: str,
+    model: str,
+    prompt: str,
+    max_output_tokens: int = 1200,
+) -> dict[str, Any] | None:
+    # Backward-compatible alias for historical callsites / stale deployments.
+    return _gemini_grounded_json(
+        api_key=api_key,
+        model=model,
+        prompt=prompt,
+        max_output_tokens=max_output_tokens,
+    )
+
+
+def _clean_source_list(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    cleaned: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        url = _clean_string(item.get("url"), 1500)
+        if not url:
+            continue
+        key = url.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        title = _clean_string(item.get("title"), 500) or url
+        cleaned.append({"title": title, "url": url})
+        if len(cleaned) >= 30:
+            break
+    return cleaned
+
+
+def _grounding_sources(raw: dict[str, Any]) -> list[dict[str, str]]:
+    if not isinstance(raw, dict):
+        return []
+    output: list[dict[str, str]] = []
+    seen: set[str] = set()
+    try:
+        candidates = raw.get("candidates") or []
+        for candidate in candidates:
+            grounding = (candidate or {}).get("groundingMetadata") or {}
+            chunks = grounding.get("groundingChunks") or []
+            for chunk in chunks:
+                web = (chunk or {}).get("web") or {}
+                url = _clean_string(web.get("uri"), 1500)
+                if not url:
+                    continue
+                key = url.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                title = _clean_string(web.get("title"), 500) or url
+                output.append({"title": title, "url": url})
+                if len(output) >= 30:
+                    return output
+    except Exception:
+        return output
+    return output
