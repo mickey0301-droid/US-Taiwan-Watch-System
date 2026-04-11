@@ -248,8 +248,11 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
             st.error(message)
         details = flash.get("details") or {}
         if details:
-            with st.expander("AI 補資料明細" if lang == "zh-TW" else "AI enrichment details"):
+            with st.expander("更新記錄" if lang == "zh-TW" else "Refresh details"):
                 if isinstance(details, dict):
+                    provider = str(details.get("provider") or "").strip().upper()
+                    if provider:
+                        st.write(("本次使用：" if lang == "zh-TW" else "Provider: ") + provider)
                     updated_fields = [str(item).strip() for item in details.get("updated_fields") or [] if str(item).strip()]
                     if updated_fields:
                         st.write(("更新欄位：" if lang == "zh-TW" else "Updated fields: ") + ", ".join(updated_fields))
@@ -313,12 +316,12 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
             st.markdown(f"`{'最新動作' if lang == 'zh-TW' else 'Latest action'}`：{latest_action}")
 
         if st.button(
-            "用 AI 查詢並補資料" if lang == "zh-TW" else "Research and enrich with AI",
-            key=f"legislation-gemini-enrich-{selected.id}",
+            "重新整理" if lang == "zh-TW" else "Refresh",
+            key=f"legislation-refresh-{selected.id}",
         ):
             try:
-                with st.spinner("AI 正在查詢官方資料並更新法案..." if lang == "zh-TW" else "AI is researching and updating this bill..."):
-                    enrichment = LegislationAIEnrichmentService(service.session).enrich_with_gemini(int(selected.id))
+                with st.spinner("正在重新整理法案資料..." if lang == "zh-TW" else "Refreshing legislation data..."):
+                    enrichment = LegislationAIEnrichmentService(service.session).refresh_with_ai(int(selected.id))
                     service.session.commit()
                 st.session_state[f"legislation-ai-enrich-flash-{selected.id}"] = {
                     "ok": enrichment.ok,
@@ -328,6 +331,7 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
                         else f"{enrichment.message} Updated {len(enrichment.updated_fields)} fields, linked sponsors +{enrichment.sponsors_linked}, cosponsors +{enrichment.cosponsors_linked}, skipped {len(enrichment.skipped_sponsors)}."
                     ),
                     "details": {
+                        "provider": enrichment.provider,
                         "updated_fields": enrichment.updated_fields,
                         "sponsors_linked": enrichment.sponsors_linked,
                         "cosponsors_linked": enrichment.cosponsors_linked,

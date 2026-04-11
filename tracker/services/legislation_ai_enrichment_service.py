@@ -16,6 +16,7 @@ from tracker.utils.web import parse_datetime
 class LegislationAIEnrichmentResult:
     ok: bool = False
     message: str = ""
+    provider: str = ""
     updated_fields: list[str] = field(default_factory=list)
     sponsors_linked: int = 0
     cosponsors_linked: int = 0
@@ -24,7 +25,7 @@ class LegislationAIEnrichmentResult:
 
 
 class LegislationAIEnrichmentService:
-    """Use Gemini grounding to enrich an existing legislation record."""
+    """Refresh an existing legislation record with the best available AI provider."""
 
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -32,7 +33,7 @@ class LegislationAIEnrichmentService:
         self.manual_url_import_service = ManualUrlImportService(session)
         self.ai_assist_service = AIAssistService()
 
-    def enrich_with_gemini(self, legislation_id: int) -> LegislationAIEnrichmentResult:
+    def refresh_with_ai(self, legislation_id: int) -> LegislationAIEnrichmentResult:
         legislation = self.session.get(Legislation, legislation_id)
         if not legislation:
             return LegislationAIEnrichmentResult(ok=False, message="找不到法案。")
@@ -181,16 +182,21 @@ class LegislationAIEnrichmentService:
         return LegislationAIEnrichmentResult(
             ok=True,
             message=(
-                "Gemini 已完成查詢並更新法案資料。"
+                "已重新整理法案資料（Gemini）。"
                 if provider_used == "gemini"
-                else "OpenAI 已完成查詢並更新法案資料。"
+                else "已重新整理法案資料（OpenAI）。"
             ),
+            provider=provider_used,
             updated_fields=updated_fields,
             sponsors_linked=sponsors_linked,
             cosponsors_linked=cosponsors_linked,
             skipped_sponsors=skipped_sponsors,
             sources=list(metadata.get("sources") or []),
         )
+
+    def enrich_with_gemini(self, legislation_id: int) -> LegislationAIEnrichmentResult:
+        """Backward-compatible alias."""
+        return self.refresh_with_ai(legislation_id)
 
 
 def _date_from_ai(value: object):
