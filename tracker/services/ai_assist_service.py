@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 import json
 import re
+import time
 from typing import Any
 
 import httpx
@@ -207,14 +208,17 @@ class AIAssistService:
         if not isinstance(payload, dict):
             return None
         if not payload.get("sponsor_names") and not payload.get("cosponsor_names"):
-            sponsor_probe = _research_legislation_sponsors_with_gemini(
-                api_key=self.settings.gemini_api_key or "",
-                model=self.settings.gemini_model,
-                source_url=source_url,
-                bill_number=_clean_string(current.get("bill_number"), 100) or "",
-                bill_title=_clean_string(current.get("title"), 500) or page_title,
-                page_body=page_body,
-            )
+            try:
+                sponsor_probe = _research_legislation_sponsors_with_gemini(
+                    api_key=self.settings.gemini_api_key or "",
+                    model=self.settings.gemini_model,
+                    source_url=source_url,
+                    bill_number=_clean_string(current.get("bill_number"), 100) or "",
+                    bill_title=_clean_string(current.get("title"), 500) or page_title,
+                    page_body=page_body,
+                )
+            except Exception:
+                sponsor_probe = None
             if isinstance(sponsor_probe, dict):
                 if sponsor_probe.get("sponsor_names"):
                     payload["sponsor_names"] = sponsor_probe.get("sponsor_names")
@@ -545,6 +549,23 @@ def _sanitize_legislation_metadata(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 
+def _gemini_retry_delay_seconds(exc: httpx.HTTPStatusError, attempt: int) -> float:
+    fallback = min(8.0, 0.8 * (2 ** max(0, attempt)))
+    response = exc.response
+    if response is None:
+        return fallback
+    retry_after = str(response.headers.get("Retry-After") or "").strip()
+    if not retry_after:
+        return fallback
+    try:
+        seconds = float(retry_after)
+    except Exception:
+        return fallback
+    if seconds <= 0:
+        return fallback
+    return min(30.0, seconds)
+
+
 def _gemini_grounded_json(
     api_key: str,
     model: str,
@@ -586,39 +607,55 @@ def _gemini_grounded_json(
         base_payload,
     ]
 
+    max_retries = 3
     last_400_message = ""
+    last_429_message = ""
     for payload in variants:
-        try:
-            response = httpx.post(url, json=payload, timeout=60.0)
-            response.raise_for_status()
-            raw = response.json()
-            text = ""
+        for attempt in range(max_retries):
             try:
-                candidates = raw.get("candidates") or []
-                if candidates:
-                    parts = ((candidates[0] or {}).get("content") or {}).get("parts") or []
-                    for part in parts:
-                        value = part.get("text")
-                        if isinstance(value, str) and value.strip():
-                            text = value.strip()
-                            break
-            except Exception:
+                response = httpx.post(url, json=payload, timeout=60.0)
+                response.raise_for_status()
+                raw = response.json()
                 text = ""
-            if not text:
-                text = json.dumps(raw, ensure_ascii=False)
-            return {"text": text, "raw": raw}
-        except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code if exc.response is not None else None
-            if status == 400:
-                body = ""
                 try:
-                    body = (exc.response.text or "")[:500]
+                    candidates = raw.get("candidates") or []
+                    if candidates:
+                        parts = ((candidates[0] or {}).get("content") or {}).get("parts") or []
+                        for part in parts:
+                            value = part.get("text")
+                            if isinstance(value, str) and value.strip():
+                                text = value.strip()
+                                break
                 except Exception:
+                    text = ""
+                if not text:
+                    text = json.dumps(raw, ensure_ascii=False)
+                return {"text": text, "raw": raw}
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                if status == 400:
                     body = ""
-                last_400_message = body or str(exc)
-                continue
-            raise
+                    try:
+                        body = (exc.response.text or "")[:500]
+                    except Exception:
+                        body = ""
+                    last_400_message = body or str(exc)
+                    break
+                if status == 429:
+                    body = ""
+                    try:
+                        body = (exc.response.text or "")[:500]
+                    except Exception:
+                        body = ""
+                    last_429_message = body or str(exc)
+                    if attempt < (max_retries - 1):
+                        time.sleep(_gemini_retry_delay_seconds(exc, attempt))
+                        continue
+                    break
+                raise
 
+    if last_429_message:
+        raise ValueError(f"Gemini rate limit reached (429). Please retry shortly. Detail: {last_429_message}")
     if last_400_message:
         raise ValueError(f"Gemini request rejected (400): {last_400_message}")
     return None
