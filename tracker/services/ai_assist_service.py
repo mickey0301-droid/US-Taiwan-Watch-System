@@ -200,7 +200,10 @@ class AIAssistService:
         )
         if not result:
             return None
-        payload = _parse_json_object(result.get("text") or "")
+        result_text = str(result.get("text") or "")
+        payload = _parse_json_object(result_text)
+        if not isinstance(payload, dict):
+            payload = _fallback_legislation_metadata_from_text(result_text, current)
         if not isinstance(payload, dict):
             return None
         sanitized = _sanitize_legislation_metadata(payload)
@@ -271,6 +274,50 @@ def _parse_json_object(value: str) -> dict[str, Any] | None:
     except Exception:
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _fallback_legislation_metadata_from_text(text: str, current: dict[str, Any]) -> dict[str, Any] | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    cleaned = re.sub(r"```(?:json)?", "", raw, flags=re.I).replace("```", "").strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    summary = _clean_string(cleaned, 1800)
+    if not summary:
+        return None
+
+    status_text = None
+    status_match = re.search(r"(?:status|目前狀態|最新動作)\s*[:：]\s*([^\n]+)", raw, flags=re.I)
+    if status_match:
+        status_text = _clean_string(status_match.group(1), 255)
+
+    introduced_date = _clean_string(current.get("introduced_date"), 20)
+    last_action_date = _clean_string(current.get("last_action_date"), 20)
+    if not introduced_date:
+        m = re.search(r"(20\d{2}-\d{2}-\d{2})", raw)
+        if m:
+            introduced_date = m.group(1)
+
+    lower = cleaned.casefold()
+    is_taiwan_related = bool(("taiwan" in lower) or ("台灣" in cleaned) or ("臺灣" in cleaned))
+
+    return {
+        "title": _clean_string(current.get("title"), 500),
+        "bill_number": _clean_string(current.get("bill_number"), 100),
+        "level": _clean_string(current.get("level"), 20) or "other",
+        "jurisdiction_name": _clean_string(current.get("jurisdiction_name"), 255),
+        "chamber": _clean_string(current.get("chamber"), 20) or "unknown",
+        "legislation_type": _clean_string(current.get("legislation_type"), 40) or "other",
+        "summary": summary,
+        "status_text": status_text or _clean_string(current.get("status_text"), 255),
+        "introduced_date": introduced_date,
+        "last_action_date": last_action_date,
+        "sponsor_names": [],
+        "cosponsor_names": [],
+        "is_taiwan_related": is_taiwan_related,
+        "relevance_score": 0.8 if is_taiwan_related else None,
+        "sources": [],
+    }
 
 
 def _clean_string(value: object, max_len: int | None = None) -> str | None:
