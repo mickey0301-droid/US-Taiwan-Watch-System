@@ -57,6 +57,28 @@ def _should_prefix_bill_number(bill_number: str) -> bool:
     return text.lower() not in {"n/a", "na", "unknown", "none", "null"}
 
 
+def _clean_legislation_summary_display(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("{") and '"summary"' in text:
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, dict):
+                candidate = str(payload.get("summary") or "").strip()
+                if candidate:
+                    return re.sub(r"\s+", " ", candidate)
+        except Exception:
+            pass
+    match = re.search(r'"summary"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
+    if match:
+        candidate = match.group(1).replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+        candidate = candidate.replace('\"', '"').replace('\\', '\\').strip()
+        if candidate:
+            return re.sub(r"\s+", " ", candidate)
+    return re.sub(r"\s+", " ", text)
+
+
 def render(lang: str, labels: dict[str, str]) -> None:
     st.header(labels["legislation"])
     selected_legislation_id = _query_legislation_id()
@@ -226,8 +248,26 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
             st.error(message)
         details = flash.get("details") or {}
         if details:
-            with st.expander("Gemini 補資料明細" if lang == "zh-TW" else "Gemini enrichment details"):
-                st.json(details)
+            with st.expander("AI 補資料明細" if lang == "zh-TW" else "AI enrichment details"):
+                if isinstance(details, dict):
+                    updated_fields = [str(item).strip() for item in details.get("updated_fields") or [] if str(item).strip()]
+                    if updated_fields:
+                        st.write(("更新欄位：" if lang == "zh-TW" else "Updated fields: ") + ", ".join(updated_fields))
+                    st.write(
+                        ("提案人新增：" if lang == "zh-TW" else "Sponsors linked: ") + str(int(details.get("sponsors_linked") or 0))
+                    )
+                    st.write(
+                        ("共同提案人新增：" if lang == "zh-TW" else "Cosponsors linked: ") + str(int(details.get("cosponsors_linked") or 0))
+                    )
+                    skipped = [
+                        str((item or {}).get("full_name") or "").strip()
+                        for item in details.get("skipped_sponsors") or []
+                        if isinstance(item, dict)
+                    ]
+                    skipped = [name for name in skipped if name]
+                    if skipped:
+                        st.write(("略過名單：" if lang == "zh-TW" else "Skipped: ") + ", ".join(skipped[:10]))
+
                 sources = details.get("sources") if isinstance(details, dict) else []
                 if isinstance(sources, list) and sources:
                     st.markdown("`參考來源`：" if lang == "zh-TW" else "`Sources`:")
@@ -251,7 +291,7 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
     ) or selected.source_url
     bill_text_url = raw_payload.get("text_page_url")
     sponsors, cosponsors = _split_db_sponsors(service.list_sponsors(selected.id), people_by_id)
-    summary = str(selected.summary or raw_payload.get("summary") or "").strip()
+    summary = _clean_legislation_summary_display(selected.summary or raw_payload.get("summary"))
     latest_action = str(raw_payload.get("latest_action_text") or "").strip()
     if not summary:
         summary = latest_action or (str(selected.title or "").strip())
@@ -273,11 +313,11 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
             st.markdown(f"`{'最新動作' if lang == 'zh-TW' else 'Latest action'}`：{latest_action}")
 
         if st.button(
-            "用 Gemini 查詢並補資料" if lang == "zh-TW" else "Research and enrich with Gemini",
+            "用 AI 查詢並補資料" if lang == "zh-TW" else "Research and enrich with AI",
             key=f"legislation-gemini-enrich-{selected.id}",
         ):
             try:
-                with st.spinner("Gemini 正在查詢官方資料並更新法案..." if lang == "zh-TW" else "Gemini is researching and updating this bill..."):
+                with st.spinner("AI 正在查詢官方資料並更新法案..." if lang == "zh-TW" else "AI is researching and updating this bill..."):
                     enrichment = LegislationAIEnrichmentService(service.session).enrich_with_gemini(int(selected.id))
                     service.session.commit()
                 st.session_state[f"legislation-ai-enrich-flash-{selected.id}"] = {
@@ -299,7 +339,7 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
                 service.session.rollback()
                 st.session_state[f"legislation-ai-enrich-flash-{selected.id}"] = {
                     "ok": False,
-                    "message": f"Gemini 補資料失敗：{type(exc).__name__}: {exc}" if lang == "zh-TW" else f"Gemini enrichment failed: {type(exc).__name__}: {exc}",
+                    "message": f"AI 補資料失敗：{type(exc).__name__}: {exc}" if lang == "zh-TW" else f"AI enrichment failed: {type(exc).__name__}: {exc}",
                 }
             st.rerun()
 

@@ -240,6 +240,61 @@ class AIAssistService:
         return sanitized
 
 
+    def research_legislation_metadata_with_openai(
+        self,
+        current: dict[str, Any],
+        page_title: str,
+        page_body: str,
+        source_url: str,
+    ) -> dict[str, Any] | None:
+        if not self.enabled:
+            return None
+        system_prompt = (
+            "You enrich metadata for a US federal/state legislation record. "
+            "Return strict JSON only. Do not invent facts; use null or [] when unknown. "
+            "Keys: title, bill_number, level, jurisdiction_name, chamber, legislation_type, summary, status_text, "
+            "introduced_date, last_action_date, sponsor_names, cosponsor_names, is_taiwan_related, relevance_score. "
+            "Dates must be YYYY-MM-DD. level must be federal/state/other. chamber must be senate/house/unknown. "
+            "legislation_type must be bill/resolution/joint_resolution/concurrent_resolution/other. "
+            "summary should be one concise Traditional Chinese sentence."
+        )
+        user_prompt = (
+            f"Current database record JSON:\n{json.dumps(current, ensure_ascii=False)}\n\n"
+            f"Official/source URL: {source_url}\n"
+            f"Fetched page title: {page_title}\n"
+            f"Fetched page text excerpt:\n{(page_body or '')[:10000]}\n\n"
+            "Task: Return the metadata JSON now."
+        )
+        result_text = _responses_text(
+            self.settings.openai_api_key or "",
+            self.settings.openai_model,
+            system_prompt,
+            user_prompt,
+            1000,
+        )
+        if not result_text:
+            return None
+        payload = _parse_json_object(result_text)
+        if not isinstance(payload, dict):
+            payload = _fallback_legislation_metadata_from_text(result_text, current)
+        if not isinstance(payload, dict):
+            return None
+
+        sanitized = _sanitize_legislation_metadata(payload)
+        if not sanitized.get("sponsor_names") and not sanitized.get("cosponsor_names"):
+            fallback_sponsors = _extract_sponsors_from_text(result_text or page_body)
+            if fallback_sponsors.get("sponsor_names"):
+                sanitized["sponsor_names"] = fallback_sponsors["sponsor_names"]
+            if fallback_sponsors.get("cosponsor_names"):
+                sanitized["cosponsor_names"] = fallback_sponsors["cosponsor_names"]
+
+        sources = _clean_source_list(payload.get("sources"))
+        if not sources and source_url:
+            sources = [{"title": _clean_string(page_title, 500) or source_url, "url": source_url}]
+        sanitized["sources"] = sources
+        return sanitized
+
+
 @lru_cache(maxsize=512)
 def _responses_text(
     api_key: str,

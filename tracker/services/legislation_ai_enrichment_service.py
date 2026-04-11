@@ -36,8 +36,8 @@ class LegislationAIEnrichmentService:
         legislation = self.session.get(Legislation, legislation_id)
         if not legislation:
             return LegislationAIEnrichmentResult(ok=False, message="找不到法案。")
-        if not self.ai_assist_service.gemini_enabled:
-            return LegislationAIEnrichmentResult(ok=False, message="尚未設定 GEMINI_API_KEY。")
+        if not self.ai_assist_service.gemini_enabled and not self.ai_assist_service.enabled:
+            return LegislationAIEnrichmentResult(ok=False, message="尚未設定可用的 AI API Key（Gemini/OpenAI）。")
 
         source_url = str(legislation.source_url or "").strip()
         page_title = ""
@@ -52,26 +52,55 @@ class LegislationAIEnrichmentService:
                 page_title = str(legislation.title or "")
                 page_body = str(legislation.summary or "")
 
-        metadata = self.ai_assist_service.research_legislation_metadata_with_gemini(
-            current={
-                "title": legislation.title,
-                "bill_number": legislation.bill_number,
-                "level": legislation.level,
-                "jurisdiction_name": legislation.jurisdiction_name,
-                "chamber": legislation.chamber,
-                "legislation_type": legislation.legislation_type,
-                "summary": legislation.summary,
-                "status_text": legislation.status_text,
-                "introduced_date": legislation.introduced_date.isoformat() if legislation.introduced_date else None,
-                "last_action_date": legislation.last_action_date.isoformat() if legislation.last_action_date else None,
-                "source_url": source_url,
-            },
-            page_title=page_title,
-            page_body=page_body,
-            source_url=source_url,
-        )
+        current_payload = {
+            "title": legislation.title,
+            "bill_number": legislation.bill_number,
+            "level": legislation.level,
+            "jurisdiction_name": legislation.jurisdiction_name,
+            "chamber": legislation.chamber,
+            "legislation_type": legislation.legislation_type,
+            "summary": legislation.summary,
+            "status_text": legislation.status_text,
+            "introduced_date": legislation.introduced_date.isoformat() if legislation.introduced_date else None,
+            "last_action_date": legislation.last_action_date.isoformat() if legislation.last_action_date else None,
+            "source_url": source_url,
+        }
+
+        metadata: dict[str, Any] | None = None
+        provider_used = ""
+        provider_error = ""
+
+        if self.ai_assist_service.gemini_enabled:
+            try:
+                metadata = self.ai_assist_service.research_legislation_metadata_with_gemini(
+                    current=current_payload,
+                    page_title=page_title,
+                    page_body=page_body,
+                    source_url=source_url,
+                )
+                if metadata:
+                    provider_used = "gemini"
+            except Exception as exc:
+                provider_error = f"{type(exc).__name__}: {exc}"
+
+        if not metadata and self.ai_assist_service.enabled:
+            try:
+                metadata = self.ai_assist_service.research_legislation_metadata_with_openai(
+                    current=current_payload,
+                    page_title=page_title,
+                    page_body=page_body,
+                    source_url=source_url,
+                )
+                if metadata:
+                    provider_used = "openai"
+            except Exception as exc:
+                if not provider_error:
+                    provider_error = f"{type(exc).__name__}: {exc}"
+
         if not metadata:
-            return LegislationAIEnrichmentResult(ok=False, message="Gemini 沒有回傳可用的法案資料。")
+            if provider_error:
+                return LegislationAIEnrichmentResult(ok=False, message=f"AI 補資料失敗：{provider_error}")
+            return LegislationAIEnrichmentResult(ok=False, message="AI 沒有回傳可用的法案資料。")
 
         updated_fields: list[str] = []
         for attr, key in (
@@ -101,7 +130,8 @@ class LegislationAIEnrichmentService:
             legislation.relevance_score = float(metadata["relevance_score"])
 
         raw_payload = dict(legislation.raw_payload or {})
-        raw_payload["gemini_enrichment"] = {
+        raw_payload["ai_enrichment"] = {
+            "provider": provider_used or "unknown",
             "metadata": metadata,
             "sources": metadata.get("sources") or [],
             "source_url": source_url,
@@ -115,7 +145,7 @@ class LegislationAIEnrichmentService:
             "jurisdiction_name": legislation.jurisdiction_name,
             "source_url": source_url or legislation.source_url,
             "source_type": legislation.source_type,
-            "parser_identity": "gemini_legislation_enrichment_v1",
+            "parser_identity": f"{provider_used or 'ai'}_legislation_enrichment_v1",
         }
         before_skipped = len(sponsor_payload.get("skipped_sponsors") or [])
         for role, key in (("sponsor", "sponsor_names"), ("cosponsor", "cosponsor_names")):
@@ -150,7 +180,11 @@ class LegislationAIEnrichmentService:
         self.session.flush()
         return LegislationAIEnrichmentResult(
             ok=True,
-            message="Gemini 已完成查詢並更新法案資料。",
+            message=(
+                "Gemini 已完成查詢並更新法案資料。"
+                if provider_used == "gemini"
+                else "OpenAI 已完成查詢並更新法案資料。"
+            ),
             updated_fields=updated_fields,
             sponsors_linked=sponsors_linked,
             cosponsors_linked=cosponsors_linked,
