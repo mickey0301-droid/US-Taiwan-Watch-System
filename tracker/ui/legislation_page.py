@@ -123,9 +123,15 @@ def render(lang: str, labels: dict[str, str]) -> None:
         year_label = "年份" if lang == "zh-TW" else "Year"
         month_label = "月份" if lang == "zh-TW" else "Month"
         type_options = _type_options(lang)
-        selected_type = st.selectbox(type_label, list(type_options.keys()), format_func=lambda key: type_options[key])
+        selected_type = st.selectbox(
+            type_label,
+            list(type_options.keys()),
+            format_func=lambda key: type_options[key],
+            key="legislation-type-filter",
+        )
 
         typed_rows = _dedupe_db_legislation_rows(_filter_db_rows_by_type(all_rows, selected_type))
+        selected_state = ""
         if selected_type == "state":
             state_label = "州" if lang == "zh-TW" else "State"
             states = sorted(
@@ -143,6 +149,12 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     if str(row.jurisdiction_name or "").strip() == selected_state
                 ]
 
+        scope_key = f"{selected_type}|{selected_state}"
+        if st.session_state.get("legislation-scope-key") != scope_key:
+            st.session_state["legislation-scope-key"] = scope_key
+            st.session_state["legislation-year-filter"] = "all"
+            st.session_state["legislation-month-filter"] = 0
+
         years = _list_years(typed_rows)
         if not years:
             st.info("目前沒有符合條件的法案。" if lang == "zh-TW" else "No legislation matches this filter.")
@@ -153,18 +165,26 @@ def render(lang: str, labels: dict[str, str]) -> None:
             year_label,
             year_options,
             format_func=lambda value: ("全部" if lang == "zh-TW" else "All") if value == "all" else str(value),
+            key="legislation-year-filter",
         )
         if selected_year == "all":
             selected_month = 0
+            st.session_state["legislation-month-filter"] = 0
         else:
             months = [0, *_list_months(typed_rows, int(selected_year))]
+            if st.session_state.get("legislation-month-filter") not in months:
+                st.session_state["legislation-month-filter"] = 0
             selected_month = st.selectbox(
                 month_label,
                 months,
                 format_func=lambda value: ("全部" if lang == "zh-TW" else "All") if value == 0 else f"{value:02d}",
+                key="legislation-month-filter",
             )
 
         legislation_rows = _rows_for_year_month(typed_rows, selected_year, selected_month)
+        st.caption(
+            (f"目前顯示 {len(legislation_rows)} 筆" if lang == "zh-TW" else f"Showing {len(legislation_rows)} records")
+        )
         if not legislation_rows:
             st.info("這個月份目前沒有立法資料。" if lang == "zh-TW" else "No legislation is available for this month.")
             return
