@@ -356,6 +356,14 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
                         if not url:
                             continue
                         st.markdown(f"{idx}. [{title or url}]({url})")
+    edit_flash_key = f"legislation-edit-flash-{selected.id}"
+    edit_flash = st.session_state.pop(edit_flash_key, None)
+    if isinstance(edit_flash, dict):
+        if bool(edit_flash.get("ok")):
+            st.success(str(edit_flash.get("message") or ""))
+        else:
+            st.error(str(edit_flash.get("message") or ""))
+
 
     if st.button("返回法案列表" if lang == "zh-TW" else "Back to legislation list", key=f"legislation-back-{selected.id}"):
         _clear_legislation_id()
@@ -449,6 +457,102 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
             st.write("、".join(fallback_cosponsor_names[:12]) if lang == "zh-TW" else ", ".join(fallback_cosponsor_names[:12]))
         else:
             st.write("無" if lang == "zh-TW" else "None")
+
+    with st.expander("編輯法案" if lang == "zh-TW" else "Edit legislation", expanded=False):
+        with st.form(f"legislation-edit-form-{selected.id}", clear_on_submit=False):
+            title_value = st.text_input("標題" if lang == "zh-TW" else "Title", value=str(selected.title or ""))
+            bill_number_value = st.text_input("法案編號" if lang == "zh-TW" else "Bill number", value=str(selected.bill_number or ""))
+            summary_value = st.text_area("摘要" if lang == "zh-TW" else "Summary", value=str(selected.summary or ""), height=140)
+            status_value = st.text_input("目前狀態" if lang == "zh-TW" else "Current status", value=str(selected.status_text or ""))
+
+            level_options = ["federal", "state", "other"]
+            current_level = str(selected.level or "").strip().lower()
+            if current_level and current_level not in level_options:
+                level_options.append(current_level)
+            selected_level = st.selectbox(
+                "層級" if lang == "zh-TW" else "Level",
+                level_options,
+                index=level_options.index(current_level) if current_level in level_options else 0,
+            )
+
+            chamber_options = ["", "senate", "house", "unknown"]
+            current_chamber = str(selected.chamber or "").strip().lower()
+            if current_chamber and current_chamber not in chamber_options:
+                chamber_options.append(current_chamber)
+            selected_chamber = st.selectbox(
+                "議院" if lang == "zh-TW" else "Chamber",
+                chamber_options,
+                index=chamber_options.index(current_chamber) if current_chamber in chamber_options else 0,
+                format_func=lambda item: ("未設定" if lang == "zh-TW" else "Unspecified") if item == "" else item,
+            )
+
+            jurisdiction_value = st.text_input("州/轄區" if lang == "zh-TW" else "Jurisdiction", value=str(selected.jurisdiction_name or ""))
+            introduced_date_text = st.text_input(
+                "提案日期（YYYY-MM-DD）" if lang == "zh-TW" else "Introduced date (YYYY-MM-DD)",
+                value=_date_to_input_text(selected.introduced_date),
+            )
+            last_action_date_text = st.text_input(
+                "最新動作日期（YYYY-MM-DD）" if lang == "zh-TW" else "Latest action date (YYYY-MM-DD)",
+                value=_date_to_input_text(selected.last_action_date),
+            )
+            source_url_value = st.text_input("來源網址" if lang == "zh-TW" else "Source URL", value=str(selected.source_url or ""))
+            source_type_value = st.text_input("來源類型" if lang == "zh-TW" else "Source type", value=str(selected.source_type or ""))
+            submitted = st.form_submit_button("儲存法案" if lang == "zh-TW" else "Save legislation")
+
+        if submitted:
+            parsed_introduced_date, introduced_error = _parse_optional_date_text(introduced_date_text)
+            parsed_last_action_date, last_action_error = _parse_optional_date_text(last_action_date_text)
+            title_clean = str(title_value or "").strip()
+            source_url_clean = str(source_url_value or "").strip()
+            source_type_clean = str(source_type_value or "").strip()
+            if not title_clean:
+                st.error("標題不能為空。" if lang == "zh-TW" else "Title cannot be empty.")
+                return
+            if not source_url_clean:
+                st.error("來源網址不能為空。" if lang == "zh-TW" else "Source URL cannot be empty.")
+                return
+            if not source_type_clean:
+                st.error("來源類型不能為空。" if lang == "zh-TW" else "Source type cannot be empty.")
+                return
+            if introduced_error:
+                st.error(
+                    f"提案日期格式錯誤：{introduced_error}" if lang == "zh-TW" else f"Invalid introduced date: {introduced_error}"
+                )
+                return
+            if last_action_error:
+                st.error(
+                    f"最新動作日期格式錯誤：{last_action_error}" if lang == "zh-TW" else f"Invalid latest action date: {last_action_error}"
+                )
+                return
+            try:
+                selected.title = title_clean
+                selected.bill_number = _optional_text_or_none(bill_number_value)
+                selected.summary = _optional_text_or_none(summary_value)
+                selected.status_text = _optional_text_or_none(status_value)
+                selected.level = str(selected_level or "other").strip().lower() or "other"
+                selected.chamber = _optional_text_or_none(selected_chamber)
+                selected.jurisdiction_name = _optional_text_or_none(jurisdiction_value)
+                selected.jurisdiction_id = service._resolve_jurisdiction_id(selected.jurisdiction_name, selected.level)
+                selected.introduced_date = parsed_introduced_date
+                selected.last_action_date = parsed_last_action_date
+                selected.source_url = source_url_clean
+                selected.source_type = source_type_clean
+                service.session.commit()
+                st.session_state[edit_flash_key] = {
+                    "ok": True,
+                    "message": "法案已更新。" if lang == "zh-TW" else "Legislation updated.",
+                }
+            except Exception as exc:
+                service.session.rollback()
+                st.session_state[edit_flash_key] = {
+                    "ok": False,
+                    "message": (
+                        f"儲存失敗：{type(exc).__name__}: {exc}"
+                        if lang == "zh-TW"
+                        else f"Save failed: {type(exc).__name__}: {exc}"
+                    ),
+                }
+            st.rerun()
 
 
 def _split_db_sponsors(records: list[object], people_by_id: dict[int, Person]) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
@@ -961,6 +1065,27 @@ def _format_date(value) -> str:
     if value is None:
         return "N/A"
     return value.strftime("%Y-%m-%d")
+
+
+def _date_to_input_text(value: object) -> str:
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
+    return ""
+
+
+def _parse_optional_date_text(value: object) -> tuple[date | None, str | None]:
+    text = str(value or "").strip()
+    if not text:
+        return None, None
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").date(), None
+    except ValueError:
+        return None, text
+
+
+def _optional_text_or_none(value: object) -> str | None:
+    text = str(value or "").strip()
+    return text or None
 
 
 def _query_legislation_id() -> int | None:
