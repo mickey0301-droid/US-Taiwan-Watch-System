@@ -160,6 +160,13 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     for row in typed_rows
                     if str(row.jurisdiction_name or "").strip() == selected_state
                 ]
+            if selected_state and typed_rows:
+                _render_state_batch_refresh_button(
+                    rows=typed_rows,
+                    session=service.session,
+                    lang=lang,
+                    state_name=selected_state,
+                )
 
         scope_key = f"{selected_type}|{selected_state}"
         if st.session_state.get("legislation-scope-key") != scope_key:
@@ -842,6 +849,80 @@ def _render_sheet_legislation_rows(rows: list[dict[str, object]], people: list[d
         sponsors = _sheet_sponsors(selected, person_lookup=person_lookup)
         _render_sheet_legislation_card(selected, sponsors, lang, idx)
     return True
+
+
+def _render_state_batch_refresh_button(rows: list[Legislation], session, lang: str, state_name: str) -> None:
+    state_text = str(state_name or "").strip()
+    if not state_text or not rows:
+        return
+
+    flash_key = f"legislation-state-refresh-flash-{state_text}"
+    flash = st.session_state.pop(flash_key, None)
+    if isinstance(flash, dict):
+        message = str(flash.get("message") or "").strip()
+        if message:
+            if flash.get("ok"):
+                st.success(message)
+            else:
+                st.error(message)
+        details = [str(item or "").strip() for item in flash.get("errors") or [] if str(item or "").strip()]
+        if details:
+            with st.expander("錯誤明細" if lang == "zh-TW" else "Error details", expanded=False):
+                for item in details[:20]:
+                    st.write(item)
+
+    button_label = (
+        f"重新整理 {state_text} 全部法案（{len(rows)}）"
+        if lang == "zh-TW"
+        else f"Refresh all bills in {state_text} ({len(rows)})"
+    )
+    if st.button(button_label, key=f"legislation-state-refresh-btn-{state_text}"):
+        ok_count = 0
+        failed_count = 0
+        sponsors_added = 0
+        cosponsors_added = 0
+        errors: list[str] = []
+
+        progress = st.progress(
+            0.0,
+            text=("正在重新整理州法案..." if lang == "zh-TW" else "Refreshing state bills..."),
+        )
+        enricher = LegislationAIEnrichmentService(session)
+        total = len(rows)
+        for idx, row in enumerate(rows, start=1):
+            try:
+                enrichment = enricher.refresh_with_ai(int(row.id))
+                session.commit()
+                if enrichment.ok:
+                    ok_count += 1
+                else:
+                    failed_count += 1
+                sponsors_added += int(enrichment.sponsors_linked or 0)
+                cosponsors_added += int(enrichment.cosponsors_linked or 0)
+            except Exception as exc:
+                session.rollback()
+                failed_count += 1
+                errors.append(f"{row.bill_number or row.title}: {type(exc).__name__}: {exc}")
+
+            progress.progress(
+                idx / total,
+                text=(
+                    f"已重新整理 {idx}/{total} 筆法案"
+                    if lang == "zh-TW"
+                    else f"Refreshed {idx}/{total} bills"
+                ),
+            )
+
+        st.session_state[flash_key] = {
+            "ok": failed_count == 0,
+            "message": (
+                f"{state_text} 批次重新整理完成：成功 {ok_count}、失敗 {failed_count}、提案人 +{sponsors_added}、共同提案人 +{cosponsors_added}。"
+                if lang == "zh-TW"
+                else f"{state_text} batch refresh complete: success {ok_count}, failed {failed_count}, sponsors +{sponsors_added}, cosponsors +{cosponsors_added}."
+            ),
+            "errors": errors,
+        }
+        st.rerun()
 
 
 def _render_sheet_legislation_card(selected: dict[str, object], sponsors: list[dict[str, object]], lang: str, index: int) -> None:
