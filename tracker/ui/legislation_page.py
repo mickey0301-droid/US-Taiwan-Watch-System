@@ -113,13 +113,21 @@ def render(lang: str, labels: dict[str, str]) -> None:
             st.info("目前沒有符合條件的法案。" if lang == "zh-TW" else "No legislation matches this filter.")
             return
 
-        selected_year = st.selectbox(year_label, years)
-        months = [0, *_list_months(typed_rows, selected_year)]
-        selected_month = st.selectbox(
-            month_label,
-            months,
-            format_func=lambda value: ("全部" if lang == "zh-TW" else "All") if value == 0 else f"{value:02d}",
+        year_options: list[object] = ["all", *years]
+        selected_year = st.selectbox(
+            year_label,
+            year_options,
+            format_func=lambda value: ("全部" if lang == "zh-TW" else "All") if value == "all" else str(value),
         )
+        if selected_year == "all":
+            selected_month = 0
+        else:
+            months = [0, *_list_months(typed_rows, int(selected_year))]
+            selected_month = st.selectbox(
+                month_label,
+                months,
+                format_func=lambda value: ("全部" if lang == "zh-TW" else "All") if value == 0 else f"{value:02d}",
+            )
 
         legislation_rows = _rows_for_year_month(typed_rows, selected_year, selected_month)
         if not legislation_rows:
@@ -433,24 +441,29 @@ def _render_sheet_legislation_rows(rows: list[dict[str, object]], people: list[d
     if not years:
         return True
 
-    selected_year = st.selectbox(year_label, years, key="sheet-legislation-year")
-    months = sorted({row.get("date_date").month for row in typed_rows if row.get("date_date") and row["date_date"].year == selected_year}, reverse=True)
-    months = [0, *months]
-    selected_month = st.selectbox(
-        month_label,
-        months,
-        format_func=lambda value: ("全部" if lang == "zh-TW" else "All") if value == 0 else f"{value:02d}",
-        key="sheet-legislation-month",
+    year_options: list[object] = ["all", *years]
+    selected_year = st.selectbox(
+        year_label,
+        year_options,
+        format_func=lambda value: ("全部" if lang == "zh-TW" else "All") if value == "all" else str(value),
+        key="sheet-legislation-year",
     )
-
-    if selected_month == 0:
-        filtered_rows = [row for row in typed_rows if row.get("date_date") and row["date_date"].year == selected_year]
+    if selected_year == "all":
+        selected_month = 0
     else:
-        filtered_rows = [
-            row
-            for row in typed_rows
-            if row.get("date_date") and row["date_date"].year == selected_year and row["date_date"].month == selected_month
-        ]
+        months = sorted(
+            {row.get("date_date").month for row in typed_rows if row.get("date_date") and row["date_date"].year == int(selected_year)},
+            reverse=True,
+        )
+        months = [0, *months]
+        selected_month = st.selectbox(
+            month_label,
+            months,
+            format_func=lambda value: ("全部" if lang == "zh-TW" else "All") if value == 0 else f"{value:02d}",
+            key="sheet-legislation-month",
+        )
+
+    filtered_rows = _rows_for_sheet_year_month(typed_rows, selected_year, selected_month)
     if not filtered_rows:
         return True
 
@@ -682,20 +695,38 @@ def _list_months(rows: Iterable[Legislation], year: int) -> list[int]:
     return sorted(months, reverse=True)
 
 
-def _rows_for_year_month(rows: Iterable[Legislation], year: int, month: int) -> list[Legislation]:
+def _rows_for_year_month(rows: Iterable[Legislation], year: object, month: int) -> list[Legislation]:
+    if year == "all":
+        return list(rows)
+    year_int = int(year)
     if month == 0:
         return [
             row
             for row in rows
             if _effective_legislation_date(row)
-            and _effective_legislation_date(row).year == year
+            and _effective_legislation_date(row).year == year_int
         ]
     return [
         row
         for row in rows
         if _effective_legislation_date(row)
-        and _effective_legislation_date(row).year == year
+        and _effective_legislation_date(row).year == year_int
         and _effective_legislation_date(row).month == month
+    ]
+
+
+def _rows_for_sheet_year_month(rows: Iterable[dict[str, object]], year: object, month: int) -> list[dict[str, object]]:
+    if year == "all":
+        return list(rows)
+    year_int = int(year)
+    if month == 0:
+        return [row for row in rows if row.get("date_date") and row["date_date"].year == year_int]
+    return [
+        row
+        for row in rows
+        if row.get("date_date")
+        and row["date_date"].year == year_int
+        and row["date_date"].month == month
     ]
 
 
