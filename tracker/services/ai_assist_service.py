@@ -475,8 +475,16 @@ def _research_legislation_sponsors_with_gemini(
     if not isinstance(payload, dict):
         return None
     return {
-        "sponsor_names": _clean_string_list(payload.get("sponsor_names"), 20),
-        "cosponsor_names": _clean_string_list(payload.get("cosponsor_names"), 100),
+        "sponsor_names": [
+            name
+            for name in (_normalize_legislator_name(item) for item in _clean_string_list(payload.get("sponsor_names"), 20))
+            if name
+        ],
+        "cosponsor_names": [
+            name
+            for name in (_normalize_legislator_name(item) for item in _clean_string_list(payload.get("cosponsor_names"), 100))
+            if name
+        ],
         "sources": _clean_source_list(payload.get("sources")) or _grounding_sources(result.get("raw") or {}),
     }
 
@@ -525,6 +533,7 @@ def _extract_sponsors_from_text(text: str) -> dict[str, list[str]]:
 def _clean_person_name(value: str) -> str | None:
     text = re.sub(r"\s+", " ", str(value or "").strip())
     text = re.sub(r"^[,\-–—:;]+|[,\-–—:;]+$", "", text)
+    text = re.sub(r"^(?:senator|rep\.?|representative|assemblymember|delegate|member)\s+", "", text, flags=re.I)
     if not text or len(text.split()) < 2:
         return None
     if any(ch.isdigit() for ch in text):
@@ -567,6 +576,24 @@ def _clean_string_list(value: object, max_items: int = 100) -> list[str]:
     return results
 
 
+def _normalize_legislator_name(value: object) -> str | None:
+    text = _clean_string(value, 160)
+    if not text:
+        return None
+    text = re.sub(r"^(?:senator|rep\.?|representative|assemblymember|delegate|member)\s+", "", text, flags=re.I)
+    text = re.sub(r"\s+", " ", text).strip(" ,;:-")
+    if not text:
+        return None
+    parts = text.split()
+    if len(parts) < 2:
+        return None
+    if any(part.casefold() in {"unknown", "tbd", "vacant", "vacancy"} for part in parts):
+        return None
+    if any(ch.isdigit() for ch in text):
+        return None
+    return text[:160]
+
+
 def _sanitize_legislation_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     level = (_clean_string(payload.get("level"), 20) or "other").lower()
     if level not in {"federal", "state", "other"}:
@@ -596,8 +623,16 @@ def _sanitize_legislation_metadata(payload: dict[str, Any]) -> dict[str, Any]:
         "status_text": _clean_string(payload.get("status_text"), 255),
         "introduced_date": _clean_string(payload.get("introduced_date"), 20),
         "last_action_date": _clean_string(payload.get("last_action_date"), 20),
-        "sponsor_names": _clean_string_list(payload.get("sponsor_names"), 20),
-        "cosponsor_names": _clean_string_list(payload.get("cosponsor_names"), 100),
+        "sponsor_names": [
+            name
+            for name in (_normalize_legislator_name(item) for item in _clean_string_list(payload.get("sponsor_names"), 20))
+            if name
+        ],
+        "cosponsor_names": [
+            name
+            for name in (_normalize_legislator_name(item) for item in _clean_string_list(payload.get("cosponsor_names"), 100))
+            if name
+        ],
         "is_taiwan_related": is_taiwan_related,
         "relevance_score": relevance_score,
     }

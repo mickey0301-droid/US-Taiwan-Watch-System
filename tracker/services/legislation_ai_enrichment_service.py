@@ -5,7 +5,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from tracker.models import Legislation
+from tracker.models import Legislation, Person
 from tracker.services.ai_assist_service import AIAssistService
 from tracker.services.legislation_service import LegislationService
 from tracker.services.manual_url_import_service import ManualUrlImportService
@@ -17,6 +17,7 @@ class LegislationAIEnrichmentResult:
     ok: bool = False
     message: str = ""
     provider: str = ""
+    placeholders_removed: int = 0
     updated_fields: list[str] = field(default_factory=list)
     sponsors_linked: int = 0
     cosponsors_linked: int = 0
@@ -130,6 +131,12 @@ class LegislationAIEnrichmentService:
         if isinstance(metadata.get("relevance_score"), (int, float)):
             legislation.relevance_score = float(metadata["relevance_score"])
 
+        placeholders_removed = _remove_placeholder_sponsor_links(
+            self.session,
+            self.legislation_service,
+            legislation.id,
+        )
+
         raw_payload = dict(legislation.raw_payload or {})
         raw_payload["ai_enrichment"] = {
             "provider": provider_used or "unknown",
@@ -187,6 +194,7 @@ class LegislationAIEnrichmentService:
                 else "已重新整理法案資料（OpenAI）。"
             ),
             provider=provider_used,
+            placeholders_removed=placeholders_removed,
             updated_fields=updated_fields,
             sponsors_linked=sponsors_linked,
             cosponsors_linked=cosponsors_linked,
@@ -197,6 +205,31 @@ class LegislationAIEnrichmentService:
     def enrich_with_gemini(self, legislation_id: int) -> LegislationAIEnrichmentResult:
         """Backward-compatible alias."""
         return self.refresh_with_ai(legislation_id)
+
+
+def _is_placeholder_legislator_name(name: str) -> bool:
+    text = str(name or "").strip()
+    if not text:
+        return False
+    lowered = text.casefold()
+    if lowered.startswith(("senator ", "representative ", "rep ", "rep. ", "member ")):
+        without_title = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else ""
+        return len(without_title.split()) < 2
+    return False
+
+
+def _remove_placeholder_sponsor_links(session: Session, service: LegislationService, legislation_id: int) -> int:
+    removed = 0
+    for sponsor in list(service.list_sponsors(legislation_id)):
+        person = session.get(Person, int(getattr(sponsor, "person_id", 0) or 0))
+        if not person:
+            continue
+        if _is_placeholder_legislator_name(str(person.full_name or "")):
+            session.delete(sponsor)
+            removed += 1
+    if removed:
+        session.flush()
+    return removed
 
 
 def _date_from_ai(value: object):

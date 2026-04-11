@@ -253,6 +253,9 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
                     provider = str(details.get("provider") or "").strip().upper()
                     if provider:
                         st.write(("本次使用：" if lang == "zh-TW" else "Provider: ") + provider)
+                    removed_count = int(details.get("placeholders_removed") or 0)
+                    if removed_count:
+                        st.write(("清除假人名：" if lang == "zh-TW" else "Removed placeholder names: ") + str(removed_count))
                     updated_fields = [str(item).strip() for item in details.get("updated_fields") or [] if str(item).strip()]
                     if updated_fields:
                         st.write(("更新欄位：" if lang == "zh-TW" else "Updated fields: ") + ", ".join(updated_fields))
@@ -326,12 +329,13 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
                 st.session_state[f"legislation-ai-enrich-flash-{selected.id}"] = {
                     "ok": enrichment.ok,
                     "message": (
-                        f"{enrichment.message} 更新欄位 {len(enrichment.updated_fields)} 個、連結提案人 +{enrichment.sponsors_linked}、共同提案人 +{enrichment.cosponsors_linked}、略過 {len(enrichment.skipped_sponsors)} 個。"
+                        f"{enrichment.message} 清除假人名 {int(enrichment.placeholders_removed)} 個、更新欄位 {len(enrichment.updated_fields)} 個、連結提案人 +{enrichment.sponsors_linked}、共同提案人 +{enrichment.cosponsors_linked}、略過 {len(enrichment.skipped_sponsors)} 個。"
                         if lang == "zh-TW"
-                        else f"{enrichment.message} Updated {len(enrichment.updated_fields)} fields, linked sponsors +{enrichment.sponsors_linked}, cosponsors +{enrichment.cosponsors_linked}, skipped {len(enrichment.skipped_sponsors)}."
+                        else f"{enrichment.message} Removed {int(enrichment.placeholders_removed)} placeholder names, updated {len(enrichment.updated_fields)} fields, linked sponsors +{enrichment.sponsors_linked}, cosponsors +{enrichment.cosponsors_linked}, skipped {len(enrichment.skipped_sponsors)}."
                     ),
                     "details": {
                         "provider": enrichment.provider,
+                        "placeholders_removed": enrichment.placeholders_removed,
                         "updated_fields": enrichment.updated_fields,
                         "sponsors_linked": enrichment.sponsors_linked,
                         "cosponsors_linked": enrichment.cosponsors_linked,
@@ -466,6 +470,43 @@ def _render_db_legislation_card(selected: Legislation, service: LegislationServi
         st.markdown(f"`{cosponsor_label}`：{cosponsor_text}")
         st.markdown(f"`{introduced_label}`：{_format_date(_effective_legislation_date(selected))}")
         _render_legislation_links(source_links or ([str(official_link)] if official_link else []))
+
+        refresh_flash_key = f"legislation-list-refresh-{int(selected.id)}"
+        refresh_flash = st.session_state.pop(refresh_flash_key, None)
+        if isinstance(refresh_flash, dict):
+            refresh_message = str(refresh_flash.get("message") or "").strip()
+            if refresh_message:
+                if refresh_flash.get("ok"):
+                    st.success(refresh_message)
+                else:
+                    st.error(refresh_message)
+
+        if st.button("重新整理" if lang == "zh-TW" else "Refresh", key=f"legislation-list-refresh-btn-{int(selected.id)}"):
+            try:
+                with st.spinner("正在重新整理法案資料..." if lang == "zh-TW" else "Refreshing legislation data..."):
+                    enrichment = LegislationAIEnrichmentService(service.session).refresh_with_ai(int(selected.id))
+                    service.session.commit()
+                provider = str(enrichment.provider or "").strip().upper()
+                provider_hint = f"（{provider}）" if provider else ""
+                st.session_state[refresh_flash_key] = {
+                    "ok": enrichment.ok,
+                    "message": (
+                        f"已重新整理{provider_hint}：清除假人名 {int(enrichment.placeholders_removed)} 個、更新欄位 {len(enrichment.updated_fields)} 個、提案人 +{enrichment.sponsors_linked}、共同提案人 +{enrichment.cosponsors_linked}。"
+                        if lang == "zh-TW"
+                        else f"Refreshed{provider_hint}: removed {int(enrichment.placeholders_removed)} placeholder names, updated {len(enrichment.updated_fields)} fields, sponsors +{enrichment.sponsors_linked}, cosponsors +{enrichment.cosponsors_linked}."
+                    ),
+                }
+            except Exception as exc:
+                service.session.rollback()
+                st.session_state[refresh_flash_key] = {
+                    "ok": False,
+                    "message": (
+                        f"重新整理失敗：{type(exc).__name__}: {exc}"
+                        if lang == "zh-TW"
+                        else f"Refresh failed: {type(exc).__name__}: {exc}"
+                    ),
+                }
+            st.rerun()
 
 def _render_google_sheet_fallback(lang: str) -> bool:
     sheet_service = GoogleSheetReadService()
