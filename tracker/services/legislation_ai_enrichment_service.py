@@ -140,6 +140,11 @@ class LegislationAIEnrichmentService:
             ("status_text", "status_text"),
         ):
             value = metadata.get(key)
+            if attr == "title":
+                value = _sanitize_enriched_title(
+                    candidate=value,
+                    current_title=str(legislation.title or "")
+                )
             if value and str(value).strip() and getattr(legislation, attr) != value:
                 setattr(legislation, attr, value)
                 updated_fields.append(attr)
@@ -370,6 +375,47 @@ def _remove_placeholder_sponsor_links(session: Session, service: LegislationServ
     if removed:
         session.flush()
     return removed
+
+
+def _sanitize_enriched_title(candidate: object, current_title: str) -> str | None:
+    text = str(candidate or "").strip()
+    if not text:
+        return None
+    if _is_low_quality_legislation_title(text):
+        return None
+
+    current = str(current_title or "").strip()
+    if current and _is_low_quality_legislation_title(current) and text:
+        return text
+    return text
+
+
+def _is_low_quality_legislation_title(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return True
+
+    lowered = text.casefold()
+    bad_terms = (
+        "內容動作未詳",
+        "動作未詳",
+        "標題未詳",
+        "unknown",
+        "untitled",
+        "no title",
+        "title pending",
+        "details pending",
+    )
+    if any(term in lowered for term in bad_terms):
+        return True
+
+    if re.fullmatch(r"[\W_\-–—=|/\.]{2,}", text):
+        return True
+
+    if len(re.sub(r"\s+", "", text)) < 4:
+        return True
+
+    return False
 
 
 def _date_from_ai(value: object):
