@@ -355,33 +355,73 @@ def _gemini_grounded_json(
         return None
     model_name = (model or "").strip() or "gemini-2.5-flash"
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-    payload = {
+
+    base_payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "tools": [{"google_search": {}}],
         "generationConfig": {
             "temperature": 0.2,
             "maxOutputTokens": int(max_output_tokens),
-            "responseMimeType": "application/json",
         },
     }
-    response = httpx.post(url, json=payload, timeout=60.0)
-    response.raise_for_status()
-    raw = response.json()
-    text = ""
-    try:
-        candidates = raw.get("candidates") or []
-        if candidates:
-            parts = ((candidates[0] or {}).get("content") or {}).get("parts") or []
-            for part in parts:
-                value = part.get("text")
-                if isinstance(value, str) and value.strip():
-                    text = value.strip()
-                    break
-    except Exception:
-        text = ""
-    if not text:
-        text = json.dumps(raw, ensure_ascii=False)
-    return {"text": text, "raw": raw}
+
+    variants: list[dict[str, Any]] = [
+        {
+            **base_payload,
+            "tools": [{"google_search": {}}],
+            "generationConfig": {**base_payload["generationConfig"], "responseMimeType": "application/json"},
+        },
+        {
+            **base_payload,
+            "tools": [{"google_search_retrieval": {}}],
+            "generationConfig": {**base_payload["generationConfig"], "responseMimeType": "application/json"},
+        },
+        {
+            **base_payload,
+            "tools": [{"google_search": {}}],
+        },
+        {
+            **base_payload,
+            "generationConfig": {**base_payload["generationConfig"], "responseMimeType": "application/json"},
+        },
+        base_payload,
+    ]
+
+    last_400_message = ""
+    for payload in variants:
+        try:
+            response = httpx.post(url, json=payload, timeout=60.0)
+            response.raise_for_status()
+            raw = response.json()
+            text = ""
+            try:
+                candidates = raw.get("candidates") or []
+                if candidates:
+                    parts = ((candidates[0] or {}).get("content") or {}).get("parts") or []
+                    for part in parts:
+                        value = part.get("text")
+                        if isinstance(value, str) and value.strip():
+                            text = value.strip()
+                            break
+            except Exception:
+                text = ""
+            if not text:
+                text = json.dumps(raw, ensure_ascii=False)
+            return {"text": text, "raw": raw}
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            if status == 400:
+                body = ""
+                try:
+                    body = (exc.response.text or "")[:500]
+                except Exception:
+                    body = ""
+                last_400_message = body or str(exc)
+                continue
+            raise
+
+    if last_400_message:
+        raise ValueError(f"Gemini request rejected (400): {last_400_message}")
+    return None
 
 
 def gemini_grounded_json(
