@@ -7,6 +7,7 @@ from html import escape
 from typing import Iterable
 
 import streamlit as st
+from sqlalchemy import func
 
 from tracker.config import use_google_sheet_primary_mode
 from tracker.db import session_scope
@@ -108,6 +109,17 @@ def render(lang: str, labels: dict[str, str]) -> None:
         if not all_rows:
             st.info("目前還沒有立法資料。" if lang == "zh-TW" else "No legislation is available yet.")
             return
+
+        db_url_text = str(getattr(getattr(session, "bind", None), "url", ""))
+        db_kind = "PostgreSQL" if db_url_text.startswith("postgresql") else "SQLite"
+        utah_count = session.query(func.count(Legislation.id)).filter(func.lower(func.coalesce(Legislation.jurisdiction_name, "")) == "utah").scalar() or 0
+        st.caption(
+            (
+                f"資料庫：{db_kind}｜Utah 原始筆數：{int(utah_count)}"
+                if lang == "zh-TW"
+                else f"Database: {db_kind} | Utah raw records: {int(utah_count)}"
+            )
+        )
 
         if selected_legislation_id is not None:
             selected = next((row for row in all_rows if int(row.id) == int(selected_legislation_id)), None)
