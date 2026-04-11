@@ -298,47 +298,89 @@ def _parse_json_object(value: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _extract_json_string_field(text: str, key: str, max_len: int) -> str | None:
+    if not text:
+        return None
+    pattern = rf'"{re.escape(key)}"\s*:\s*"((?:[^"\\]|\\.)*)"'
+    match = re.search(pattern, text, flags=re.DOTALL)
+    if not match:
+        return None
+    candidate = match.group(1)
+    candidate = candidate.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+    candidate = candidate.replace('\"', '"')
+    candidate = candidate.replace('\\', '\\')
+    return _clean_string(candidate, max_len)
+
+
+def _extract_json_list_field(text: str, key: str, max_items: int) -> list[str]:
+    if not text:
+        return []
+    pattern = rf'"{re.escape(key)}"\s*:\s*\[(.*?)\]'
+    match = re.search(pattern, text, flags=re.DOTALL)
+    if not match:
+        return []
+    body = match.group(1)
+    values = re.findall(r'"((?:[^"\\]|\\.)*)"', body)
+    parsed: list[str] = []
+    for value in values:
+        candidate = value.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+        candidate = candidate.replace('\"', '"').replace('\\', '\\')
+        cleaned = _clean_string(candidate, 160)
+        if cleaned:
+            parsed.append(cleaned)
+    return _clean_string_list(parsed, max_items)
+
+
 def _fallback_legislation_metadata_from_text(text: str, current: dict[str, Any]) -> dict[str, Any] | None:
-    raw = str(text or "").strip()
+    raw = str(text or '').strip()
     if not raw:
         return None
-    cleaned = re.sub(r"```(?:json)?", "", raw, flags=re.I).replace("```", "").strip()
-    cleaned = re.sub(r"\s+", " ", cleaned)
-    summary = _clean_string(cleaned, 1800)
+    cleaned = re.sub(r'```(?:json)?', '', raw, flags=re.I).replace('```', '').strip()
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+
+    summary = _extract_json_string_field(cleaned, 'summary', 1800)
+    if not summary:
+        summary = _clean_string(cleaned, 1800)
+    if summary and summary.startswith('{') and '"title"' in summary and '"summary"' in summary:
+        summary = _clean_string(current.get('summary'), 1800) or _clean_string(current.get('title'), 500)
     if not summary:
         return None
 
-    status_text = None
-    status_match = re.search(r"(?:status|目前狀態|最新動作)\s*[:：]\s*([^\n]+)", raw, flags=re.I)
-    if status_match:
-        status_text = _clean_string(status_match.group(1), 255)
+    status_text = _extract_json_string_field(cleaned, 'status_text', 255)
+    if not status_text:
+        status_match = re.search(r'(?:status|目前狀態|最新動作)\s*[:：]\s*([^\n]+)', raw, flags=re.I)
+        if status_match:
+            status_text = _clean_string(status_match.group(1), 255)
 
-    introduced_date = _clean_string(current.get("introduced_date"), 20)
-    last_action_date = _clean_string(current.get("last_action_date"), 20)
+    introduced_date = _extract_json_string_field(cleaned, 'introduced_date', 20) or _clean_string(current.get('introduced_date'), 20)
+    last_action_date = _extract_json_string_field(cleaned, 'last_action_date', 20) or _clean_string(current.get('last_action_date'), 20)
     if not introduced_date:
-        m = re.search(r"(20\d{2}-\d{2}-\d{2})", raw)
+        m = re.search(r'(20\d{2}-\d{2}-\d{2})', raw)
         if m:
             introduced_date = m.group(1)
 
+    sponsor_names = _extract_json_list_field(cleaned, 'sponsor_names', 20)
+    cosponsor_names = _extract_json_list_field(cleaned, 'cosponsor_names', 100)
+
     lower = cleaned.casefold()
-    is_taiwan_related = bool(("taiwan" in lower) or ("台灣" in cleaned) or ("臺灣" in cleaned))
+    is_taiwan_related = bool(('taiwan' in lower) or ('台灣' in cleaned) or ('臺灣' in cleaned))
 
     return {
-        "title": _clean_string(current.get("title"), 500),
-        "bill_number": _clean_string(current.get("bill_number"), 100),
-        "level": _clean_string(current.get("level"), 20) or "other",
-        "jurisdiction_name": _clean_string(current.get("jurisdiction_name"), 255),
-        "chamber": _clean_string(current.get("chamber"), 20) or "unknown",
-        "legislation_type": _clean_string(current.get("legislation_type"), 40) or "other",
-        "summary": summary,
-        "status_text": status_text or _clean_string(current.get("status_text"), 255),
-        "introduced_date": introduced_date,
-        "last_action_date": last_action_date,
-        "sponsor_names": [],
-        "cosponsor_names": [],
-        "is_taiwan_related": is_taiwan_related,
-        "relevance_score": 0.8 if is_taiwan_related else None,
-        "sources": [],
+        'title': _extract_json_string_field(cleaned, 'title', 500) or _clean_string(current.get('title'), 500),
+        'bill_number': _extract_json_string_field(cleaned, 'bill_number', 100) or _clean_string(current.get('bill_number'), 100),
+        'level': (_extract_json_string_field(cleaned, 'level', 20) or _clean_string(current.get('level'), 20) or 'other'),
+        'jurisdiction_name': _extract_json_string_field(cleaned, 'jurisdiction_name', 255) or _clean_string(current.get('jurisdiction_name'), 255),
+        'chamber': (_extract_json_string_field(cleaned, 'chamber', 20) or _clean_string(current.get('chamber'), 20) or 'unknown'),
+        'legislation_type': (_extract_json_string_field(cleaned, 'legislation_type', 40) or _clean_string(current.get('legislation_type'), 40) or 'other'),
+        'summary': summary,
+        'status_text': status_text or _clean_string(current.get('status_text'), 255),
+        'introduced_date': introduced_date,
+        'last_action_date': last_action_date,
+        'sponsor_names': sponsor_names,
+        'cosponsor_names': cosponsor_names,
+        'is_taiwan_related': is_taiwan_related,
+        'relevance_score': 0.8 if is_taiwan_related else None,
+        'sources': [],
     }
 
 
@@ -602,18 +644,29 @@ def _clean_source_list(value: object) -> list[dict[str, str]]:
         return []
     cleaned: list[dict[str, str]] = []
     seen: set[str] = set()
+    blocked_hosts = {
+        'vertexaisearch.cloud.google.com',
+        'google.com/url',
+    }
     for item in value:
         if not isinstance(item, dict):
             continue
-        url = _clean_string(item.get("url"), 1500)
+        url = _clean_string(item.get('url'), 1500)
         if not url:
             continue
-        key = url.casefold()
+        lowered = url.casefold()
+        if 'vertexaisearch.cloud.google.com/grounding-api-redirect' in lowered:
+            continue
+        if '/grounding-api-redirect/' in lowered:
+            continue
+        if any(host in lowered for host in blocked_hosts):
+            continue
+        key = lowered
         if key in seen:
             continue
         seen.add(key)
-        title = _clean_string(item.get("title"), 500) or url
-        cleaned.append({"title": title, "url": url})
+        title = _clean_string(item.get('title'), 500) or url
+        cleaned.append({'title': title, 'url': url})
         if len(cleaned) >= 30:
             break
     return cleaned
