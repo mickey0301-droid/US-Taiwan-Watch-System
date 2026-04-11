@@ -203,7 +203,7 @@ def _render_manual_legislation_ingest_form(session, lang: str) -> None:
     )
     with st.expander(title, expanded=False):
         st.caption(help_text)
-        with st.form("manual-legislation-ingest-form", clear_on_submit=True):
+        with st.form("manual-legislation-ingest-form", clear_on_submit=False):
             raw_urls = st.text_area(
                 "法案網址（每行一筆）" if lang == "zh-TW" else "Bill URLs (one per line)",
                 height=150,
@@ -247,7 +247,6 @@ def _render_manual_legislation_ingest_form(session, lang: str) -> None:
             "errors": result.errors[:10],
             "items": result.items[:30],
         }
-        st.rerun()
 
 
 def _render_legislation_detail(selected: Legislation, service: LegislationService, people_by_id: dict[int, Person], lang: str) -> None:
