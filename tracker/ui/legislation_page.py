@@ -79,6 +79,19 @@ def _clean_legislation_summary_display(value: object) -> str:
     return re.sub(r"\s+", " ", text)
 
 
+def _summary_too_similar_to_title(summary: str, title: str) -> bool:
+    summary_text = str(summary or "").strip()
+    title_text = str(title or "").strip()
+    if not summary_text or not title_text:
+        return False
+    normalize = lambda s: re.sub(r"[^a-z0-9一-鿿]+", "", s.lower())
+    s_norm = normalize(summary_text)
+    t_norm = normalize(title_text)
+    if not s_norm or not t_norm:
+        return False
+    return s_norm == t_norm or s_norm in t_norm or t_norm in s_norm
+
+
 def render(lang: str, labels: dict[str, str]) -> None:
     st.header(labels["legislation"])
     selected_legislation_id = _query_legislation_id()
@@ -299,6 +312,8 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
     sponsors, cosponsors = _split_db_sponsors(service.list_sponsors(selected.id), people_by_id)
     summary = _clean_legislation_summary_display(selected.summary or raw_payload.get("summary"))
     latest_action = str(raw_payload.get("latest_action_text") or "").strip()
+    if _summary_too_similar_to_title(summary, str(selected.title or "")):
+        summary = ""
     if not summary:
         summary = latest_action or (str(selected.title or "").strip())
 
@@ -456,9 +471,12 @@ def _render_db_legislation_card(selected: Legislation, service: LegislationServi
             source_url=str(official_link or selected.source_url or ""),
             raw_payload=raw_payload if isinstance(raw_payload, dict) else {},
         )
+        card_summary = _clean_legislation_summary_display(selected.summary)
+        if _summary_too_similar_to_title(card_summary, preferred_title):
+            card_summary = ""
         title = dashboard._format_legislation_title_with_description(
             title=preferred_title,
-            summary=str(selected.summary or ""),
+            summary=card_summary,
             lang=lang,
         )
         if _should_prefix_bill_number(str(selected.bill_number or "")):

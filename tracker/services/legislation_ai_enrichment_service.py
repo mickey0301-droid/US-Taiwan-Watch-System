@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -85,16 +86,23 @@ class LegislationAIEnrichmentService:
             except Exception as exc:
                 provider_error = f"{type(exc).__name__}: {exc}"
 
-        if not metadata and self.ai_assist_service.enabled:
+        should_openai_topup = _needs_openai_topup(metadata, str(legislation.title or ""))
+        if self.ai_assist_service.enabled and (not metadata or should_openai_topup):
             try:
-                metadata = self.ai_assist_service.research_legislation_metadata_with_openai(
+                openai_metadata = self.ai_assist_service.research_legislation_metadata_with_openai(
                     current=current_payload,
                     page_title=page_title,
                     page_body=page_body,
                     source_url=source_url,
                 )
-                if metadata:
-                    provider_used = "openai"
+                if openai_metadata:
+                    if metadata:
+                        metadata = _merge_metadata_for_quality(metadata, openai_metadata, str(legislation.title or ""))
+                        if provider_used != "openai":
+                            provider_used = "hybrid"
+                    else:
+                        metadata = openai_metadata
+                        provider_used = "openai"
             except Exception as exc:
                 if not provider_error:
                     provider_error = f"{type(exc).__name__}: {exc}"
@@ -192,6 +200,8 @@ class LegislationAIEnrichmentService:
                 "已重新整理法案資料（Gemini）。"
                 if provider_used == "gemini"
                 else "已重新整理法案資料（OpenAI）。"
+                if provider_used == "openai"
+                else "已重新整理法案資料（Gemini + OpenAI）。"
             ),
             provider=provider_used,
             placeholders_removed=placeholders_removed,
@@ -205,6 +215,60 @@ class LegislationAIEnrichmentService:
     def enrich_with_gemini(self, legislation_id: int) -> LegislationAIEnrichmentResult:
         """Backward-compatible alias."""
         return self.refresh_with_ai(legislation_id)
+
+
+def _normalize_text_for_compare(value: str) -> str:
+    text = str(value or "").lower()
+    text = re.sub(r"[^a-z0-9一-鿿]+", "", text)
+    return text
+
+
+def _summary_quality_low(summary: str, title: str) -> bool:
+    summary_text = str(summary or "").strip()
+    if not summary_text:
+        return True
+    if len(summary_text) < 18:
+        return True
+    summary_norm = _normalize_text_for_compare(summary_text)
+    title_norm = _normalize_text_for_compare(str(title or ""))
+    if summary_norm and title_norm and (summary_norm == title_norm or summary_norm in title_norm or title_norm in summary_norm):
+        return True
+    return False
+
+
+def _needs_openai_topup(metadata: dict[str, Any] | None, title: str) -> bool:
+    if not isinstance(metadata, dict):
+        return True
+    sponsors = list(metadata.get("sponsor_names") or [])
+    cosponsors = list(metadata.get("cosponsor_names") or [])
+    if not sponsors and not cosponsors:
+        return True
+    if _summary_quality_low(str(metadata.get("summary") or ""), title):
+        return True
+    return False
+
+
+def _merge_metadata_for_quality(primary: dict[str, Any], fallback: dict[str, Any], title: str) -> dict[str, Any]:
+    merged = dict(primary or {})
+    if not merged.get("sponsor_names") and fallback.get("sponsor_names"):
+        merged["sponsor_names"] = list(fallback.get("sponsor_names") or [])
+    if not merged.get("cosponsor_names") and fallback.get("cosponsor_names"):
+        merged["cosponsor_names"] = list(fallback.get("cosponsor_names") or [])
+
+    if _summary_quality_low(str(merged.get("summary") or ""), title):
+        replacement = str(fallback.get("summary") or "").strip()
+        if replacement:
+            merged["summary"] = replacement
+
+    for key in ("status_text", "introduced_date", "last_action_date", "chamber", "level", "legislation_type"):
+        if not str(merged.get(key) or "").strip() and str(fallback.get(key) or "").strip():
+            merged[key] = fallback.get(key)
+
+    primary_sources = list(merged.get("sources") or [])
+    fallback_sources = list(fallback.get("sources") or [])
+    if not primary_sources and fallback_sources:
+        merged["sources"] = fallback_sources
+    return merged
 
 
 def _is_placeholder_legislator_name(name: str) -> bool:
