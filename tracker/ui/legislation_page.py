@@ -11,7 +11,7 @@ from sqlalchemy import func
 
 from tracker.config import use_google_sheet_primary_mode
 from tracker.db import session_scope
-from tracker.models import Legislation, Person
+from tracker.models import Legislation, LegislationSponsor, Person
 from tracker.services.google_sheet_read_service import GoogleSheetReadService
 from tracker.services.legislation_ai_enrichment_service import LegislationAIEnrichmentService
 from tracker.services.legislation_service import LegislationService
@@ -518,11 +518,29 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
             st.write("無" if lang == "zh-TW" else "None")
 
     with st.expander("編輯法案" if lang == "zh-TW" else "Edit legislation", expanded=False):
+        current_sponsor_names = [str(item.get("english_name") or item.get("display_name") or "").strip() for item in sponsors]
+        current_cosponsor_names = [str(item.get("english_name") or item.get("display_name") or "").strip() for item in cosponsors]
+        if not current_sponsor_names and fallback_sponsor_names:
+            current_sponsor_names = list(fallback_sponsor_names)
+        if not current_cosponsor_names and fallback_cosponsor_names:
+            current_cosponsor_names = list(fallback_cosponsor_names)
+
         with st.form(f"legislation-edit-form-{selected.id}", clear_on_submit=False):
             title_value = st.text_input("標題" if lang == "zh-TW" else "Title", value=str(selected.title or ""))
             bill_number_value = st.text_input("法案編號" if lang == "zh-TW" else "Bill number", value=str(selected.bill_number or ""))
             summary_value = st.text_area("摘要" if lang == "zh-TW" else "Summary", value=str(selected.summary or ""), height=140)
             status_value = st.text_input("目前狀態" if lang == "zh-TW" else "Current status", value=str(selected.status_text or ""))
+
+            sponsor_names_text = st.text_area(
+                "提案人（每行一位，可用逗號分隔）" if lang == "zh-TW" else "Sponsors (one per line or comma-separated)",
+                value="\n".join(current_sponsor_names),
+                height=90,
+            )
+            cosponsor_names_text = st.text_area(
+                "共同提案人（每行一位，可用逗號分隔）" if lang == "zh-TW" else "Cosponsors (one per line or comma-separated)",
+                value="\n".join(current_cosponsor_names),
+                height=120,
+            )
 
             level_options = ["federal", "state", "other"]
             current_level = str(selected.level or "").strip().lower()
@@ -583,6 +601,23 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
                     f"最新動作日期格式錯誤：{last_action_error}" if lang == "zh-TW" else f"Invalid latest action date: {last_action_error}"
                 )
                 return
+
+            sponsor_names = _parse_people_names_input(sponsor_names_text)
+            cosponsor_names = _parse_people_names_input(cosponsor_names_text)
+            sponsor_names_set = {_normalize_person_name_key(name) for name in sponsor_names}
+            cosponsor_names = [name for name in cosponsor_names if _normalize_person_name_key(name) not in sponsor_names_set]
+
+            name_lookup = _build_legislation_person_lookup(people_by_id)
+            sponsor_person_ids, sponsor_missing = _resolve_person_ids_from_names(sponsor_names, name_lookup)
+            cosponsor_person_ids, cosponsor_missing = _resolve_person_ids_from_names(cosponsor_names, name_lookup)
+            missing = [*sponsor_missing, *cosponsor_missing]
+            if missing:
+                st.error(
+                    ("找不到以下人名，請先確認人物資料後再儲存：" if lang == "zh-TW" else "The following names were not found. Please verify people records first: ")
+                    + ", ".join(missing)
+                )
+                return
+
             try:
                 selected.title = title_clean
                 selected.bill_number = _optional_text_or_none(bill_number_value)
@@ -596,10 +631,20 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
                 selected.last_action_date = parsed_last_action_date
                 selected.source_url = source_url_clean
                 selected.source_type = source_type_clean
+
+                _sync_legislation_sponsors(
+                    legislation=selected,
+                    session=service.session,
+                    sponsor_person_ids=sponsor_person_ids,
+                    cosponsor_person_ids=cosponsor_person_ids,
+                    source_url=source_url_clean,
+                    source_type=source_type_clean,
+                )
+
                 service.session.commit()
                 st.session_state[edit_flash_key] = {
                     "ok": True,
-                    "message": "法案已更新。" if lang == "zh-TW" else "Legislation updated.",
+                    "message": "法案與提案人已更新。" if lang == "zh-TW" else "Legislation and sponsors updated.",
                 }
             except Exception as exc:
                 service.session.rollback()
@@ -1033,6 +1078,98 @@ def _dedupe_people_for_display(people: list[dict[str, object]]) -> list[dict[str
 
 def _normalize_person_name_key(value: str) -> str:
     return re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", str(value or "").lower())
+
+
+def _parse_people_names_input(raw: str) -> list[str]:
+    parts = re.split(r"[\n,，;；、]+", str(raw or ""))
+    names: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        name = str(part or "").strip()
+        if not name:
+            continue
+        key = _normalize_person_name_key(name)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+    return names
+
+
+def _build_legislation_person_lookup(people_by_id: dict[int, Person]) -> dict[str, int]:
+    lookup: dict[str, int] = {}
+    for person in people_by_id.values():
+        candidates = [str(getattr(person, "full_name", "") or "").strip()]
+        for alias in getattr(person, "aliases", []) or []:
+            alias_text = str(getattr(alias, "alias", "") or "").strip()
+            if alias_text:
+                candidates.append(alias_text)
+        for name in candidates:
+            key = _normalize_person_name_key(name)
+            if key and key not in lookup:
+                lookup[key] = int(person.id)
+    return lookup
+
+
+def _resolve_person_ids_from_names(names: list[str], lookup: dict[str, int]) -> tuple[list[int], list[str]]:
+    person_ids: list[int] = []
+    missing: list[str] = []
+    seen_ids: set[int] = set()
+    for name in names:
+        key = _normalize_person_name_key(name)
+        person_id = lookup.get(key)
+        if not person_id:
+            missing.append(name)
+            continue
+        if int(person_id) in seen_ids:
+            continue
+        seen_ids.add(int(person_id))
+        person_ids.append(int(person_id))
+    return person_ids, missing
+
+
+def _sync_legislation_sponsors(
+    legislation: Legislation,
+    session,
+    sponsor_person_ids: list[int],
+    cosponsor_person_ids: list[int],
+    source_url: str,
+    source_type: str,
+) -> None:
+    sponsor_id_set = {int(value) for value in sponsor_person_ids}
+    targets: set[tuple[int, str]] = set()
+    for person_id in sponsor_person_ids:
+        targets.add((int(person_id), "sponsor"))
+    for person_id in cosponsor_person_ids:
+        if int(person_id) not in sponsor_id_set:
+            targets.add((int(person_id), "cosponsor"))
+
+    existing_records = (
+        session.query(LegislationSponsor)
+        .filter(LegislationSponsor.legislation_id == int(legislation.id))
+        .all()
+    )
+    existing_map = {(int(item.person_id), str(item.role or "sponsor").lower()): item for item in existing_records}
+
+    for key, record in existing_map.items():
+        if key not in targets:
+            session.delete(record)
+
+    for person_id, role in targets:
+        existing = existing_map.get((int(person_id), role))
+        if existing:
+            existing.source_url = source_url or existing.source_url
+            existing.source_type = source_type or existing.source_type
+            continue
+        session.add(
+            LegislationSponsor(
+                legislation_id=int(legislation.id),
+                person_id=int(person_id),
+                role=role,
+                source_url=source_url,
+                source_type=source_type,
+            )
+        )
 
 def _sheet_sponsors(selected: dict[str, object], person_lookup: dict[str, int]) -> list[dict[str, object]]:
     sponsor_ids = list(selected.get("sponsor_ids_list") or [])
