@@ -113,14 +113,8 @@ def render(lang: str, labels: dict[str, str]) -> None:
 
         db_url_text = str(getattr(getattr(session, "bind", None), "url", ""))
         db_kind = "PostgreSQL" if db_url_text.startswith("postgresql") else "SQLite"
-        utah_count = session.query(func.count(Legislation.id)).filter(func.lower(func.coalesce(Legislation.jurisdiction_name, "")) == "utah").scalar() or 0
-        st.caption(
-            (
-                f"資料庫：{db_kind}｜Utah 原始筆數：{int(utah_count)}"
-                if lang == "zh-TW"
-                else f"Database: {db_kind} | Utah raw records: {int(utah_count)}"
-            )
-        )
+        # Keep database caption simple and stable (do not append legacy Utah raw-count text).
+        st.caption(f"資料庫：{db_kind}" if lang == "zh-TW" else f"Database: {db_kind}")
 
         if selected_legislation_id is not None:
             selected = next((row for row in all_rows if int(row.id) == int(selected_legislation_id)), None)
@@ -147,15 +141,20 @@ def render(lang: str, labels: dict[str, str]) -> None:
         selected_state = ""
         if selected_type == "state":
             state_label = "州" if lang == "zh-TW" else "State"
-            states = sorted(
-                {
-                    str(row.jurisdiction_name or "").strip()
-                    for row in typed_rows
-                    if str(row.jurisdiction_name or "").strip()
-                }
-            )
+            state_counts: dict[str, int] = {}
+            for row in typed_rows:
+                state_name = str(row.jurisdiction_name or "").strip()
+                if not state_name:
+                    continue
+                state_counts[state_name] = state_counts.get(state_name, 0) + 1
+            states = sorted(state_counts.keys())
             if states:
-                selected_state = st.selectbox(state_label, states, key="legislation-state-filter")
+                selected_state = st.selectbox(
+                    state_label,
+                    states,
+                    format_func=lambda state: f"{state} ({state_counts.get(state, 0)})",
+                    key="legislation-state-filter",
+                )
                 typed_rows = [
                     row
                     for row in typed_rows
