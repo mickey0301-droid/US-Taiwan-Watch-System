@@ -105,6 +105,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
             Legislation.last_action_date.desc().nullslast(),
             Legislation.id.desc(),
         ).all()
+        all_rows = _sort_rows_for_curation_priority(all_rows)
 
         if not all_rows:
             st.info("目前還沒有立法資料。" if lang == "zh-TW" else "No legislation is available yet.")
@@ -487,6 +488,19 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
                     "message": f"AI 補資料失敗：{type(exc).__name__}: {exc}" if lang == "zh-TW" else f"AI enrichment failed: {type(exc).__name__}: {exc}",
                 }
             st.rerun()
+
+        is_curated = _is_legislation_curated(selected)
+        st.caption(("整理狀態：已整理" if is_curated else "整理狀態：未整理") if lang == "zh-TW" else ("Curation: Organized" if is_curated else "Curation: Not organized"))
+        if not is_curated:
+            if st.button("標記已整理過" if lang == "zh-TW" else "Mark as organized", key=f"legislation-curate-{selected.id}"):
+                _set_legislation_curated(selected, True)
+                service.session.commit()
+                st.rerun()
+        else:
+            if st.button("取消已整理標記" if lang == "zh-TW" else "Unmark organized", key=f"legislation-uncurate-{selected.id}"):
+                _set_legislation_curated(selected, False)
+                service.session.commit()
+                st.rerun()
 
         st.markdown(f"`{'提案人' if lang == 'zh-TW' else 'Sponsor'}`：")
         if sponsors:
@@ -1535,6 +1549,34 @@ def _sort_source_links(links: set[str]) -> list[str]:
             link.lower(),
         ),
     )
+
+
+def _is_legislation_curated(row: Legislation) -> bool:
+    payload = _payload_dict(row.raw_payload)
+    status = str(payload.get("curation_status") or "").strip().lower()
+    return status in {"organized", "done", "curated"}
+
+
+def _set_legislation_curated(row: Legislation, curated: bool) -> None:
+    payload = _payload_dict(row.raw_payload)
+    if curated:
+        payload["curation_status"] = "organized"
+        payload["curated_at"] = datetime.utcnow().isoformat(timespec="seconds")
+    else:
+        payload.pop("curation_status", None)
+        payload.pop("curated_at", None)
+    row.raw_payload = payload
+
+
+def _sort_rows_for_curation_priority(rows: list[Legislation]) -> list[Legislation]:
+    def sort_key(row: Legislation) -> tuple[int, int, int]:
+        curated_rank = 1 if _is_legislation_curated(row) else 0
+        effective = _effective_legislation_date(row)
+        ordinal = effective.toordinal() if effective else 0
+        row_id = int(getattr(row, "id", 0) or 0)
+        return (curated_rank, -ordinal, -row_id)
+
+    return sorted(list(rows), key=sort_key)
 
 
 def _effective_legislation_date(row: Legislation) -> date | None:
