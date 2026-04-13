@@ -105,6 +105,14 @@ def render(lang: str, labels: dict[str, str]) -> None:
     with session_scope() as session:
         service = LegislationService(session)
         _render_manual_legislation_ingest_form(session, lang)
+        list_flash = st.session_state.pop("legislation-list-flash", None)
+        if isinstance(list_flash, dict):
+            message = str(list_flash.get("message") or "").strip()
+            if message:
+                if bool(list_flash.get("ok")):
+                    st.success(message)
+                else:
+                    st.error(message)
         people_by_id = {person.id: person for person in session.query(Person).all()}
         all_rows = session.query(Legislation).order_by(
             Legislation.introduced_date.desc().nullslast(),
@@ -436,6 +444,44 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
                 elif key in st.query_params:
                     del st.query_params[key]
         st.rerun()
+
+    delete_confirm_key = f"legislation-delete-confirm-{selected.id}"
+    delete_button_key = f"legislation-delete-btn-{selected.id}"
+    with st.expander("刪除法案" if lang == "zh-TW" else "Delete legislation", expanded=False):
+        st.warning("此操作不可復原，會一併刪除提案人關聯與來源連結。" if lang == "zh-TW" else "This action is irreversible and will also remove sponsor links and source links.")
+        confirmed = st.checkbox(
+            "我確認要刪除此法案" if lang == "zh-TW" else "I confirm I want to delete this legislation",
+            key=delete_confirm_key,
+        )
+        if st.button(
+            "刪除這筆法案" if lang == "zh-TW" else "Delete this legislation",
+            key=delete_button_key,
+            disabled=not confirmed,
+        ):
+            try:
+                deleted = service.delete_legislation(int(selected.id))
+                if not deleted:
+                    service.session.rollback()
+                    st.session_state["legislation-list-flash"] = {
+                        "ok": False,
+                        "message": "找不到要刪除的法案。" if lang == "zh-TW" else "The legislation could not be found.",
+                    }
+                else:
+                    service.session.commit()
+                    st.session_state["legislation-list-flash"] = {
+                        "ok": True,
+                        "message": "法案已刪除。" if lang == "zh-TW" else "Legislation deleted.",
+                    }
+                _clear_legislation_id()
+                st.query_params["page"] = "legislation"
+                st.rerun()
+            except Exception as exc:
+                service.session.rollback()
+                st.error(
+                    f"刪除失敗：{type(exc).__name__}: {exc}"
+                    if lang == "zh-TW"
+                    else f"Delete failed: {type(exc).__name__}: {exc}"
+                )
 
     raw_payload = _payload_dict(selected.raw_payload)
     official_link = raw_payload.get("congress_gov_url") or congress_bill_url(

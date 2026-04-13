@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from tracker.models import (
@@ -189,6 +189,15 @@ class LegislationService:
         return self.session.execute(
             select(LegislationSponsor).where(LegislationSponsor.legislation_id == legislation_id).order_by(LegislationSponsor.id.asc())
         ).scalars().all()
+
+    def delete_legislation(self, legislation_id: int) -> bool:
+        legislation = self.session.get(Legislation, int(legislation_id))
+        if not legislation:
+            return False
+        self.session.execute(delete(LegislationSource).where(LegislationSource.legislation_id == int(legislation_id)))
+        self.session.execute(delete(LegislationSponsor).where(LegislationSponsor.legislation_id == int(legislation_id)))
+        self.session.execute(delete(Legislation).where(Legislation.id == int(legislation_id)))
+        return True
 
     def _resolve_jurisdiction_id(self, name: str | None, level: str | None) -> int | None:
         if not name:
