@@ -594,31 +594,47 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
             submitted = st.form_submit_button("儲存法案" if lang == "zh-TW" else "Save legislation")
 
         if submitted:
+            progress_text = st.empty()
+            progress_bar = st.progress(0, text=("準備儲存法案..." if lang == "zh-TW" else "Preparing to save legislation..."))
+            save_feedback = st.empty()
+
+            def _set_progress(value: int, message_zh: str, message_en: str) -> None:
+                progress_text.caption(message_zh if lang == "zh-TW" else message_en)
+                progress_bar.progress(max(0, min(100, int(value))), text=(message_zh if lang == "zh-TW" else message_en))
+
+            def _fail_and_stop(message_zh: str, message_en: str) -> None:
+                _set_progress(100, "儲存失敗。", "Save failed.")
+                save_feedback.error(message_zh if lang == "zh-TW" else message_en)
+
+            _set_progress(10, "驗證輸入欄位...", "Validating inputs...")
             parsed_introduced_date, introduced_error = _parse_optional_date_text(introduced_date_text)
             parsed_last_action_date, last_action_error = _parse_optional_date_text(last_action_date_text)
             title_clean = _sanitize_input_text(title_value, 500)
             source_url_clean = _sanitize_input_text(source_url_value, 2048)
             source_type_clean = _sanitize_input_text(source_type_value, 50)
             if not title_clean:
-                st.error("標題不能為空。" if lang == "zh-TW" else "Title cannot be empty.")
+                _fail_and_stop("標題不能為空。", "Title cannot be empty.")
                 return
             if not source_url_clean:
-                st.error("來源網址不能為空。" if lang == "zh-TW" else "Source URL cannot be empty.")
+                _fail_and_stop("來源網址不能為空。", "Source URL cannot be empty.")
                 return
             if not source_type_clean:
-                st.error("來源類型不能為空。" if lang == "zh-TW" else "Source type cannot be empty.")
+                _fail_and_stop("來源類型不能為空。", "Source type cannot be empty.")
                 return
             if introduced_error:
-                st.error(
-                    f"提案日期格式錯誤：{introduced_error}" if lang == "zh-TW" else f"Invalid introduced date: {introduced_error}"
+                _fail_and_stop(
+                    f"提案日期格式錯誤：{introduced_error}",
+                    f"Invalid introduced date: {introduced_error}",
                 )
                 return
             if last_action_error:
-                st.error(
-                    f"最新動作日期格式錯誤：{last_action_error}" if lang == "zh-TW" else f"Invalid latest action date: {last_action_error}"
+                _fail_and_stop(
+                    f"最新動作日期格式錯誤：{last_action_error}",
+                    f"Invalid latest action date: {last_action_error}",
                 )
                 return
 
+            _set_progress(30, "解析提案人資料...", "Resolving sponsor names...")
             sponsor_names = _parse_people_names_input(_sanitize_input_text(sponsor_names_text, 4000))
             cosponsor_names = _parse_people_names_input(_sanitize_input_text(cosponsor_names_text, 4000))
             sponsor_names_set = {_normalize_person_name_key(name) for name in sponsor_names}
@@ -630,6 +646,7 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
             missing = [*sponsor_missing, *cosponsor_missing]
 
             try:
+                _set_progress(55, "更新法案欄位...", "Updating bill fields...")
                 selected.title = title_clean
                 selected.bill_number = _optional_text_or_none(_sanitize_input_text(bill_number_value, 100))
                 selected.summary = _optional_text_or_none(_sanitize_input_text(summary_value, 4000))
@@ -653,6 +670,7 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
                     raw_payload.pop("unmatched_sponsor_names", None)
                 selected.raw_payload = _sanitize_json_value(raw_payload)
 
+                _set_progress(75, "同步提案人關聯...", "Syncing sponsor links...")
                 _sync_legislation_sponsors(
                     legislation=selected,
                     session=service.session,
@@ -662,25 +680,31 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
                     source_type=source_type_clean,
                 )
 
+                _set_progress(90, "寫入資料庫...", "Committing to database...")
                 service.session.commit()
+                _set_progress(100, "儲存完成。", "Save complete.")
+                result_message = (
+                    ("法案已更新；部分提案人尚未建立人物檔，先以文字保存： " if lang == "zh-TW" else "Legislation saved; some names were stored as text because no matching person record was found: ")
+                    + ", ".join(missing)
+                ) if missing else ("法案與提案人已更新。" if lang == "zh-TW" else "Legislation and sponsors updated.")
                 st.session_state[edit_flash_key] = {
                     "ok": True,
-                    "message": (
-                        ("法案已更新；部分提案人尚未建立人物檔，先以文字保存： " if lang == "zh-TW" else "Legislation saved; some names were stored as text because no matching person record was found: ")
-                        + ", ".join(missing)
-                    ) if missing else ("法案與提案人已更新。" if lang == "zh-TW" else "Legislation and sponsors updated."),
+                    "message": result_message,
                 }
+                save_feedback.success(result_message)
             except Exception as exc:
                 service.session.rollback()
+                error_message = (
+                    f"儲存失敗：{type(exc).__name__}: {exc}（請檢查欄位是否含特殊控制字元）"
+                    if lang == "zh-TW"
+                    else f"Save failed: {type(exc).__name__}: {exc}"
+                )
                 st.session_state[edit_flash_key] = {
                     "ok": False,
-                    "message": (
-                        f"儲存失敗：{type(exc).__name__}: {exc}（請檢查欄位是否含特殊控制字元）"
-                        if lang == "zh-TW"
-                        else f"Save failed: {type(exc).__name__}: {exc}"
-                    ),
+                    "message": error_message,
                 }
-            st.rerun()
+                _set_progress(100, "儲存失敗。", "Save failed.")
+                save_feedback.error(error_message)
 
 
 def _split_db_sponsors(records: list[object], people_by_id: dict[int, Person]) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
