@@ -96,6 +96,7 @@ def _summary_too_similar_to_title(summary: str, title: str) -> bool:
 def render(lang: str, labels: dict[str, str]) -> None:
     st.header(labels["legislation"])
     selected_legislation_id = _query_legislation_id()
+    _apply_return_context_to_session(_read_legislation_return_context_from_query())
     with session_scope() as session:
         service = LegislationService(session)
         _render_manual_legislation_ingest_form(session, lang)
@@ -200,6 +201,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     format_func=lambda value: ("全部" if lang == "zh-TW" else "All") if value == 0 else f"{value:02d}",
                     key="legislation-month-filter",
                 )
+            _capture_legislation_context(selected_type, selected_state, selected_year, selected_month)
             legislation_rows = _rows_for_year_month(typed_rows, selected_year, selected_month)
         else:
             st.caption(
@@ -207,6 +209,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 if lang == "zh-TW"
                 else "Date fields are missing for these bills, so all matching records are shown."
             )
+            _capture_legislation_context(selected_type, selected_state, "all", 0)
             legislation_rows = list(typed_rows)
         st.caption(
             (f"目前顯示 {len(legislation_rows)} 筆" if lang == "zh-TW" else f"Showing {len(legislation_rows)} records")
@@ -413,6 +416,20 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
 
     if st.button("返回法案列表" if lang == "zh-TW" else "Back to legislation list", key=f"legislation-back-{selected.id}"):
         _clear_legislation_id()
+        context = st.session_state.get("legislation-return-context")
+        st.query_params["page"] = "legislation"
+        if isinstance(context, dict):
+            for key, value in (
+                ("return_type", context.get("type")),
+                ("return_state", context.get("state")),
+                ("return_year", context.get("year")),
+                ("return_month", context.get("month")),
+            ):
+                value_text = str(value or "").strip()
+                if value_text:
+                    st.query_params[key] = value_text
+                elif key in st.query_params:
+                    del st.query_params[key]
         st.rerun()
 
     raw_payload = _payload_dict(selected.raw_payload)
@@ -807,7 +824,7 @@ def _render_db_legislation_card(selected: Legislation, service: LegislationServi
         )
         if _should_prefix_bill_number(str(selected.bill_number or "")):
             title = f"{selected.bill_number} {title}".strip()
-        link = f"?page=legislation&legislation_id={int(selected.id)}"
+        link = _build_legislation_detail_link(int(selected.id))
         st.markdown(f'**{index}. <a href="{link}" target="_self">{escape(title)}</a>**', unsafe_allow_html=True)
         st.markdown(f"`{chamber_label}`：{chamber_text}")
         st.markdown(f"`{sponsor_label}`：{sponsor_text}")
@@ -1390,6 +1407,68 @@ def _query_legislation_id() -> int | None:
 def _clear_legislation_id() -> None:
     if "legislation_id" in st.query_params:
         del st.query_params["legislation_id"]
+
+
+def _read_legislation_return_context_from_query() -> dict[str, str]:
+    def _pick(name: str) -> str:
+        value = st.query_params.get(name)
+        if isinstance(value, list):
+            value = value[0] if value else ""
+        return str(value or "").strip()
+
+    return {
+        "type": _pick("return_type"),
+        "state": _pick("return_state"),
+        "year": _pick("return_year"),
+        "month": _pick("return_month"),
+    }
+
+
+def _apply_return_context_to_session(context: dict[str, str]) -> None:
+    type_value = context.get("type")
+    if type_value in {"all", "federal", "state"}:
+        st.session_state["legislation-type-filter"] = type_value
+    state_value = str(context.get("state") or "").strip()
+    if state_value:
+        st.session_state["legislation-state-filter"] = state_value
+    year_value = str(context.get("year") or "").strip()
+    if year_value == "all":
+        st.session_state["legislation-year-filter"] = "all"
+    elif year_value.isdigit():
+        st.session_state["legislation-year-filter"] = int(year_value)
+    month_value = str(context.get("month") or "").strip()
+    if month_value.isdigit():
+        st.session_state["legislation-month-filter"] = int(month_value)
+
+
+def _capture_legislation_context(selected_type: str, selected_state: str, selected_year: object, selected_month: int) -> None:
+    context = {
+        "type": str(selected_type or "all"),
+        "state": str(selected_state or ""),
+        "year": "all" if selected_year == "all" else str(selected_year),
+        "month": str(int(selected_month or 0)),
+    }
+    st.session_state["legislation-return-context"] = context
+
+
+def _build_legislation_detail_link(legislation_id: int) -> str:
+    context = st.session_state.get("legislation-return-context")
+    if not isinstance(context, dict):
+        context = {}
+    params = [f"page=legislation", f"legislation_id={int(legislation_id)}"]
+    return_type = str(context.get("type") or "").strip()
+    return_state = str(context.get("state") or "").strip()
+    return_year = str(context.get("year") or "").strip()
+    return_month = str(context.get("month") or "").strip()
+    if return_type:
+        params.append(f"return_type={return_type}")
+    if return_state:
+        params.append(f"return_state={return_state}")
+    if return_year:
+        params.append(f"return_year={return_year}")
+    if return_month:
+        params.append(f"return_month={return_month}")
+    return "?" + "&".join(params)
 
 
 def _dedupe_db_legislation_rows(rows: list[Legislation]) -> list[Legislation]:
