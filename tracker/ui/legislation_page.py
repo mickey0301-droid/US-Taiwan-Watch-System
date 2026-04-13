@@ -579,9 +579,9 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
         if submitted:
             parsed_introduced_date, introduced_error = _parse_optional_date_text(introduced_date_text)
             parsed_last_action_date, last_action_error = _parse_optional_date_text(last_action_date_text)
-            title_clean = str(title_value or "").strip()
-            source_url_clean = str(source_url_value or "").strip()
-            source_type_clean = str(source_type_value or "").strip()
+            title_clean = _sanitize_input_text(title_value, 500)
+            source_url_clean = _sanitize_input_text(source_url_value, 2048)
+            source_type_clean = _sanitize_input_text(source_type_value, 50)
             if not title_clean:
                 st.error("標題不能為空。" if lang == "zh-TW" else "Title cannot be empty.")
                 return
@@ -602,8 +602,8 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
                 )
                 return
 
-            sponsor_names = _parse_people_names_input(sponsor_names_text)
-            cosponsor_names = _parse_people_names_input(cosponsor_names_text)
+            sponsor_names = _parse_people_names_input(_sanitize_input_text(sponsor_names_text, 4000))
+            cosponsor_names = _parse_people_names_input(_sanitize_input_text(cosponsor_names_text, 4000))
             sponsor_names_set = {_normalize_person_name_key(name) for name in sponsor_names}
             cosponsor_names = [name for name in cosponsor_names if _normalize_person_name_key(name) not in sponsor_names_set]
 
@@ -614,12 +614,12 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
 
             try:
                 selected.title = title_clean
-                selected.bill_number = _optional_text_or_none(bill_number_value)
-                selected.summary = _optional_text_or_none(summary_value)
-                selected.status_text = _optional_text_or_none(status_value)
+                selected.bill_number = _optional_text_or_none(_sanitize_input_text(bill_number_value, 100))
+                selected.summary = _optional_text_or_none(_sanitize_input_text(summary_value, 4000))
+                selected.status_text = _optional_text_or_none(_sanitize_input_text(status_value, 255))
                 selected.level = str(selected_level or "other").strip().lower() or "other"
                 selected.chamber = _optional_text_or_none(selected_chamber)
-                selected.jurisdiction_name = _optional_text_or_none(jurisdiction_value)
+                selected.jurisdiction_name = _optional_text_or_none(_sanitize_input_text(jurisdiction_value, 255))
                 selected.jurisdiction_id = service._resolve_jurisdiction_id(selected.jurisdiction_name, selected.level)
                 selected.introduced_date = parsed_introduced_date
                 selected.last_action_date = parsed_last_action_date
@@ -656,7 +656,7 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
                 st.session_state[edit_flash_key] = {
                     "ok": False,
                     "message": (
-                        f"儲存失敗：{type(exc).__name__}: {exc}"
+                        f"儲存失敗：{type(exc).__name__}: {exc}（請檢查欄位是否含特殊控制字元）"
                         if lang == "zh-TW"
                         else f"Save failed: {type(exc).__name__}: {exc}"
                     ),
@@ -1359,8 +1359,20 @@ def _parse_optional_date_text(value: object) -> tuple[date | None, str | None]:
 
 
 def _optional_text_or_none(value: object) -> str | None:
-    text = str(value or "").strip()
+    text = _sanitize_input_text(value).strip()
     return text or None
+
+
+def _sanitize_input_text(value: object, max_len: int | None = None) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    text = text.replace("\x00", "")
+    text = re.sub(r"[\x01-\x08\x0b\x0c\x0e-\x1f]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if max_len is not None:
+        return text[:max_len]
+    return text
 
 
 def _query_legislation_id() -> int | None:
