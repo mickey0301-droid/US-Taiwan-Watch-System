@@ -1502,9 +1502,7 @@ def _dedupe_db_legislation_rows(rows: list[Legislation]) -> list[Legislation]:
     for key in order:
         selected = best_by_key[key]
         merged_links = _sort_source_links(source_links_by_key.get(key, set()))
-        payload = _payload_dict(selected.raw_payload)
-        payload["_source_urls"] = merged_links
-        selected.raw_payload = payload
+        setattr(selected, "_display_source_urls", merged_links)
         deduped.append(selected)
     return deduped
 
@@ -1770,6 +1768,12 @@ def _collect_db_source_links(row: Legislation) -> list[str]:
         link = str(value or "").strip()
         if link:
             links.add(link)
+    display_links = getattr(row, "_display_source_urls", None)
+    if isinstance(display_links, list):
+        for value in display_links:
+            link = str(value or "").strip()
+            if link:
+                links.add(link)
     return _sort_source_links(links)
 
 
