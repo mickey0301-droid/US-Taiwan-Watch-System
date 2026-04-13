@@ -642,14 +642,16 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
                 selected.last_action_date = parsed_last_action_date
                 selected.source_url = source_url_clean
                 selected.source_type = source_type_clean
-                raw_payload = _payload_dict(selected.raw_payload)
-                raw_payload["sponsor_names"] = sponsor_names
-                raw_payload["cosponsor_names"] = cosponsor_names
+                raw_payload = _sanitize_json_value(_payload_dict(selected.raw_payload))
+                if not isinstance(raw_payload, dict):
+                    raw_payload = {}
+                raw_payload["sponsor_names"] = [_sanitize_input_text(name, 255) for name in sponsor_names if _sanitize_input_text(name, 255)]
+                raw_payload["cosponsor_names"] = [_sanitize_input_text(name, 255) for name in cosponsor_names if _sanitize_input_text(name, 255)]
                 if missing:
-                    raw_payload["unmatched_sponsor_names"] = missing
+                    raw_payload["unmatched_sponsor_names"] = [_sanitize_input_text(name, 255) for name in missing if _sanitize_input_text(name, 255)]
                 else:
                     raw_payload.pop("unmatched_sponsor_names", None)
-                selected.raw_payload = raw_payload
+                selected.raw_payload = _sanitize_json_value(raw_payload)
 
                 _sync_legislation_sponsors(
                     legislation=selected,
@@ -1390,6 +1392,24 @@ def _sanitize_input_text(value: object, max_len: int | None = None) -> str:
     if max_len is not None:
         return text[:max_len]
     return text
+
+
+def _sanitize_json_value(value: object) -> object:
+    if isinstance(value, dict):
+        cleaned: dict[str, object] = {}
+        for key, item in value.items():
+            key_text = _sanitize_input_text(key)
+            if not key_text:
+                continue
+            cleaned[key_text] = _sanitize_json_value(item)
+        return cleaned
+    if isinstance(value, list):
+        return [_sanitize_json_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_json_value(item) for item in value]
+    if isinstance(value, str):
+        return _sanitize_input_text(value)
+    return value
 
 
 def _query_legislation_id() -> int | None:
