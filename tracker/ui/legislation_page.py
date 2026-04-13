@@ -611,12 +611,6 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
             sponsor_person_ids, sponsor_missing = _resolve_person_ids_from_names(sponsor_names, name_lookup)
             cosponsor_person_ids, cosponsor_missing = _resolve_person_ids_from_names(cosponsor_names, name_lookup)
             missing = [*sponsor_missing, *cosponsor_missing]
-            if missing:
-                st.error(
-                    ("找不到以下人名，請先確認人物資料後再儲存：" if lang == "zh-TW" else "The following names were not found. Please verify people records first: ")
-                    + ", ".join(missing)
-                )
-                return
 
             try:
                 selected.title = title_clean
@@ -631,6 +625,14 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
                 selected.last_action_date = parsed_last_action_date
                 selected.source_url = source_url_clean
                 selected.source_type = source_type_clean
+                raw_payload = _payload_dict(selected.raw_payload)
+                raw_payload["sponsor_names"] = sponsor_names
+                raw_payload["cosponsor_names"] = cosponsor_names
+                if missing:
+                    raw_payload["unmatched_sponsor_names"] = missing
+                else:
+                    raw_payload.pop("unmatched_sponsor_names", None)
+                selected.raw_payload = raw_payload
 
                 _sync_legislation_sponsors(
                     legislation=selected,
@@ -644,7 +646,10 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
                 service.session.commit()
                 st.session_state[edit_flash_key] = {
                     "ok": True,
-                    "message": "法案與提案人已更新。" if lang == "zh-TW" else "Legislation and sponsors updated.",
+                    "message": (
+                        ("法案已更新；部分提案人尚未建立人物檔，先以文字保存： " if lang == "zh-TW" else "Legislation saved; some names were stored as text because no matching person record was found: ")
+                        + ", ".join(missing)
+                    ) if missing else ("法案與提案人已更新。" if lang == "zh-TW" else "Legislation and sponsors updated."),
                 }
             except Exception as exc:
                 service.session.rollback()
