@@ -666,12 +666,32 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
                 raw_payload = _sanitize_json_value(_payload_dict(selected.raw_payload))
                 if not isinstance(raw_payload, dict):
                     raw_payload = {}
-                raw_payload["sponsor_names"] = [_sanitize_input_text(name, 255) for name in sponsor_names if _sanitize_input_text(name, 255)]
-                raw_payload["cosponsor_names"] = [_sanitize_input_text(name, 255) for name in cosponsor_names if _sanitize_input_text(name, 255)]
-                if missing:
-                    raw_payload["unmatched_sponsor_names"] = [_sanitize_input_text(name, 255) for name in missing if _sanitize_input_text(name, 255)]
+                sanitized_sponsor_names = [_sanitize_input_text(name, 255) for name in sponsor_names if _sanitize_input_text(name, 255)]
+                sanitized_cosponsor_names = [_sanitize_input_text(name, 255) for name in cosponsor_names if _sanitize_input_text(name, 255)]
+                sanitized_missing_names = [_sanitize_input_text(name, 255) for name in missing if _sanitize_input_text(name, 255)]
+
+                raw_payload["title"] = title_clean
+                raw_payload["summary"] = _optional_text_or_none(_sanitize_input_text(summary_value, 4000)) or ""
+                raw_payload["status_text"] = _optional_text_or_none(_sanitize_input_text(status_value, 255)) or ""
+                raw_payload["introduced_date"] = parsed_introduced_date.isoformat() if parsed_introduced_date else None
+                raw_payload["last_action_date"] = parsed_last_action_date.isoformat() if parsed_last_action_date else None
+                raw_payload["sponsor_names"] = sanitized_sponsor_names
+                raw_payload["cosponsor_names"] = sanitized_cosponsor_names
+                if sanitized_missing_names:
+                    raw_payload["unmatched_sponsor_names"] = sanitized_missing_names
                 else:
                     raw_payload.pop("unmatched_sponsor_names", None)
+
+                ai_enrichment = _payload_dict(raw_payload.get("ai_enrichment"))
+                metadata = _payload_dict(ai_enrichment.get("metadata"))
+                metadata["sponsor_names"] = sanitized_sponsor_names
+                metadata["cosponsor_names"] = sanitized_cosponsor_names
+                if sanitized_missing_names:
+                    metadata["unmatched_sponsor_names"] = sanitized_missing_names
+                else:
+                    metadata.pop("unmatched_sponsor_names", None)
+                ai_enrichment["metadata"] = metadata
+                raw_payload["ai_enrichment"] = ai_enrichment
                 selected.raw_payload = _sanitize_json_value(raw_payload)
 
                 _set_progress(75, "同步提案人關聯...", "Syncing sponsor links...")
@@ -740,9 +760,9 @@ def _fallback_legislation_names_from_raw_payload(selected: Legislation, role: st
     role_key = "cosponsor_names" if str(role or "").lower() == "cosponsor" else "sponsor_names"
     raw_payload = _payload_dict(getattr(selected, "raw_payload", None))
     metadata = _payload_dict(_payload_dict(raw_payload.get("ai_enrichment")).get("metadata"))
-    candidates = list(metadata.get(role_key) or [])
+    candidates = list(raw_payload.get(role_key) or [])
     if not candidates:
-        candidates = list(raw_payload.get(role_key) or [])
+        candidates = list(metadata.get(role_key) or [])
 
     names: list[str] = []
     seen: set[str] = set()
