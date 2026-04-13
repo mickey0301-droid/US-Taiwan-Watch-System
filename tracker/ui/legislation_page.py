@@ -96,7 +96,12 @@ def _summary_too_similar_to_title(summary: str, title: str) -> bool:
 def render(lang: str, labels: dict[str, str]) -> None:
     st.header(labels["legislation"])
     selected_legislation_id = _query_legislation_id()
-    _apply_return_context_to_session(_read_legislation_return_context_from_query())
+    return_context = _read_legislation_return_context_from_query()
+    if any(str(value or "").strip() for value in return_context.values()):
+        _apply_return_context_to_session(return_context)
+        for key in ("return_type", "return_state", "return_year", "return_month"):
+            if key in st.query_params:
+                del st.query_params[key]
     with session_scope() as session:
         service = LegislationService(session)
         _render_manual_legislation_ingest_form(session, lang)
