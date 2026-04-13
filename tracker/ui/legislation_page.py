@@ -696,6 +696,7 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
                     "message": result_message,
                 }
                 save_feedback.success(result_message)
+                st.rerun()
             except Exception as exc:
                 service.session.rollback()
                 error_message = (
