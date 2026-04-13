@@ -640,9 +640,13 @@ def _render_legislation_detail(selected: Legislation, service: LegislationServic
             sponsor_names_set = {_normalize_person_name_key(name) for name in sponsor_names}
             cosponsor_names = [name for name in cosponsor_names if _normalize_person_name_key(name) not in sponsor_names_set]
 
-            name_lookup = _build_legislation_person_lookup(people_by_id)
-            sponsor_person_ids, sponsor_missing = _resolve_person_ids_from_names(sponsor_names, name_lookup)
-            cosponsor_person_ids, cosponsor_missing = _resolve_person_ids_from_names(cosponsor_names, name_lookup)
+            if sponsor_names or cosponsor_names:
+                name_lookup = _build_legislation_person_lookup(people_by_id)
+                sponsor_person_ids, sponsor_missing = _resolve_person_ids_from_names(sponsor_names, name_lookup)
+                cosponsor_person_ids, cosponsor_missing = _resolve_person_ids_from_names(cosponsor_names, name_lookup)
+            else:
+                sponsor_person_ids, sponsor_missing = [], []
+                cosponsor_person_ids, cosponsor_missing = [], []
             missing = [*sponsor_missing, *cosponsor_missing]
 
             try:
@@ -1145,13 +1149,16 @@ def _parse_people_names_input(raw: str) -> list[str]:
 
 
 def _build_legislation_person_lookup(people_by_id: dict[int, Person]) -> dict[str, int]:
+    """Build a fast name->person_id lookup without triggering heavy relationship loads."""
     lookup: dict[str, int] = {}
     for person in people_by_id.values():
-        candidates = [str(getattr(person, "full_name", "") or "").strip()]
-        for alias in getattr(person, "aliases", []) or []:
-            alias_text = str(getattr(alias, "alias", "") or "").strip()
-            if alias_text:
-                candidates.append(alias_text)
+        raw_payload = _payload_dict(getattr(person, "raw_payload", None))
+        candidates = [
+            str(getattr(person, "full_name", "") or "").strip(),
+            str(raw_payload.get("chinese_name") or "").strip(),
+            str(raw_payload.get("name_zh") or "").strip(),
+            str(raw_payload.get("full_name_display") or "").strip(),
+        ]
         for name in candidates:
             key = _normalize_person_name_key(name)
             if key and key not in lookup:
