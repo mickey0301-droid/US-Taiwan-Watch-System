@@ -2714,6 +2714,26 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 key=f"person-monitor-domains-{person.id}",
                 height=70,
             )
+            monitor_capture_options = [
+                ("parallel", "並陳（現有 + 全文）" if lang == "zh-TW" else "Parallel (existing + full text)"),
+                ("existing", "現有方法（快速）" if lang == "zh-TW" else "Existing method (fast)"),
+                ("fulltext", "全文抓取（較準確）" if lang == "zh-TW" else "Full-text method (more accurate)"),
+            ]
+            configured_capture_mode = str(monitor_config.get("capture_mode") or "parallel").strip().lower()
+            if configured_capture_mode not in {"parallel", "existing", "fulltext"}:
+                configured_capture_mode = "parallel"
+            monitor_capture_mode = st.selectbox(
+                "抓取模式" if lang == "zh-TW" else "Capture mode",
+                options=[item[0] for item in monitor_capture_options],
+                index=[item[0] for item in monitor_capture_options].index(configured_capture_mode),
+                format_func=lambda value: dict(monitor_capture_options).get(value, value),
+                key=f"person-monitor-capture-mode-{person.id}",
+            )
+            st.caption(
+                "並陳模式會同時用現有方法與全文比對，並自動去重。"
+                if lang == "zh-TW"
+                else "Parallel mode runs both existing and full-text matching with automatic dedupe."
+            )
             daily_time = st.text_input(
                 "每日執行時間（HH:MM，台北時間）" if lang == "zh-TW" else "Daily run time (HH:MM, Taipei time)",
                 value=str(monitor_config.get("daily_time") or "09:00"),
@@ -2758,6 +2778,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     person_keywords=person_keywords,
                     taiwan_keywords=taiwan_keywords,
                     domains=domains,
+                    capture_mode=monitor_capture_mode,
                     daily_time=daily_time,
                     lookback_days=int(lookback_days),
                     date_start=date_start_input,
@@ -2778,6 +2799,7 @@ def render(lang: str, labels: dict[str, str]) -> None:
                     person_keywords=person_keywords,
                     taiwan_keywords=taiwan_keywords,
                     domains=domains,
+                    capture_mode=monitor_capture_mode,
                     daily_time=daily_time,
                     lookback_days=int(lookback_days),
                     date_start=date_start_input,

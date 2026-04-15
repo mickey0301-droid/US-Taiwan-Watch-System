@@ -32,6 +32,8 @@ DEFAULT_DOMAINS = ["cna.com.tw", "president.gov.tw", "mofa.gov.tw"]
 DEFAULT_TAIWAN_KEYWORDS = ["台灣", "臺灣", "台海", "Taiwan"]
 DEFAULT_DAILY_TIME = "09:00"
 DEFAULT_LOOKBACK_DAYS = 30
+DEFAULT_CAPTURE_MODE = "parallel"
+CAPTURE_MODES = {"existing", "fulltext", "parallel"}
 MONITOR_KEY = "taiwan_event_monitor"
 PARSER_IDENTITY = "person_taiwan_monitor_v1"
 
@@ -78,6 +80,7 @@ class PersonTaiwanEventMonitorService:
             "person_keywords": keywords,
             "taiwan_keywords": list(DEFAULT_TAIWAN_KEYWORDS),
             "domains": list(DEFAULT_DOMAINS),
+            "capture_mode": DEFAULT_CAPTURE_MODE,
             "daily_time": DEFAULT_DAILY_TIME,
             "lookback_days": DEFAULT_LOOKBACK_DAYS,
             "date_start": None,
@@ -100,6 +103,8 @@ class PersonTaiwanEventMonitorService:
         config.setdefault("person_keywords", [person.full_name])
         config.setdefault("taiwan_keywords", list(DEFAULT_TAIWAN_KEYWORDS))
         config.setdefault("domains", list(DEFAULT_DOMAINS))
+        mode = str(config.get("capture_mode") or DEFAULT_CAPTURE_MODE).strip().lower()
+        config["capture_mode"] = mode if mode in CAPTURE_MODES else DEFAULT_CAPTURE_MODE
         config.setdefault("daily_time", DEFAULT_DAILY_TIME)
         config.setdefault("lookback_days", DEFAULT_LOOKBACK_DAYS)
         config.setdefault("date_start", None)
@@ -116,6 +121,7 @@ class PersonTaiwanEventMonitorService:
         person_keywords: list[str],
         taiwan_keywords: list[str],
         domains: list[str],
+        capture_mode: str = DEFAULT_CAPTURE_MODE,
         daily_time: str,
         lookback_days: int | None = None,
         date_start: Any | None = None,
@@ -128,6 +134,8 @@ class PersonTaiwanEventMonitorService:
         config["person_keywords"] = cleaned_person_keywords or [str(person.full_name or "").strip()]
         config["taiwan_keywords"] = self._clean_keywords(taiwan_keywords) or list(DEFAULT_TAIWAN_KEYWORDS)
         config["domains"] = self._clean_domains(domains) or list(DEFAULT_DOMAINS)
+        normalized_mode = str(capture_mode or DEFAULT_CAPTURE_MODE).strip().lower()
+        config["capture_mode"] = normalized_mode if normalized_mode in CAPTURE_MODES else DEFAULT_CAPTURE_MODE
         config["daily_time"] = self._normalize_daily_time(daily_time)
         config["lookback_days"] = self._normalize_lookback_days(lookback_days)
         config["date_start"] = self._normalize_optional_date_text(date_start)
@@ -322,6 +330,9 @@ class PersonTaiwanEventMonitorService:
             person_keywords = list(all_person_keywords)
         taiwan_keywords = self._clean_keywords(config.get("taiwan_keywords") or [])
         domains = self._clean_domains(config.get("domains") or [])
+        capture_mode = str(config.get("capture_mode") or DEFAULT_CAPTURE_MODE).strip().lower()
+        if capture_mode not in CAPTURE_MODES:
+            capture_mode = DEFAULT_CAPTURE_MODE
         lookback_days = self._normalize_lookback_days(config.get("lookback_days"))
         trigger_text = str(trigger or "")
         use_fixed_date_window = not trigger_text.startswith("scheduled")
@@ -383,30 +394,24 @@ class PersonTaiwanEventMonitorService:
                         for item in items:
                             if not self._within_date_window(item.get("published_at"), window_start, window_end):
                                 continue
-                            text = self._merge_text(item.get("title"), item.get("summary"))
-                            matched_person = self._matched_keywords(text, all_person_keywords)
-                            matched_taiwan = self._matched_keywords(text, taiwan_keywords)
-                            if not matched_person or not matched_taiwan:
-                                if bool(item.get("query_enforced_match")):
-                                    # For source-query-matched items, keep Taiwan keyword
-                                    # strict in article text, while allowing person
-                                    # keyword fallback to the configured primary name.
-                                    if not matched_taiwan:
-                                        source_url_for_check = str(item.get("url") or "").strip()
-                                        if source_url_for_check:
-                                            full_text = self._fetch_full_article_text(client, source_url_for_check, article_text_cache)
-                                            if full_text:
-                                                matched_taiwan = self._matched_keywords(
-                                                    self._merge_text(item.get("title"), full_text),
-                                                    taiwan_keywords,
-                                                )
-                                    if not matched_taiwan:
-                                        continue
-                                    if not matched_person and all_person_keywords:
-                                        matched_person = [all_person_keywords[0]]
-                                else:
-                                    continue
-                            if self.relevance_service.is_taiwan_time_only_reference(text):
+                            match_result = self._evaluate_item_match(
+                                item=item,
+                                client=client,
+                                article_text_cache=article_text_cache,
+                                person_keywords=all_person_keywords,
+                                taiwan_keywords=taiwan_keywords,
+                                capture_mode=capture_mode,
+                                query_enforced=bool(item.get("query_enforced_match")),
+                                fallback_person_keyword=(all_person_keywords[0] if all_person_keywords else None),
+                            )
+                            if not match_result.get("ok"):
+                                continue
+                            matched_person = list(match_result.get("matched_person") or [])
+                            matched_taiwan = list(match_result.get("matched_taiwan") or [])
+                            matched_by = list(match_result.get("matched_by") or [])
+                            selected_text = str(match_result.get("selected_text") or "")
+                            cleaned_full_text = str(match_result.get("cleaned_full_text") or "")
+                            if self.relevance_service.is_taiwan_time_only_reference(selected_text):
                                 continue
                             found += 1
 
@@ -429,8 +434,8 @@ class PersonTaiwanEventMonitorService:
                                 "source_type": source_type,
                                 "statement_type": "statement",
                                 "excerpt": str(item.get("summary") or "")[:1000],
-                                "full_text": str(item.get("summary") or "")[:5000],
-                                "raw_text": str(item.get("summary") or ""),
+                                "full_text": (cleaned_full_text or str(item.get("summary") or ""))[:5000],
+                                "raw_text": cleaned_full_text or str(item.get("summary") or ""),
                                 "is_primary_source": source_type == "official",
                                 "parser_identity": PARSER_IDENTITY,
                                 "raw_payload": {
@@ -441,6 +446,8 @@ class PersonTaiwanEventMonitorService:
                                     "monitor_lookback_days": lookback_days,
                                     "monitor_window_start": window_start.isoformat(),
                                     "monitor_window_end_exclusive": window_end.isoformat(),
+                                    "monitor_capture_mode": capture_mode,
+                                    "monitor_matched_by": matched_by,
                                     "matched_person_keywords": matched_person,
                                     "matched_taiwan_keywords": matched_taiwan,
                                 },
@@ -492,12 +499,24 @@ class PersonTaiwanEventMonitorService:
                     if self._has_existing_person_source_url(person.id, source_url):
                         skipped_existing += 1
                         continue
-                    text = self._merge_text(item.get("title"), item.get("summary"))
-                    matched_person = self._matched_keywords(text, all_person_keywords)
-                    matched_taiwan = self._matched_keywords(text, global_taiwan_keywords)
-                    if not matched_person or not matched_taiwan:
+                    match_result = self._evaluate_item_match(
+                        item=item,
+                        client=client,
+                        article_text_cache=article_text_cache,
+                        person_keywords=all_person_keywords,
+                        taiwan_keywords=global_taiwan_keywords,
+                        capture_mode=capture_mode,
+                        query_enforced=False,
+                        fallback_person_keyword=None,
+                    )
+                    if not match_result.get("ok"):
                         continue
-                    if self.relevance_service.is_taiwan_time_only_reference(text):
+                    matched_person = list(match_result.get("matched_person") or [])
+                    matched_taiwan = list(match_result.get("matched_taiwan") or [])
+                    matched_by = list(match_result.get("matched_by") or [])
+                    selected_text = str(match_result.get("selected_text") or "")
+                    cleaned_full_text = str(match_result.get("cleaned_full_text") or "")
+                    if self.relevance_service.is_taiwan_time_only_reference(selected_text):
                         continue
                     found += 1
                     source_domain = str(item.get("source_domain") or domain_from_url(source_url))
@@ -512,8 +531,8 @@ class PersonTaiwanEventMonitorService:
                         "source_type": source_type,
                         "statement_type": "statement",
                         "excerpt": str(item.get("summary") or "")[:1000],
-                        "full_text": str(item.get("summary") or "")[:5000],
-                        "raw_text": str(item.get("summary") or ""),
+                        "full_text": (cleaned_full_text or str(item.get("summary") or ""))[:5000],
+                        "raw_text": cleaned_full_text or str(item.get("summary") or ""),
                         "is_primary_source": source_type == "official",
                         "parser_identity": PARSER_IDENTITY,
                         "raw_payload": {
@@ -524,6 +543,8 @@ class PersonTaiwanEventMonitorService:
                             "monitor_lookback_days": lookback_days,
                             "monitor_window_start": window_start.isoformat(),
                             "monitor_window_end_exclusive": window_end.isoformat(),
+                            "monitor_capture_mode": capture_mode,
+                            "monitor_matched_by": matched_by,
                             "matched_person_keywords": matched_person,
                             "matched_taiwan_keywords": matched_taiwan,
                             "source_domain_hint": source_domain,
@@ -958,13 +979,7 @@ class PersonTaiwanEventMonitorService:
             response = client.get(url, follow_redirects=True, timeout=20.0)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, "html.parser")
-            text = " ".join(
-                node.get_text(" ", strip=True)
-                for node in soup.select("article p, .paragraph p, .paragraph, .cp p, .page-content p, .article p, .con p")
-            )
-            if not text:
-                text = soup.get_text(" ", strip=True)
-            text = self._strip_html(text)
+            text = self._extract_article_text(soup)
         except Exception:
             text = ""
         cache[key] = text
@@ -1164,8 +1179,130 @@ class PersonTaiwanEventMonitorService:
                 matched.append(term)
         return matched
 
+    def _dedupe_text_list(self, values: list[str]) -> list[str]:
+        output: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            text = str(value or "").strip()
+            if not text:
+                continue
+            key = text.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            output.append(text)
+        return output
+
+    def _clean_article_text(self, text: str) -> str:
+        non_content_tokens = {
+            "share", "print", "subscribe", "back", "more", "menu", "search",
+            "facebook", "twitter", "line", "instagram", "youtube",
+            "訂閱", "分享", "列印", "返回", "回上一頁", "上一頁", "下一頁", "更多", "搜尋",
+        }
+        raw = self._strip_html(text).replace("　", " ")
+        parts = [seg.strip() for seg in re.split(r"[\n\r\t]+", raw) if seg.strip()]
+        if len(parts) <= 1:
+            parts = [seg.strip() for seg in re.split(r"(?<=[。！？.!?])\s+", raw) if seg.strip()]
+        kept: list[str] = []
+        for seg in parts:
+            normalized = re.sub(r"\s+", " ", seg).strip()
+            if len(normalized) < 3:
+                continue
+            lower = normalized.casefold()
+            if lower in non_content_tokens:
+                continue
+            if any(lower.startswith(token + " ") for token in non_content_tokens if re.search(r"[a-z]", token)):
+                continue
+            kept.append(normalized)
+        return " ".join(kept) if kept else raw
+
+    def _extract_article_text(self, soup: BeautifulSoup) -> str:
+        for selector in [
+            "script", "style", "noscript", "header", "footer", "nav", "aside", "form", "button",
+            ".share", ".social", ".breadcrumb", ".pagination", ".related", ".subscribe", ".newsletter",
+            ".menu", ".sidebar", "#header", "#footer", "#nav",
+        ]:
+            for node in soup.select(selector):
+                node.decompose()
+
+        chunks = [
+            node.get_text(" ", strip=True)
+            for node in soup.select("article p, .paragraph p, .paragraph, .cp p, .page-content p, .article p, .con p")
+        ]
+        if not chunks:
+            body = soup.select_one("article") or soup.body or soup
+            chunks = [body.get_text("\n", strip=True)]
+        merged = "\n".join(chunk for chunk in chunks if chunk)
+        return self._clean_article_text(merged)
+
+    def _evaluate_item_match(
+        self,
+        *,
+        item: dict[str, Any],
+        client: httpx.Client,
+        article_text_cache: dict[str, str],
+        person_keywords: list[str],
+        taiwan_keywords: list[str],
+        capture_mode: str,
+        query_enforced: bool,
+        fallback_person_keyword: str | None,
+    ) -> dict[str, Any]:
+        source_url = str(item.get("url") or "").strip()
+        raw_full_text = self._fetch_full_article_text(client, source_url, article_text_cache) if source_url else ""
+        cleaned_full_text = self._clean_article_text(raw_full_text)
+        legacy_text = self._merge_text(item.get("title"), item.get("summary"))
+        fulltext_text = self._merge_text_parts(item.get("title"), item.get("summary"), cleaned_full_text)
+        legacy_person = self._matched_keywords(legacy_text, person_keywords)
+        legacy_taiwan = self._matched_keywords(legacy_text, taiwan_keywords)
+        full_person = self._matched_keywords(fulltext_text, person_keywords)
+        full_taiwan = self._matched_keywords(fulltext_text, taiwan_keywords)
+
+        mode = capture_mode if capture_mode in CAPTURE_MODES else DEFAULT_CAPTURE_MODE
+        if mode == "existing":
+            matched_person = legacy_person
+            matched_taiwan = legacy_taiwan
+            selected_text = legacy_text
+            matched_by = ["existing"]
+        elif mode == "fulltext":
+            matched_person = full_person
+            matched_taiwan = full_taiwan
+            selected_text = fulltext_text
+            matched_by = ["fulltext"]
+        else:
+            matched_person = self._dedupe_text_list(list(legacy_person) + list(full_person))
+            matched_taiwan = self._dedupe_text_list(list(legacy_taiwan) + list(full_taiwan))
+            selected_text = fulltext_text if fulltext_text.strip() else legacy_text
+            matched_by = []
+            if legacy_person and legacy_taiwan:
+                matched_by.append("existing")
+            if full_person and full_taiwan:
+                matched_by.append("fulltext")
+            if not matched_by:
+                matched_by = ["parallel"]
+
+        if (not matched_person or not matched_taiwan) and query_enforced:
+            if not matched_taiwan:
+                return {"ok": False}
+            if not matched_person and fallback_person_keyword:
+                matched_person = [fallback_person_keyword]
+
+        if not matched_person or not matched_taiwan:
+            return {"ok": False}
+
+        return {
+            "ok": True,
+            "matched_person": matched_person,
+            "matched_taiwan": matched_taiwan,
+            "matched_by": matched_by,
+            "selected_text": selected_text,
+            "cleaned_full_text": cleaned_full_text,
+        }
+
     def _merge_text(self, title: str | None, summary: str | None) -> str:
-        return f"{str(title or '').strip()} {str(summary or '').strip()}".strip()
+        return self._merge_text_parts(title, summary)
+
+    def _merge_text_parts(self, *parts: Any) -> str:
+        return " ".join(str(part or "").strip() for part in parts if str(part or "").strip()).strip()
 
     def _strip_html(self, text: str) -> str:
         value = re.sub(r"<[^>]+>", " ", str(text or ""))
