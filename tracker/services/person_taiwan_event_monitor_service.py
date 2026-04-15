@@ -355,6 +355,12 @@ class PersonTaiwanEventMonitorService:
         total_updated = 0
         total_skipped_existing = 0
         article_text_cache: dict[str, str] = {}
+        max_fulltext_fetches = 0
+        if capture_mode == "parallel":
+            max_fulltext_fetches = max(80, min(400, window_days * 6))
+        elif capture_mode == "fulltext":
+            max_fulltext_fetches = max(120, min(600, window_days * 8))
+        fulltext_fetches_used = 0
 
         with httpx.Client(headers=self._http_headers, follow_redirects=True, timeout=25.0) as client:
             with httpx.Client(headers=self._http_headers, follow_redirects=True, timeout=25.0, verify=False) as insecure_client:
@@ -394,6 +400,7 @@ class PersonTaiwanEventMonitorService:
                         for item in items:
                             if not self._within_date_window(item.get("published_at"), window_start, window_end):
                                 continue
+                            allow_fulltext_fetch = fulltext_fetches_used < max_fulltext_fetches
                             match_result = self._evaluate_item_match(
                                 item=item,
                                 client=client,
@@ -403,7 +410,10 @@ class PersonTaiwanEventMonitorService:
                                 capture_mode=capture_mode,
                                 query_enforced=bool(item.get("query_enforced_match")),
                                 fallback_person_keyword=(all_person_keywords[0] if all_person_keywords else None),
+                                allow_fulltext_fetch=allow_fulltext_fetch,
                             )
+                            if bool(match_result.get("used_fulltext")):
+                                fulltext_fetches_used += 1
                             if not match_result.get("ok"):
                                 continue
                             matched_person = list(match_result.get("matched_person") or [])
@@ -473,6 +483,8 @@ class PersonTaiwanEventMonitorService:
                                 "items_added": created,
                                 "items_updated": updated,
                                 "items_skipped_existing": skipped_existing,
+                                "fulltext_fetches_used": fulltext_fetches_used,
+                                "fulltext_fetches_cap": max_fulltext_fetches,
                             }
                         )
 
@@ -499,6 +511,7 @@ class PersonTaiwanEventMonitorService:
                     if self._has_existing_person_source_url(person.id, source_url):
                         skipped_existing += 1
                         continue
+                    allow_fulltext_fetch = fulltext_fetches_used < max_fulltext_fetches
                     match_result = self._evaluate_item_match(
                         item=item,
                         client=client,
@@ -508,7 +521,10 @@ class PersonTaiwanEventMonitorService:
                         capture_mode=capture_mode,
                         query_enforced=False,
                         fallback_person_keyword=None,
+                        allow_fulltext_fetch=allow_fulltext_fetch,
                     )
+                    if bool(match_result.get("used_fulltext")):
+                        fulltext_fetches_used += 1
                     if not match_result.get("ok"):
                         continue
                     matched_person = list(match_result.get("matched_person") or [])
@@ -570,6 +586,8 @@ class PersonTaiwanEventMonitorService:
                         "items_added": created,
                         "items_updated": updated,
                         "items_skipped_existing": skipped_existing,
+                        "fulltext_fetches_used": fulltext_fetches_used,
+                        "fulltext_fetches_cap": max_fulltext_fetches,
                     }
                 )
 
@@ -975,8 +993,12 @@ class PersonTaiwanEventMonitorService:
             return ""
         if key in cache:
             return cache[key]
+        lower_url = str(url or "").lower()
+        if any(lower_url.endswith(ext) for ext in (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx")):
+            cache[key] = ""
+            return ""
         try:
-            response = client.get(url, follow_redirects=True, timeout=20.0)
+            response = client.get(url, follow_redirects=True, timeout=10.0)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, "html.parser")
             text = self._extract_article_text(soup)
@@ -1246,28 +1268,43 @@ class PersonTaiwanEventMonitorService:
         capture_mode: str,
         query_enforced: bool,
         fallback_person_keyword: str | None,
+        allow_fulltext_fetch: bool,
     ) -> dict[str, Any]:
         source_url = str(item.get("url") or "").strip()
-        raw_full_text = self._fetch_full_article_text(client, source_url, article_text_cache) if source_url else ""
-        cleaned_full_text = self._clean_article_text(raw_full_text)
+        mode = capture_mode if capture_mode in CAPTURE_MODES else DEFAULT_CAPTURE_MODE
         legacy_text = self._merge_text(item.get("title"), item.get("summary"))
-        fulltext_text = self._merge_text_parts(item.get("title"), item.get("summary"), cleaned_full_text)
         legacy_person = self._matched_keywords(legacy_text, person_keywords)
         legacy_taiwan = self._matched_keywords(legacy_text, taiwan_keywords)
-        full_person = self._matched_keywords(fulltext_text, person_keywords)
-        full_taiwan = self._matched_keywords(fulltext_text, taiwan_keywords)
 
-        mode = capture_mode if capture_mode in CAPTURE_MODES else DEFAULT_CAPTURE_MODE
+        used_fulltext = False
+        cleaned_full_text = ""
+        fulltext_text = legacy_text
+        full_person: list[str] = []
+        full_taiwan: list[str] = []
+        should_fetch_fulltext = mode in {"fulltext", "parallel"} and allow_fulltext_fetch
+        if should_fetch_fulltext and source_url:
+            raw_full_text = self._fetch_full_article_text(client, source_url, article_text_cache)
+            cleaned_full_text = self._clean_article_text(raw_full_text)
+            fulltext_text = self._merge_text_parts(item.get("title"), item.get("summary"), cleaned_full_text)
+            full_person = self._matched_keywords(fulltext_text, person_keywords)
+            full_taiwan = self._matched_keywords(fulltext_text, taiwan_keywords)
+            used_fulltext = True
         if mode == "existing":
             matched_person = legacy_person
             matched_taiwan = legacy_taiwan
             selected_text = legacy_text
             matched_by = ["existing"]
         elif mode == "fulltext":
-            matched_person = full_person
-            matched_taiwan = full_taiwan
-            selected_text = fulltext_text
-            matched_by = ["fulltext"]
+            if used_fulltext:
+                matched_person = full_person
+                matched_taiwan = full_taiwan
+                selected_text = fulltext_text
+                matched_by = ["fulltext"]
+            else:
+                matched_person = legacy_person
+                matched_taiwan = legacy_taiwan
+                selected_text = legacy_text
+                matched_by = ["existing_fallback"]
         else:
             matched_person = self._dedupe_text_list(list(legacy_person) + list(full_person))
             matched_taiwan = self._dedupe_text_list(list(legacy_taiwan) + list(full_taiwan))
@@ -1296,6 +1333,7 @@ class PersonTaiwanEventMonitorService:
             "matched_by": matched_by,
             "selected_text": selected_text,
             "cleaned_full_text": cleaned_full_text,
+            "used_fulltext": used_fulltext,
         }
 
     def _merge_text(self, title: str | None, summary: str | None) -> str:
