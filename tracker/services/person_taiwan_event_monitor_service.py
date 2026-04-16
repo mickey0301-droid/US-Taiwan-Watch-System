@@ -397,8 +397,18 @@ class PersonTaiwanEventMonitorService:
                         created = 0
                         updated = 0
                         skipped_existing = 0
+                        inspected_items: list[dict[str, Any]] = []
                         for item in items:
+                            source_url = str(item.get("url") or "").strip()
+                            source_title = str(item.get("title") or source_url)
                             if not self._within_date_window(item.get("published_at"), window_start, window_end):
+                                if len(inspected_items) < 120:
+                                    inspected_items.append({
+                                        "title": source_title,
+                                        "url": source_url,
+                                        "matched": False,
+                                        "reason": "date_out_of_range",
+                                    })
                                 continue
                             allow_fulltext_fetch = fulltext_fetches_used < max_fulltext_fetches
                             match_result = self._evaluate_item_match(
@@ -415,6 +425,13 @@ class PersonTaiwanEventMonitorService:
                             if bool(match_result.get("used_fulltext")):
                                 fulltext_fetches_used += 1
                             if not match_result.get("ok"):
+                                if len(inspected_items) < 120:
+                                    inspected_items.append({
+                                        "title": source_title,
+                                        "url": source_url,
+                                        "matched": False,
+                                        "reason": "keyword_not_match",
+                                    })
                                 continue
                             matched_person = list(match_result.get("matched_person") or [])
                             matched_taiwan = list(match_result.get("matched_taiwan") or [])
@@ -422,14 +439,30 @@ class PersonTaiwanEventMonitorService:
                             selected_text = str(match_result.get("selected_text") or "")
                             cleaned_full_text = str(match_result.get("cleaned_full_text") or "")
                             if self.relevance_service.is_taiwan_time_only_reference(selected_text):
+                                if len(inspected_items) < 120:
+                                    inspected_items.append({
+                                        "title": source_title,
+                                        "url": source_url,
+                                        "matched": False,
+                                        "reason": "taiwan_time_only",
+                                    })
                                 continue
                             found += 1
 
-                            source_url = str(item.get("url") or "").strip()
                             if not source_url:
                                 continue
                             if self._has_existing_person_source_url(person.id, source_url):
                                 skipped_existing += 1
+                                if len(inspected_items) < 120:
+                                    inspected_items.append({
+                                        "title": source_title,
+                                        "url": source_url,
+                                        "matched": True,
+                                        "reason": "already_exists",
+                                        "matched_by": matched_by,
+                                        "matched_person_keywords": matched_person,
+                                        "matched_taiwan_keywords": matched_taiwan,
+                                    })
                                 continue
                             source_domain = domain_from_url(source_url)
                             source_type = "official" if source_domain in {"president.gov.tw", "mofa.gov.tw"} else "media"
@@ -467,6 +500,16 @@ class PersonTaiwanEventMonitorService:
                                 created += 1
                             else:
                                 updated += 1
+                            if len(inspected_items) < 120:
+                                inspected_items.append({
+                                    "title": source_title,
+                                    "url": source_url,
+                                    "matched": True,
+                                    "reason": "created" if is_created else "updated",
+                                    "matched_by": matched_by,
+                                    "matched_person_keywords": matched_person,
+                                    "matched_taiwan_keywords": matched_taiwan,
+                                })
 
                         total_found += found
                         total_created += created
@@ -485,6 +528,7 @@ class PersonTaiwanEventMonitorService:
                                 "items_skipped_existing": skipped_existing,
                                 "fulltext_fetches_used": fulltext_fetches_used,
                                 "fulltext_fetches_cap": max_fulltext_fetches,
+                                "inspected_items": inspected_items,
                             }
                         )
 
@@ -502,14 +546,20 @@ class PersonTaiwanEventMonitorService:
                 created = 0
                 updated = 0
                 skipped_existing = 0
+                inspected_items: list[dict[str, Any]] = []
                 for item in global_items:
-                    if not self._within_date_window(item.get("published_at"), window_start, window_end):
-                        continue
                     source_url = str(item.get("url") or "").strip()
+                    source_title = str(item.get("title") or source_url)
+                    if not self._within_date_window(item.get("published_at"), window_start, window_end):
+                        if len(inspected_items) < 120:
+                            inspected_items.append({"title": source_title, "url": source_url, "matched": False, "reason": "date_out_of_range"})
+                        continue
                     if not source_url:
                         continue
                     if self._has_existing_person_source_url(person.id, source_url):
                         skipped_existing += 1
+                        if len(inspected_items) < 120:
+                            inspected_items.append({"title": source_title, "url": source_url, "matched": True, "reason": "already_exists"})
                         continue
                     allow_fulltext_fetch = fulltext_fetches_used < max_fulltext_fetches
                     match_result = self._evaluate_item_match(
@@ -526,6 +576,8 @@ class PersonTaiwanEventMonitorService:
                     if bool(match_result.get("used_fulltext")):
                         fulltext_fetches_used += 1
                     if not match_result.get("ok"):
+                        if len(inspected_items) < 120:
+                            inspected_items.append({"title": source_title, "url": source_url, "matched": False, "reason": "keyword_not_match"})
                         continue
                     matched_person = list(match_result.get("matched_person") or [])
                     matched_taiwan = list(match_result.get("matched_taiwan") or [])
@@ -533,6 +585,8 @@ class PersonTaiwanEventMonitorService:
                     selected_text = str(match_result.get("selected_text") or "")
                     cleaned_full_text = str(match_result.get("cleaned_full_text") or "")
                     if self.relevance_service.is_taiwan_time_only_reference(selected_text):
+                        if len(inspected_items) < 120:
+                            inspected_items.append({"title": source_title, "url": source_url, "matched": False, "reason": "taiwan_time_only"})
                         continue
                     found += 1
                     source_domain = str(item.get("source_domain") or domain_from_url(source_url))
@@ -571,6 +625,16 @@ class PersonTaiwanEventMonitorService:
                         created += 1
                     else:
                         updated += 1
+                    if len(inspected_items) < 120:
+                        inspected_items.append({
+                            "title": source_title,
+                            "url": source_url,
+                            "matched": True,
+                            "reason": "created" if is_created else "updated",
+                            "matched_by": matched_by,
+                            "matched_person_keywords": matched_person,
+                            "matched_taiwan_keywords": matched_taiwan,
+                        })
                 total_found += found
                 total_created += created
                 total_updated += updated
@@ -588,6 +652,7 @@ class PersonTaiwanEventMonitorService:
                         "items_skipped_existing": skipped_existing,
                         "fulltext_fetches_used": fulltext_fetches_used,
                         "fulltext_fetches_cap": max_fulltext_fetches,
+                        "inspected_items": inspected_items,
                     }
                 )
 
