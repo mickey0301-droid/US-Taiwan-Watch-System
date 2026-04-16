@@ -119,13 +119,9 @@ def _existing_legislation_url_keys() -> set[str]:
 
 
 def _build_legislation_query(domain: str, keyword_expr: str, start_date: date, end_date: date) -> str:
-    legislation_terms = "(bill OR legislation OR resolution OR act OR senate OR house OR assembly OR \"general assembly\")"
-    # Google `before:` is treated as exclusive, so add one day to include end_date.
-    exclusive_end = end_date + timedelta(days=1)
-    return (
-        f"({keyword_expr}) {legislation_terms} site:{domain} "
-        f"after:{start_date.isoformat()} before:{exclusive_end.isoformat()}"
-    )
+    legislation_terms = "(bill OR legislation OR resolution OR act OR senate OR house OR assembly OR \"general assembly\" OR legislature)"
+    # Date range is enforced after fetching RSS entries to avoid provider-side query under-matching.
+    return f"({keyword_expr}) {legislation_terms} site:{domain}"
 
 
 def _collect_domain_rss_hits(
@@ -165,9 +161,24 @@ def _collect_domain_rss_hits(
                 if key:
                     seen.add(key)
 
+                source_meta = getattr(entry, "source", None)
+                source_href = str(getattr(source_meta, "href", "") or "") if source_meta is not None else ""
+                source_domain = _domain_from_url(source_href)
+
                 resolved_domain = _domain_from_url(url)
-                if domain and resolved_domain and domain not in resolved_domain:
-                    continue
+                if domain:
+                    domain_matched = False
+                    if resolved_domain and resolved_domain != "news.google.com":
+                        domain_matched = domain in resolved_domain
+                    if not domain_matched and source_domain:
+                        domain_matched = domain in source_domain
+                    # Keep candidates when Google redirect cannot be fully resolved; query already includes site:domain.
+                    if not domain_matched and resolved_domain == "news.google.com":
+                        domain_matched = True
+                    if not domain_matched and not resolved_domain and not source_domain:
+                        domain_matched = True
+                    if not domain_matched:
+                        continue
 
                 published_at = parse_datetime(getattr(entry, "published", None)) or parse_datetime(getattr(entry, "updated", None))
                 if published_at:
@@ -243,12 +254,36 @@ def render(lang: str, labels: dict[str, str]) -> None:
 
     domain_options = [str(item["domain"]) for item in state_domains]
     default_domain_count = min(10, len(domain_options))
+    default_domains = domain_options[:default_domain_count]
+
+    domain_state_key = "state_bill_search_domains"
+    select_all_key = "state_bill_search_select_all"
+
+    if domain_state_key not in st.session_state:
+        st.session_state[domain_state_key] = list(default_domains)
+    else:
+        current = [str(item).strip().lower() for item in (st.session_state.get(domain_state_key) or [])]
+        st.session_state[domain_state_key] = [item for item in current if item in domain_options]
+        if not st.session_state[domain_state_key]:
+            st.session_state[domain_state_key] = list(default_domains)
+
+    if select_all_key not in st.session_state:
+        st.session_state[select_all_key] = len(st.session_state[domain_state_key]) == len(domain_options)
+
+    select_all_domains = st.checkbox(
+        "全選網域" if lang == "zh-TW" else "Select all domains",
+        key=select_all_key,
+    )
+    if select_all_domains:
+        st.session_state[domain_state_key] = list(domain_options)
+    elif len(st.session_state[domain_state_key]) == len(domain_options):
+        st.session_state[domain_state_key] = list(default_domains)
 
     with st.form("state_bill_source_search_form"):
         selected_domains = st.multiselect(
             "搜尋網域" if lang == "zh-TW" else "Domains",
             options=domain_options,
-            default=domain_options[:default_domain_count],
+            key=domain_state_key,
         )
         keyword_expr = st.text_input(
             "關鍵字（可用 OR）" if lang == "zh-TW" else "Keywords (OR supported)",
