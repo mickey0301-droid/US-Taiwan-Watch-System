@@ -2864,27 +2864,27 @@ def render(lang: str, labels: dict[str, str]) -> None:
                 latest_run = recent_runs[0]
                 latest_queries = list(latest_run.get("queries") or [])
                 if latest_queries:
-                    with st.expander("最近一次搜尋明細" if lang == "zh-TW" else "Latest search details", expanded=False):
-                        for query_item in latest_queries:
-                            domain_label = str(query_item.get("domain") or "")
-                            items = list(query_item.get("inspected_items") or [])
-                            if not items:
-                                continue
-                            st.markdown(f"**{domain_label}**")
-                            rows: list[dict[str, object]] = []
-                            for it in items:
-                                rows.append(
-                                    {
-                                        "是否命中": "是" if bool(it.get("matched")) else "否",
-                                        "原因": str(it.get("reason") or ""),
-                                        "標題": str(it.get("title") or ""),
-                                        "網址": str(it.get("url") or ""),
-                                        "命中方式": ", ".join(str(x) for x in (it.get("matched_by") or [])),
-                                        "人物關鍵字": ", ".join(str(x) for x in (it.get("matched_person_keywords") or [])),
-                                        "台灣關鍵字": ", ".join(str(x) for x in (it.get("matched_taiwan_keywords") or [])),
-                                    }
-                                )
-                            st.dataframe(rows, use_container_width=True, hide_index=True)
+                    st.markdown("**最近一次搜尋明細**" if lang == "zh-TW" else "**Latest search details**")
+                    for query_item in latest_queries:
+                        domain_label = str(query_item.get("domain") or "")
+                        items = list(query_item.get("inspected_items") or [])
+                        if not items:
+                            continue
+                        st.markdown(f"`{domain_label}`")
+                        rows: list[dict[str, object]] = []
+                        for it in items:
+                            rows.append(
+                                {
+                                    "是否命中": "是" if bool(it.get("matched")) else "否",
+                                    "原因": str(it.get("reason") or ""),
+                                    "標題": str(it.get("title") or ""),
+                                    "網址": str(it.get("url") or ""),
+                                    "命中方式": ", ".join(str(x) for x in (it.get("matched_by") or [])),
+                                    "人物關鍵字": ", ".join(str(x) for x in (it.get("matched_person_keywords") or [])),
+                                    "台灣關鍵字": ", ".join(str(x) for x in (it.get("matched_taiwan_keywords") or [])),
+                                }
+                            )
+                        st.dataframe(rows, use_container_width=True, hide_index=True)
 
         _render_db_person_highlights(
             recent_events=recent_statements,
