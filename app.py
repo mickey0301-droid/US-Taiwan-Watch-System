@@ -17,6 +17,7 @@ from tracker.ui import (
     review_page,
     schedule_page,
     settings_page,
+    sources_page,
     state_territory_page,
     trackers_page,
 )
@@ -52,6 +53,7 @@ LABELS = {
         "legislation": "立法",
         "schedule": "排程",
         "jobs_scheduler": "排程與工作",
+        "sources_catalog": "來源清單",
         "notifications": "通知",
         "settings": "設定",
         "changelog": "更新日誌",
@@ -159,6 +161,7 @@ LABELS = {
         "legislation": "Legislation",
         "schedule": "Schedule",
         "jobs_scheduler": "Jobs / Scheduler",
+        "sources_catalog": "Sources",
         "notifications": "Notifications",
         "settings": "Settings",
         "changelog": "Changelog",
@@ -268,6 +271,7 @@ PAGES = {
     "officials": officials_page.render,
     "trackers": trackers_page.render,
     "jobs_scheduler": jobs_page.render,
+    "sources_catalog": sources_page.render,
     "notifications": notifications_page.render,
     "settings": settings_page.render,
     "changelog": changelog_page.render,
@@ -285,6 +289,7 @@ NAV_PAGE_ORDER = [
     "officials",
     "trackers",
     "jobs_scheduler",
+    "sources_catalog",
     "notifications",
     "settings",
     "changelog",
@@ -298,6 +303,7 @@ GOOGLE_SHEET_PRIMARY_PAGES = [
     "legislation",
     "schedule",
     "officials",
+    "sources_catalog",
     "changelog",
 ]
 
